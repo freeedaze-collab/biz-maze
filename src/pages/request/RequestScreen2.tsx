@@ -15,17 +15,18 @@ const RequestScreen2 = () => {
         <div className="max-w-4xl mx-auto">
           <h1 className="text-4xl font-bold text-card-foreground mb-8">New Payment Request</h1>
           
-          <div className="w-full h-[600px] border rounded-lg">
+          <div className="w-full h-[700px] border rounded-lg">
             <iframe
-              src="https://example.com/payment-request-form"
-              title="Payment Request Form"
+              src="https://cryptoinvoice.new/"
+              title="Crypto Invoice Generator"
               className="w-full h-full rounded-lg"
               frameBorder="0"
+              allow="clipboard-write"
             />
           </div>
           
           <p className="text-sm text-muted-foreground mt-4 text-center">
-            Payment request form will be loaded here
+            Create professional crypto invoices with CryptoInvoice
           </p>
         </div>
       </div>

@@ -1,18 +1,56 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ArrowLeft, Upload, FileText } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
 
 const TransferScreen1 = () => {
+  const navigate = useNavigate();
+  const { toast } = useToast();
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (file) {
       setUploadedFile(file);
+    }
+  };
+
+  const handleInvoicePayment = async () => {
+    if (!uploadedFile) return;
+    
+    setIsProcessing(true);
+    try {
+      // Parse PDF invoice (mock implementation)
+      const invoiceData = {
+        recipient: "ACME Corporation",
+        amount: "1,250.00",
+        invoiceNumber: "INV-2024-001",
+        description: "Web Development Services",
+        address: "0x742d35Cc6A6C6A6C6A6C3A6C6A6C6A6C6A6C6A6C" // Mock wallet address
+      };
+      
+      // Store parsed data for confirmation screen
+      sessionStorage.setItem('invoiceData', JSON.stringify(invoiceData));
+      
+      toast({
+        title: "Invoice Processed",
+        description: "Invoice data extracted successfully",
+      });
+      
+      navigate('/transfer/invoice-confirm');
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: "Failed to process invoice file",
+        variant: "destructive",
+      });
+    } finally {
+      setIsProcessing(false);
     }
   };
 
@@ -80,16 +118,15 @@ const TransferScreen1 = () => {
                   )}
                 </div>
                 
-                <Link to="/transfer/invoice">
-                  <Button 
-                    className="w-full" 
-                    disabled={!uploadedFile}
-                    variant={uploadedFile ? "default" : "outline"}
-                  >
-                    <Upload className="h-4 w-4 mr-2" />
-                    Pay This Invoice
-                  </Button>
-                </Link>
+                <Button 
+                  onClick={handleInvoicePayment}
+                  className="w-full" 
+                  disabled={!uploadedFile || isProcessing}
+                  variant={uploadedFile ? "default" : "outline"}
+                >
+                  <Upload className="h-4 w-4 mr-2" />
+                  {isProcessing ? "Processing..." : "Pay This Invoice"}
+                </Button>
               </CardContent>
             </Card>
           </div>

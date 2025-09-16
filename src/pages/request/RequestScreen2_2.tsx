@@ -1,4 +1,5 @@
 import { Link } from "react-router-dom";
+import { Button } from "@/components/ui/button";
 import { ArrowLeft } from "lucide-react";
 
 const RequestScreen2_2 = () => {
@@ -13,19 +14,28 @@ const RequestScreen2_2 = () => {
         </div>
 
         <div className="max-w-4xl mx-auto">
-          <h1 className="text-4xl font-bold text-card-foreground mb-8">Existing Recipients</h1>
+          <h1 className="text-4xl font-bold text-card-foreground mb-8">Select Recipient</h1>
+          
+          <div className="mb-6">
+            <Link to="/request/recipients">
+              <Button className="w-full">
+                View All Recipients
+              </Button>
+            </Link>
+          </div>
           
           <div className="w-full h-[600px] border rounded-lg">
             <iframe
-              src="https://example.com/existing-recipients"
-              title="Existing Recipients"
+              src="https://cryptoinvoice.new/"
+              title="Crypto Invoice with Recipient Data"
               className="w-full h-full rounded-lg"
               frameBorder="0"
+              allow="clipboard-write"
             />
           </div>
           
           <p className="text-sm text-muted-foreground mt-4 text-center">
-            Existing recipients list will be loaded here
+            Invoice form with pre-filled recipient data
           </p>
         </div>
       </div>

@@ -10,13 +10,18 @@ import TransferScreen2 from "./pages/transfer/TransferScreen2";
 import TransferScreen2_1 from "./pages/transfer/TransferScreen2_1";
 import TransferScreen2_2 from "./pages/transfer/TransferScreen2_2";
 import TransferScreen3 from "./pages/transfer/TransferScreen3";
+import InvoiceConfirmScreen from "./pages/transfer/InvoiceConfirmScreen";
 import RequestScreen1 from "./pages/request/RequestScreen1";
 import RequestScreen2 from "./pages/request/RequestScreen2";
 import RequestScreen2_2 from "./pages/request/RequestScreen2_2";
+import ExistingRecipientsScreen from "./pages/request/ExistingRecipientsScreen";
 import PaymentGatewayScreen1 from "./pages/payment/PaymentGatewayScreen1";
 import PaymentGatewayScreen2 from "./pages/payment/PaymentGatewayScreen2";
 import PaymentGatewayScreen1_1 from "./pages/payment/PaymentGatewayScreen1_1";
 import ManagementScreen1 from "./pages/management/ManagementScreen1";
+import PortfolioScreen from "./pages/management/PortfolioScreen";
+import ExchangeImplementScreen from "./pages/management/ExchangeImplementScreen";
+import ExchangeConnectScreen from "./pages/management/ExchangeConnectScreen";
 import AccountingTaxScreen1 from "./pages/accounting/AccountingTaxScreen1";
 import WalletCreationScreen1 from "./pages/wallet/WalletCreationScreen1";
 import WalletScreen2 from "./pages/wallet/WalletScreen2";
@@ -38,14 +43,20 @@ const App = () => (
           <Route path="/transfer/confirm" element={<TransferScreen2_1 />} />
           <Route path="/transfer/complete" element={<TransferScreen2_2 />} />
           <Route path="/transfer/invoice" element={<TransferScreen3 />} />
+          <Route path="/transfer/invoice-confirm" element={<InvoiceConfirmScreen />} />
           <Route path="/request" element={<RequestScreen1 />} />
           <Route path="/request/new" element={<RequestScreen2 />} />
           <Route path="/request/existing" element={<RequestScreen2_2 />} />
+          <Route path="/request/recipients" element={<ExistingRecipientsScreen />} />
           <Route path="/payment-gateway" element={<PaymentGatewayScreen1 />} />
           <Route path="/payment-gateway/implement" element={<PaymentGatewayScreen2 />} />
           <Route path="/payment-gateway/integrate" element={<PaymentGatewayScreen2 />} />
           <Route path="/payment-gateway/connect" element={<PaymentGatewayScreen1_1 />} />
           <Route path="/management" element={<ManagementScreen1 />} />
+          <Route path="/management/portfolio" element={<PortfolioScreen />} />
+          <Route path="/management/exchange/implement" element={<ExchangeImplementScreen />} />
+          <Route path="/management/exchange/integrate" element={<ExchangeImplementScreen />} />
+          <Route path="/management/exchange/connect" element={<ExchangeConnectScreen />} />
           <Route path="/accounting-tax" element={<AccountingTaxScreen1 />} />
           <Route path="/wallet-creation" element={<WalletCreationScreen1 />} />
           <Route path="/wallet/connect" element={<WalletScreen2 />} />
