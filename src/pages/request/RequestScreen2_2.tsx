@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft } from "lucide-react";
+import { InvoiceGenerator } from "@/components/InvoiceGenerator";
 
 const RequestScreen2_2 = () => {
   return (
@@ -13,7 +14,7 @@ const RequestScreen2_2 = () => {
           </Link>
         </div>
 
-        <div className="max-w-4xl mx-auto">
+        <div className="max-w-7xl mx-auto">
           <h1 className="text-4xl font-bold text-card-foreground mb-8">Select Recipient</h1>
           
           <div className="mb-6">
@@ -24,19 +25,23 @@ const RequestScreen2_2 = () => {
             </Link>
           </div>
           
-          <div className="w-full h-[600px] border rounded-lg">
-            <iframe
-              src="https://cryptoinvoice.new/"
-              title="Crypto Invoice with Recipient Data"
-              className="w-full h-full rounded-lg"
-              frameBorder="0"
-              allow="clipboard-write"
-            />
-          </div>
-          
-          <p className="text-sm text-muted-foreground mt-4 text-center">
-            Invoice form with pre-filled recipient data
-          </p>
+          <InvoiceGenerator 
+            existingRecipient={{
+              name: "Sample Client",
+              email: "client@example.com", 
+              address: "123 Client St",
+              city: "Client City",
+              state: "CS",
+              zip: "12345",
+              country: "United States"
+            }}
+            onSaveRecipient={(recipient) => {
+              console.log('Updating recipient:', recipient);
+            }}
+            onInvoiceGenerated={(invoiceData) => {
+              console.log('Invoice generated with existing recipient:', invoiceData);
+            }}
+          />
         </div>
       </div>
     </div>
