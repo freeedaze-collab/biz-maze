@@ -22,6 +22,10 @@ import ManagementScreen1 from "./pages/management/ManagementScreen1";
 import PortfolioScreen from "./pages/management/PortfolioScreen";
 import ExchangeImplementScreen from "./pages/management/ExchangeImplementScreen";
 import ExchangeConnectScreen from "./pages/management/ExchangeConnectScreen";
+import ExchangeServices from "./pages/management/ExchangeServices";
+import Login from "./pages/auth/Login";
+import PaymentGatewayComingSoon from "./pages/payment/PaymentGatewayComingSoon";
+import WalletSetup from "./pages/wallet/WalletSetup";
 import AccountingTaxScreen1 from "./pages/accounting/AccountingTaxScreen1";
 import WalletCreationScreen1 from "./pages/wallet/WalletCreationScreen1";
 import WalletScreen2 from "./pages/wallet/WalletScreen2";
@@ -57,6 +61,10 @@ const App = () => (
           <Route path="/management/exchange/implement" element={<ExchangeImplementScreen />} />
           <Route path="/management/exchange/integrate" element={<ExchangeImplementScreen />} />
           <Route path="/management/exchange/connect" element={<ExchangeConnectScreen />} />
+          <Route path="/management/exchange/services" element={<ExchangeServices />} />
+          <Route path="/auth/login" element={<Login />} />
+          <Route path="/payment-gateway" element={<PaymentGatewayComingSoon />} />
+          <Route path="/wallet/setup/:walletId" element={<WalletSetup />} />
           <Route path="/accounting-tax" element={<AccountingTaxScreen1 />} />
           <Route path="/wallet-creation" element={<WalletCreationScreen1 />} />
           <Route path="/wallet/connect" element={<WalletScreen2 />} />

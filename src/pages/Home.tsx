@@ -23,6 +23,11 @@ const Home = () => {
           <p className="text-muted-foreground text-lg">
             Your complete financial management solution
           </p>
+          <div className="mt-4">
+            <Link to="/auth/login">
+              <Button>Login / Sign Up</Button>
+            </Link>
+          </div>
         </div>
 
         {/* Main Action Buttons */}
@@ -55,14 +60,16 @@ const Home = () => {
             </Link>
 
             <Link to="/payment-gateway">
-              <Card className="hover:shadow-lg transition-shadow cursor-pointer h-full">
+              <Card className="hover:shadow-lg transition-shadow cursor-pointer h-full opacity-50">
                 <CardHeader className="text-center">
-                  <CreditCard className="h-12 w-12 mx-auto mb-4 text-primary" />
-                  <CardTitle>Payment Gateway</CardTitle>
-                  <CardDescription>Set up payment processing</CardDescription>
+                  <CreditCard className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
+                  <CardTitle className="text-muted-foreground">Payment Gateway</CardTitle>
+                  <CardDescription>Will be available soon</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <Button className="w-full">Setup Gateway</Button>
+                  <Button className="w-full" variant="outline" disabled>
+                    Coming Soon
+                  </Button>
                 </CardContent>
               </Card>
             </Link>

@@ -12,14 +12,28 @@ const WalletCreationScreen1 = () => {
       icon: "🦊",
       features: ["Browser Extension", "Mobile App", "Hardware Wallet Support"],
       isPopular: true,
+      iframeUrl: "https://metamask.io/download/",
+      connectUrl: "https://metamask.io/"
     },
     {
-      id: "bitpay",
-      name: "BitPay",
-      description: "Secure wallet for Bitcoin and other cryptocurrencies",
-      icon: "₿",
-      features: ["Multi-Currency", "Prepaid Cards", "Business Solutions"],
+      id: "coinbase",
+      name: "Coinbase Wallet",
+      description: "Self-custody wallet by Coinbase",
+      icon: "🔵",
+      features: ["Multi-Chain Support", "DeFi Access", "NFT Collection"],
+      isPopular: true,
+      iframeUrl: "https://www.coinbase.com/wallet",
+      connectUrl: "https://www.coinbase.com/wallet/downloads"
+    },
+    {
+      id: "exodus",
+      name: "Exodus",
+      description: "Beautiful desktop and mobile wallet",
+      icon: "💎",
+      features: ["Built-in Exchange", "Staking Rewards", "Portfolio Tracker"],
       isPopular: false,
+      iframeUrl: "https://www.exodus.com/download/",
+      connectUrl: "https://www.exodus.com/"
     },
   ];
 
@@ -88,11 +102,18 @@ const WalletCreationScreen1 = () => {
                       </ul>
                     </div>
 
-                    <Link to="/wallet/connect" className="block">
-                      <Button className="w-full" variant={wallet.isPopular ? "default" : "outline"}>
-                        Select {wallet.name}
-                      </Button>
-                    </Link>
+                    <div className="space-y-2">
+                      <Link to={`/wallet/setup/${wallet.id}`} className="block">
+                        <Button className="w-full" variant={wallet.isPopular ? "default" : "outline"}>
+                          Create & Connect {wallet.name}
+                        </Button>
+                      </Link>
+                      <Link to="/wallet/connect" className="block">
+                        <Button className="w-full" variant="outline" size="sm">
+                          Connect Existing
+                        </Button>
+                      </Link>
+                    </div>
                   </div>
                 </CardContent>
               </Card>

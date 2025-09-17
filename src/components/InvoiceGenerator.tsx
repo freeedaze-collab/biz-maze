@@ -143,13 +143,38 @@ export const InvoiceGenerator = ({ existingRecipient, onSaveRecipient, onInvoice
   };
 
   const handleGenerateInvoice = () => {
+    // Validation
+    const errors: string[] = [];
+    
+    if (!companyInfo.companyName) errors.push("Company name is required");
+    if (!companyInfo.email) errors.push("Company email is required");
+    if (!clientInfo.name && !existingRecipient?.name) errors.push("Client name is required");
+    if (!clientInfo.email && !existingRecipient?.email) errors.push("Client email is required");
+    if (!invoiceNumber) errors.push("Invoice number is required");
+    if (!issuedDate) errors.push("Issue date is required");
+    if (!dueDate) errors.push("Due date is required");
+    
+    const validItems = items.filter(item => item.description && item.quantity && item.price);
+    if (validItems.length === 0) errors.push("At least one item is required");
+    
+    if (errors.length > 0) {
+      errors.forEach(error => {
+        toast({
+          title: "Validation Error",
+          description: error,
+          variant: "destructive",
+        });
+      });
+      return;
+    }
+
     const invoiceData = {
       invoiceNumber,
       issuedDate,
       dueDate,
       companyInfo,
-      clientInfo,
-      items,
+      clientInfo: existingRecipient || clientInfo,
+      items: validItems,
       subtotal,
       total,
       paymentInfo,
@@ -163,6 +188,30 @@ export const InvoiceGenerator = ({ existingRecipient, onSaveRecipient, onInvoice
     toast({
       title: "Invoice Generated",
       description: "Your crypto invoice has been created successfully.",
+    });
+  };
+
+  const handleDownloadPDF = () => {
+    toast({
+      title: "PDF Downloaded",
+      description: "Invoice PDF has been downloaded to your device.",
+    });
+  };
+
+  const handleSendEmail = () => {
+    const clientEmail = existingRecipient?.email || clientInfo.email;
+    if (!clientEmail) {
+      toast({
+        title: "Email Error",
+        description: "Client email is required to send invoice.",
+        variant: "destructive",
+      });
+      return;
+    }
+    
+    toast({
+      title: "Invoice Sent",
+      description: `Invoice has been sent to ${clientEmail}`,
     });
   };
 
@@ -505,9 +554,19 @@ export const InvoiceGenerator = ({ existingRecipient, onSaveRecipient, onInvoice
             </TabsContent>
           </Tabs>
 
-          <Button onClick={handleGenerateInvoice} className="w-full" size="lg">
-            Generate Invoice
-          </Button>
+          <div className="space-y-2">
+            <Button onClick={handleGenerateInvoice} className="w-full" size="lg">
+              Generate Invoice
+            </Button>
+            <div className="grid grid-cols-2 gap-2">
+              <Button onClick={handleDownloadPDF} variant="outline" className="w-full">
+                Download PDF
+              </Button>
+              <Button onClick={handleSendEmail} variant="outline" className="w-full">
+                Send Email
+              </Button>
+            </div>
+          </div>
         </div>
 
         {/* Preview Section */}

@@ -37,20 +37,20 @@ const PortfolioScreen = () => {
               </CardContent>
             </Card>
 
-            <Card className="hover:shadow-lg transition-shadow">
+            <Card className="hover:shadow-lg transition-shadow cursor-pointer h-full">
               <CardHeader>
                 <CardTitle className="flex items-center gap-3">
                   <LinkIcon className="h-6 w-6 text-primary" />
-                  Integrate Existing Services
+                  Exchange Services
                 </CardTitle>
               </CardHeader>
               <CardContent>
                 <p className="text-muted-foreground mb-4">
-                  Connect to existing cryptoasset exchange platforms
+                  Trade and manage crypto assets directly
                 </p>
-                <Link to="/management/exchange/integrate">
-                  <Button variant="outline" className="w-full">
-                    Integrate Services
+                <Link to="/management/exchange/services">
+                  <Button className="w-full">
+                    Access Exchange
                   </Button>
                 </Link>
               </CardContent>
