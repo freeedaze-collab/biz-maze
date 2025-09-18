@@ -1,1 +1,7 @@
 project_id = "ymddtgbsybvxfitgupqy"
+
+[functions.sync-wallet-balance]
+verify_jwt = false
+
+[functions.send-crypto-payment] 
+verify_jwt = false

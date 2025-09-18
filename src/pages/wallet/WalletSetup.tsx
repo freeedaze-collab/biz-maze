@@ -60,8 +60,9 @@ const WalletSetup = () => {
       await new Promise(resolve => setTimeout(resolve, 2000));
       
       // Mock wallet data - replace with actual wallet integration
+      const mockAddress = '0x' + Math.random().toString(16).substring(2, 42);
       const mockWalletData = {
-        address: "0x742d35Cc6a9e8d4c...28A9876543210",
+        address: mockAddress,
         balance: "2.45 ETH",
         network: "Ethereum Mainnet",
         tokens: [
@@ -73,7 +74,31 @@ const WalletSetup = () => {
       
       setWalletData(mockWalletData);
       
-      // Store wallet data for accounting
+      // Store wallet data for accounting and connect to database
+      try {
+        const { supabase } = await import('@/integrations/supabase/client');
+        const { data: { user } } = await supabase.auth.getUser();
+        
+        if (user) {
+          // Store wallet connection in database
+          await supabase.from('wallet_connections').insert({
+            user_id: user.id,
+            wallet_address: mockAddress,
+            wallet_type: walletId || 'unknown',
+            wallet_name: currentWallet?.name,
+            is_primary: true,
+            balance_usd: parseFloat(mockWalletData.balance.replace(/[^0-9.]/g, '')) * 1600 // Mock ETH price
+          });
+          
+          console.log('Wallet connected to database successfully');
+        } else {
+          console.log('User not authenticated, storing locally only');
+        }
+      } catch (dbError) {
+        console.error('Error saving wallet to database:', dbError);
+      }
+      
+      // Also store locally for immediate access
       localStorage.setItem('connectedWallet', JSON.stringify({
         ...mockWalletData,
         walletType: currentWallet?.name,

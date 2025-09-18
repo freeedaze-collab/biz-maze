@@ -14,7 +14,189 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      crypto_payments: {
+        Row: {
+          amount: number
+          created_at: string
+          currency: string
+          description: string | null
+          gas_fee: number | null
+          id: string
+          invoice_id: string | null
+          payment_status: string | null
+          recipient_address: string
+          transaction_hash: string | null
+          updated_at: string
+          usd_amount: number | null
+          user_id: string
+          wallet_address: string | null
+        }
+        Insert: {
+          amount: number
+          created_at?: string
+          currency: string
+          description?: string | null
+          gas_fee?: number | null
+          id?: string
+          invoice_id?: string | null
+          payment_status?: string | null
+          recipient_address: string
+          transaction_hash?: string | null
+          updated_at?: string
+          usd_amount?: number | null
+          user_id: string
+          wallet_address?: string | null
+        }
+        Update: {
+          amount?: number
+          created_at?: string
+          currency?: string
+          description?: string | null
+          gas_fee?: number | null
+          id?: string
+          invoice_id?: string | null
+          payment_status?: string | null
+          recipient_address?: string
+          transaction_hash?: string | null
+          updated_at?: string
+          usd_amount?: number | null
+          user_id?: string
+          wallet_address?: string | null
+        }
+        Relationships: []
+      }
+      profiles: {
+        Row: {
+          avatar_url: string | null
+          created_at: string
+          display_name: string | null
+          email: string | null
+          id: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          avatar_url?: string | null
+          created_at?: string
+          display_name?: string | null
+          email?: string | null
+          id?: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          avatar_url?: string | null
+          created_at?: string
+          display_name?: string | null
+          email?: string | null
+          id?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      transactions: {
+        Row: {
+          amount: number
+          block_number: number | null
+          blockchain_network: string
+          created_at: string
+          currency: string
+          from_address: string | null
+          gas_fee: number | null
+          gas_fee_usd: number | null
+          id: string
+          to_address: string | null
+          transaction_date: string
+          transaction_hash: string | null
+          transaction_status: string | null
+          transaction_type: string
+          updated_at: string
+          usd_value: number | null
+          user_id: string
+          wallet_address: string
+        }
+        Insert: {
+          amount: number
+          block_number?: number | null
+          blockchain_network: string
+          created_at?: string
+          currency: string
+          from_address?: string | null
+          gas_fee?: number | null
+          gas_fee_usd?: number | null
+          id?: string
+          to_address?: string | null
+          transaction_date: string
+          transaction_hash?: string | null
+          transaction_status?: string | null
+          transaction_type: string
+          updated_at?: string
+          usd_value?: number | null
+          user_id: string
+          wallet_address: string
+        }
+        Update: {
+          amount?: number
+          block_number?: number | null
+          blockchain_network?: string
+          created_at?: string
+          currency?: string
+          from_address?: string | null
+          gas_fee?: number | null
+          gas_fee_usd?: number | null
+          id?: string
+          to_address?: string | null
+          transaction_date?: string
+          transaction_hash?: string | null
+          transaction_status?: string | null
+          transaction_type?: string
+          updated_at?: string
+          usd_value?: number | null
+          user_id?: string
+          wallet_address?: string
+        }
+        Relationships: []
+      }
+      wallet_connections: {
+        Row: {
+          balance_usd: number | null
+          created_at: string
+          id: string
+          is_primary: boolean | null
+          last_sync_at: string | null
+          updated_at: string
+          user_id: string
+          wallet_address: string
+          wallet_name: string | null
+          wallet_type: string
+        }
+        Insert: {
+          balance_usd?: number | null
+          created_at?: string
+          id?: string
+          is_primary?: boolean | null
+          last_sync_at?: string | null
+          updated_at?: string
+          user_id: string
+          wallet_address: string
+          wallet_name?: string | null
+          wallet_type: string
+        }
+        Update: {
+          balance_usd?: number | null
+          created_at?: string
+          id?: string
+          is_primary?: boolean | null
+          last_sync_at?: string | null
+          updated_at?: string
+          user_id?: string
+          wallet_address?: string
+          wallet_name?: string | null
+          wallet_type?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never

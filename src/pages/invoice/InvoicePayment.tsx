@@ -25,15 +25,69 @@ const InvoicePayment = () => {
   const handlePayment = async () => {
     setLoading(true);
     
-    // Simulate payment processing
-    setTimeout(() => {
-      setLoading(false);
-      toast({
-        title: "Payment Processing",
-        description: "Your payment is being processed...",
-      });
+    try {
+      // For crypto payments, call the edge function
+      if (paymentMethod === 'crypto') {
+        const { supabase } = await import('@/integrations/supabase/client');
+        const { data: { user } } = await supabase.auth.getUser();
+        
+        if (!user) {
+          throw new Error('Please log in to process payments');
+        }
+
+        // Get user's primary wallet
+        const { data: wallets } = await supabase
+          .from('wallet_connections')
+          .select('*')
+          .eq('user_id', user.id)
+          .eq('is_primary', true)
+          .limit(1);
+
+        if (!wallets || wallets.length === 0) {
+          throw new Error('No wallet connected. Please connect a wallet first.');
+        }
+
+        const response = await supabase.functions.invoke('send-crypto-payment', {
+          body: {
+            userId: user.id,
+            recipientAddress: '0x742d35Cc6634C0532925a3b8D26D0b1a8c8b5e03', // Mock recipient
+            amount: '100', // Mock amount - should come from invoice
+            currency: 'ETH',
+            walletAddress: wallets[0].wallet_address,
+            invoiceId: id,
+            description: `Payment for invoice ${id}`
+          }
+        });
+
+        if (response.error) {
+          throw response.error;
+        }
+
+        toast({
+          title: "Payment Successful",
+          description: `Transaction hash: ${response.data.transactionHash.substring(0, 10)}...`,
+        });
+      } else {
+        // Simulate traditional payment processing
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
+        toast({
+          title: "Payment Successful",
+          description: "Your payment has been processed successfully.",
+        });
+      }
+      
       navigate(`/invoice/${id}/completion`);
-    }, 2000);
+    } catch (error: any) {
+      console.error('Payment error:', error);
+      toast({
+        title: "Payment Failed",
+        description: error.message || "Payment could not be processed. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -94,6 +148,13 @@ const InvoicePayment = () => {
                   <Label htmlFor="wallet" className="flex items-center gap-2 cursor-pointer flex-1">
                     <Wallet className="h-4 w-4" />
                     Digital Wallet
+                  </Label>
+                </div>
+                <div className="flex items-center space-x-2 p-3 border rounded-lg">
+                  <RadioGroupItem value="crypto" id="crypto" />
+                  <Label htmlFor="crypto" className="flex items-center gap-2 cursor-pointer flex-1">
+                    <Wallet className="h-4 w-4" />
+                    Cryptocurrency (Connected Wallet)
                   </Label>
                 </div>
               </RadioGroup>

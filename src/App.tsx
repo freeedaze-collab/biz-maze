@@ -1,8 +1,10 @@
+import './App.css'
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { AuthProvider } from "@/hooks/useAuth";
 import Home from "./pages/Home";
 import NotFound from "./pages/NotFound";
 import TransferScreen1 from "./pages/transfer/TransferScreen1";
@@ -31,16 +33,20 @@ import WalletCreationScreen1 from "./pages/wallet/WalletCreationScreen1";
 import WalletScreen2 from "./pages/wallet/WalletScreen2";
 import WalletScreen3 from "./pages/wallet/WalletScreen3";
 import TransactionHistoryScreen1 from "./pages/transaction/TransactionHistoryScreen1";
+import TransactionHistory from "./pages/TransactionHistory";
+import InvoicePayment from "./pages/invoice/InvoicePayment";
+import './App.css';
 
 const queryClient = new QueryClient();
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
-      <Toaster />
-      <Sonner />
-      <BrowserRouter>
-        <Routes>
+      <AuthProvider>
+        <Toaster />
+        <Sonner />
+        <BrowserRouter>
+          <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/transfer" element={<TransferScreen1 />} />
           <Route path="/transfer/manual" element={<TransferScreen2 />} />
@@ -67,15 +73,19 @@ const App = () => (
           <Route path="/wallet/setup/:walletId" element={<WalletSetup />} />
           <Route path="/accounting-tax" element={<AccountingTaxScreen1 />} />
           <Route path="/wallet-creation" element={<WalletCreationScreen1 />} />
+          <Route path="/wallet/setup/:walletId" element={<WalletSetup />} />
           <Route path="/wallet/connect" element={<WalletScreen2 />} />
           <Route path="/wallet/success" element={<WalletScreen3 />} />
           <Route path="/transaction-history" element={<TransactionHistoryScreen1 />} />
+          <Route path="/transactions" element={<TransactionHistory />} />
+          <Route path="/invoice/:id/payment" element={<InvoicePayment />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>
       </BrowserRouter>
-    </TooltipProvider>
-  </QueryClientProvider>
+    </AuthProvider>
+  </TooltipProvider>
+</QueryClientProvider>
 );
 
 export default App;
