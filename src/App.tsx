@@ -30,8 +30,9 @@ import PaymentGatewayComingSoon from "./pages/payment/PaymentGatewayComingSoon";
 import WalletSetup from "./pages/wallet/WalletSetup";
 import AccountingTaxScreen1 from "./pages/accounting/AccountingTaxScreen1";
 import WalletCreationScreen1 from "./pages/wallet/WalletCreationScreen1";
-import WalletScreen2 from "./pages/wallet/WalletScreen2";
+import WalletConnect from "./pages/wallet/WalletConnect";
 import WalletScreen3 from "./pages/wallet/WalletScreen3";
+import Pricing from "./pages/Pricing";
 import TransactionHistoryScreen1 from "./pages/transaction/TransactionHistoryScreen1";
 import TransactionHistory from "./pages/TransactionHistory";
 import InvoicePayment from "./pages/invoice/InvoicePayment";
@@ -74,7 +75,8 @@ const App = () => (
           <Route path="/accounting-tax" element={<AccountingTaxScreen1 />} />
           <Route path="/wallet-creation" element={<WalletCreationScreen1 />} />
           <Route path="/wallet/setup/:walletId" element={<WalletSetup />} />
-          <Route path="/wallet/connect" element={<WalletScreen2 />} />
+          <Route path="/wallet/connect" element={<WalletConnect />} />
+          <Route path="/pricing" element={<Pricing />} />
           <Route path="/wallet/success" element={<WalletScreen3 />} />
           <Route path="/transaction-history" element={<TransactionHistoryScreen1 />} />
           <Route path="/transactions" element={<TransactionHistory />} />

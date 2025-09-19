@@ -1,128 +1,59 @@
-import { useState, useEffect } from "react";
-import { useParams, Link, useNavigate } from "react-router-dom";
+import { useState } from "react";
+import { useParams, Link } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, CheckCircle, Loader2 } from "lucide-react";
-import { useToast } from "@/hooks/use-toast";
+import { ArrowLeft, CheckCircle, ExternalLink } from "lucide-react";
+import { WalletAddressInput } from "@/components/WalletAddressInput";
 
 const WalletSetup = () => {
   const { walletId } = useParams();
-  const navigate = useNavigate();
-  const { toast } = useToast();
-  const [isConnecting, setIsConnecting] = useState(false);
-  const [walletData, setWalletData] = useState<any>(null);
+  const [showAddressInput, setShowAddressInput] = useState(false);
 
   const wallets = {
     metamask: {
       name: "MetaMask",
       icon: "🦊",
-      iframeUrl: "https://metamask.io/download/",
+      url: "https://metamask.io/",
       instructions: [
-        "Click 'Download MetaMask' below",
-        "Install the browser extension",
+        "Click 'Click & Connect MetaMask' below",
+        "Install the browser extension if needed",
         "Create a new wallet or import existing",
         "Secure your seed phrase",
-        "Return here to connect"
+        "Return here to input your wallet address"
       ]
     },
     coinbase: {
       name: "Coinbase Wallet",
       icon: "🔵",
-      iframeUrl: "https://www.coinbase.com/wallet",
+      url: "https://www.coinbase.com/",
       instructions: [
-        "Download Coinbase Wallet app",
+        "Click 'Click & Connect Coinbase' below",
+        "Download Coinbase Wallet app if needed",
         "Create your account",
         "Set up your wallet",
-        "Enable browser connection",
-        "Return here to connect"
+        "Return here to input your wallet address"
       ]
     },
     exodus: {
       name: "Exodus",
       icon: "💎",
-      iframeUrl: "https://www.exodus.com/download/",
+      url: "https://www.exodus.com/",
       instructions: [
-        "Download Exodus wallet",
+        "Click 'Click & Connect Exodus' below",
+        "Download Exodus wallet if needed",
         "Install and launch the application",
         "Create a new wallet",
-        "Backup your seed phrase",
-        "Enable wallet connect feature"
+        "Return here to input your wallet address"
       ]
     }
   };
 
   const currentWallet = wallets[walletId as keyof typeof wallets];
 
-  const connectWallet = async () => {
-    setIsConnecting(true);
-    try {
-      // Simulate wallet connection and data retrieval
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      // Mock wallet data - replace with actual wallet integration
-      const mockAddress = '0x' + Math.random().toString(16).substring(2, 42);
-      const mockWalletData = {
-        address: mockAddress,
-        balance: "2.45 ETH",
-        network: "Ethereum Mainnet",
-        tokens: [
-          { symbol: "ETH", balance: "2.45", value: "$3,920.50" },
-          { symbol: "USDC", balance: "1,250.00", value: "$1,250.00" },
-          { symbol: "BTC", balance: "0.05", value: "$2,150.00" }
-        ]
-      };
-      
-      setWalletData(mockWalletData);
-      
-      // Store wallet data for accounting and connect to database
-      try {
-        const { supabase } = await import('@/integrations/supabase/client');
-        const { data: { user } } = await supabase.auth.getUser();
-        
-        if (user) {
-          // Store wallet connection in database
-          await supabase.from('wallet_connections').insert({
-            user_id: user.id,
-            wallet_address: mockAddress,
-            wallet_type: walletId || 'unknown',
-            wallet_name: currentWallet?.name,
-            is_primary: true,
-            balance_usd: parseFloat(mockWalletData.balance.replace(/[^0-9.]/g, '')) * 1600 // Mock ETH price
-          });
-          
-          console.log('Wallet connected to database successfully');
-        } else {
-          console.log('User not authenticated, storing locally only');
-        }
-      } catch (dbError) {
-        console.error('Error saving wallet to database:', dbError);
-      }
-      
-      // Also store locally for immediate access
-      localStorage.setItem('connectedWallet', JSON.stringify({
-        ...mockWalletData,
-        walletType: currentWallet?.name,
-        connectedAt: new Date().toISOString()
-      }));
-      
-      toast({
-        title: "Wallet Connected Successfully!",
-        description: `${currentWallet?.name} is now connected and ready to use.`,
-      });
-      
-      // Navigate to wallet success page after 2 seconds
-      setTimeout(() => {
-        navigate('/wallet/success');
-      }, 2000);
-      
-    } catch (error) {
-      toast({
-        title: "Connection Failed",
-        description: "Please try again or check your wallet setup.",
-        variant: "destructive",
-      });
-    } finally {
-      setIsConnecting(false);
+  const handleWalletOpen = () => {
+    if (currentWallet?.url) {
+      window.open(currentWallet.url, '_blank');
+      setShowAddressInput(true);
     }
   };
 
@@ -141,44 +72,42 @@ const WalletSetup = () => {
     );
   }
 
-  if (walletData) {
+  if (showAddressInput) {
     return (
       <div className="min-h-screen bg-background">
         <div className="container mx-auto p-6">
-          <div className="max-w-2xl mx-auto">
-            <Card>
-              <CardHeader className="text-center">
-                <div className="text-4xl mb-2">{currentWallet.icon}</div>
-                <CardTitle className="text-2xl text-success">Wallet Connected!</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-6">
-                <div className="bg-muted/50 p-4 rounded-lg">
-                  <h3 className="font-semibold mb-2">Wallet Information:</h3>
-                  <div className="space-y-2 text-sm">
-                    <p><strong>Address:</strong> {walletData.address}</p>
-                    <p><strong>Network:</strong> {walletData.network}</p>
-                    <p><strong>Primary Balance:</strong> {walletData.balance}</p>
-                  </div>
-                </div>
-                
-                <div className="bg-muted/50 p-4 rounded-lg">
-                  <h3 className="font-semibold mb-2">Token Holdings:</h3>
-                  <div className="space-y-2">
-                    {walletData.tokens.map((token: any, index: number) => (
-                      <div key={index} className="flex justify-between text-sm">
-                        <span>{token.balance} {token.symbol}</span>
-                        <span className="text-muted-foreground">{token.value}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
+          <div className="mb-6">
+            <Link to="/wallet-creation" className="inline-flex items-center gap-2 text-muted-foreground hover:text-foreground">
+              <ArrowLeft className="h-4 w-4" />
+              Back to Wallet Selection
+            </Link>
+          </div>
 
-                <div className="flex items-center gap-2 text-success">
-                  <CheckCircle className="h-5 w-5" />
-                  <span>Data successfully stored for accounting</span>
-                </div>
-              </CardContent>
-            </Card>
+          <div className="max-w-2xl mx-auto">
+            <div className="text-center mb-8">
+              <div className="text-4xl mb-2">{currentWallet.icon}</div>
+              <h1 className="text-3xl font-bold">Connect {currentWallet.name}</h1>
+              <p className="text-muted-foreground mt-2">
+                Enter your wallet address to complete the connection
+              </p>
+            </div>
+
+            <WalletAddressInput 
+              title={`Connect ${currentWallet.name}`}
+              walletType={walletId || 'unknown'}
+              walletName={currentWallet?.name}
+            />
+
+            <div className="mt-6 p-4 bg-muted/50 rounded-lg">
+              <div className="flex items-center gap-2 text-success mb-2">
+                <CheckCircle className="h-4 w-4" />
+                <span className="font-medium">Wallet setup completed</span>
+              </div>
+              <p className="text-sm text-muted-foreground">
+                You should now have {currentWallet.name} installed and ready. 
+                Copy your wallet address from the wallet app and paste it above.
+              </p>
+            </div>
           </div>
         </div>
       </div>
@@ -224,44 +153,42 @@ const WalletSetup = () => {
 
                 <div className="mt-6 space-y-3">
                   <Button
-                    onClick={connectWallet}
-                    disabled={isConnecting}
+                    onClick={handleWalletOpen}
                     className="w-full"
                   >
-                    {isConnecting ? (
-                      <>
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        Connecting Wallet...
-                      </>
-                    ) : (
-                      `Connect ${currentWallet.name}`
-                    )}
+                    <ExternalLink className="mr-2 h-4 w-4" />
+                    Click & Connect {currentWallet.name}
                   </Button>
                   
                   <p className="text-xs text-muted-foreground text-center">
-                    Make sure you have completed the setup steps above before connecting
+                    This will open {currentWallet.name} website in a new tab for wallet setup
                   </p>
                 </div>
               </CardContent>
             </Card>
 
-            {/* Wallet Setup iframe */}
+            {/* Wallet Setup Info */}
             <Card>
               <CardHeader>
-                <CardTitle>Wallet Setup</CardTitle>
+                <CardTitle>Next Steps</CardTitle>
               </CardHeader>
-              <CardContent>
-                <div className="w-full h-96 border rounded-lg overflow-hidden">
-                  <iframe
-                    src={currentWallet.iframeUrl}
-                    className="w-full h-full"
-                    title={`${currentWallet.name} Setup`}
-                    sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
-                  />
+              <CardContent className="space-y-4">
+                <div className="text-sm space-y-2">
+                  <p className="font-medium">After clicking the button above:</p>
+                  <ol className="list-decimal list-inside space-y-1 text-muted-foreground">
+                    <li>Complete the wallet setup on {currentWallet.name} website</li>
+                    <li>Copy your wallet address from the wallet</li>
+                    <li>Return here to input your address</li>
+                    <li>Your wallet will be connected to your account</li>
+                  </ol>
                 </div>
-                <p className="text-xs text-muted-foreground mt-2">
-                  Use this window to download and set up your {currentWallet.name} wallet
-                </p>
+                
+                <div className="p-3 bg-muted/50 rounded-lg">
+                  <p className="text-xs text-muted-foreground">
+                    <strong>Security Note:</strong> We only store your wallet address, never your private keys. 
+                    Your funds remain secure in your wallet.
+                  </p>
+                </div>
               </CardContent>
             </Card>
           </div>
