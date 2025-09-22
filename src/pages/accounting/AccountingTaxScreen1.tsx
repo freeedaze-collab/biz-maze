@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, Calculator, FileText, Download, Eye, Wallet, RefreshCw } from "lucide-react";
+import { ArrowLeft, Wallet, RefreshCw } from "lucide-react";
 import Navigation from "@/components/Navigation";
 import { useAuth } from "@/hooks/useAuth";
 import { useWallet } from "@/hooks/useWallet";
@@ -9,6 +9,8 @@ import { useState, useEffect } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { Badge } from "@/components/ui/badge";
+import USTaxCalculator from "@/components/USTaxCalculator";
+import IFRSReport from "@/components/IFRSReport";
 
 const AccountingTaxScreen1 = () => {
   const { user } = useAuth();
@@ -191,62 +193,9 @@ const AccountingTaxScreen1 = () => {
           </Card>
 
           {/* Reports Section */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center">
-                  <FileText className="mr-2 h-5 w-5" />
-                  Tax Reports
-                </CardTitle>
-                <CardDescription>
-                  Generate reports for tax filing
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-3">
-                  <Button variant="outline" size="sm" className="w-full justify-start">
-                    <Download className="mr-2 h-4 w-4" />
-                    Download 8949 Form
-                  </Button>
-                  <Button variant="outline" size="sm" className="w-full justify-start">
-                    <Download className="mr-2 h-4 w-4" />
-                    Download TaxAct CSV
-                  </Button>
-                  <Button variant="outline" size="sm" className="w-full justify-start">
-                    <Eye className="mr-2 h-4 w-4" />
-                    View Tax Summary
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center">
-                  <Calculator className="mr-2 h-5 w-5" />
-                  Accounting Reports
-                </CardTitle>
-                <CardDescription>
-                  Financial reports for accounting
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-3">
-                  <Button variant="outline" size="sm" className="w-full justify-start">
-                    <Download className="mr-2 h-4 w-4" />
-                    Download P&L Statement
-                  </Button>
-                  <Button variant="outline" size="sm" className="w-full justify-start">
-                    <Download className="mr-2 h-4 w-4" />
-                    Download Balance Sheet
-                  </Button>
-                  <Button variant="outline" size="sm" className="w-full justify-start">
-                    <Eye className="mr-2 h-4 w-4" />
-                    View Portfolio Summary
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
+          <div className="space-y-6">
+            {user && <USTaxCalculator userId={user.id} />}
+            {user && <IFRSReport userId={user.id} />}
           </div>
         </div>
       </div>

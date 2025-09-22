@@ -5,3 +5,9 @@ verify_jwt = false
 
 [functions.send-crypto-payment] 
 verify_jwt = false
+
+[functions.generate-ifrs-report]
+verify_jwt = false
+
+[functions.calculate-us-tax]
+verify_jwt = false
