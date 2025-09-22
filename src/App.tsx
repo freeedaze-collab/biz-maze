@@ -5,6 +5,9 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { AuthProvider } from "@/hooks/useAuth";
+import { AuthGuard } from "@/components/AuthGuard";
+import Index from "./pages/Index";
+import Register from "./pages/auth/Register";
 import Home from "./pages/Home";
 import NotFound from "./pages/NotFound";
 import TransferScreen1 from "./pages/transfer/TransferScreen1";
@@ -48,42 +51,46 @@ const App = () => (
         <Sonner />
         <BrowserRouter>
           <Routes>
-          <Route path="/" element={<Home />} />
-          <Route path="/transfer" element={<TransferScreen1 />} />
-          <Route path="/transfer/manual" element={<TransferScreen2 />} />
-          <Route path="/transfer/confirm" element={<TransferScreen2_1 />} />
-          <Route path="/transfer/complete" element={<TransferScreen2_2 />} />
-          <Route path="/transfer/invoice" element={<TransferScreen3 />} />
-          <Route path="/transfer/invoice-confirm" element={<InvoiceConfirmScreen />} />
-          <Route path="/request" element={<RequestScreen1 />} />
-          <Route path="/request/new" element={<RequestScreen2 />} />
-          <Route path="/request/existing" element={<RequestScreen2_2 />} />
-          <Route path="/request/recipients" element={<ExistingRecipientsScreen />} />
-          <Route path="/payment-gateway" element={<PaymentGatewayScreen1 />} />
-          <Route path="/payment-gateway/implement" element={<PaymentGatewayScreen2 />} />
-          <Route path="/payment-gateway/integrate" element={<PaymentGatewayScreen2 />} />
-          <Route path="/payment-gateway/connect" element={<PaymentGatewayScreen1_1 />} />
-          <Route path="/management" element={<ManagementScreen1 />} />
-          <Route path="/management/portfolio" element={<PortfolioScreen />} />
-          <Route path="/management/exchange/implement" element={<ExchangeImplementScreen />} />
-          <Route path="/management/exchange/integrate" element={<ExchangeImplementScreen />} />
-          <Route path="/management/exchange/connect" element={<ExchangeConnectScreen />} />
-          <Route path="/management/exchange/services" element={<ExchangeServices />} />
-          <Route path="/auth/login" element={<Login />} />
-          <Route path="/payment-gateway" element={<PaymentGatewayComingSoon />} />
-          <Route path="/wallet/setup/:walletId" element={<WalletSetup />} />
-          <Route path="/accounting-tax" element={<AccountingTaxScreen1 />} />
-          <Route path="/wallet-creation" element={<WalletCreationScreen1 />} />
-          <Route path="/wallet/setup/:walletId" element={<WalletSetup />} />
-          <Route path="/wallet/connect" element={<WalletConnect />} />
-          <Route path="/pricing" element={<Pricing />} />
-          <Route path="/wallet/success" element={<WalletScreen3 />} />
-          <Route path="/transaction-history" element={<TransactionHistoryScreen1 />} />
-          <Route path="/transactions" element={<TransactionHistory />} />
-          <Route path="/invoice/:id/payment" element={<InvoicePayment />} />
-          {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
-          <Route path="*" element={<NotFound />} />
-        </Routes>
+            {/* Public routes */}
+            <Route path="/" element={<Index />} />
+            <Route path="/auth/login" element={<Login />} />
+            <Route path="/auth/register" element={<Register />} />
+            <Route path="/pricing" element={<Pricing />} />
+            
+            {/* Protected routes */}
+            <Route path="/dashboard" element={<AuthGuard><Home /></AuthGuard>} />
+            <Route path="/transfer" element={<AuthGuard><TransferScreen1 /></AuthGuard>} />
+            <Route path="/transfer/manual" element={<AuthGuard><TransferScreen2 /></AuthGuard>} />
+            <Route path="/transfer/confirm" element={<AuthGuard><TransferScreen2_1 /></AuthGuard>} />
+            <Route path="/transfer/complete" element={<AuthGuard><TransferScreen2_2 /></AuthGuard>} />
+            <Route path="/transfer/invoice" element={<AuthGuard><TransferScreen3 /></AuthGuard>} />
+            <Route path="/transfer/invoice-confirm" element={<AuthGuard><InvoiceConfirmScreen /></AuthGuard>} />
+            <Route path="/request" element={<AuthGuard><RequestScreen1 /></AuthGuard>} />
+            <Route path="/request/new" element={<AuthGuard><RequestScreen2 /></AuthGuard>} />
+            <Route path="/request/existing" element={<AuthGuard><RequestScreen2_2 /></AuthGuard>} />
+            <Route path="/request/recipients" element={<AuthGuard><ExistingRecipientsScreen /></AuthGuard>} />
+            <Route path="/payment-gateway" element={<AuthGuard><PaymentGatewayScreen1 /></AuthGuard>} />
+            <Route path="/payment-gateway/implement" element={<AuthGuard><PaymentGatewayScreen2 /></AuthGuard>} />
+            <Route path="/payment-gateway/integrate" element={<AuthGuard><PaymentGatewayScreen2 /></AuthGuard>} />
+            <Route path="/payment-gateway/connect" element={<AuthGuard><PaymentGatewayScreen1_1 /></AuthGuard>} />
+            <Route path="/management" element={<AuthGuard><ManagementScreen1 /></AuthGuard>} />
+            <Route path="/management/portfolio" element={<AuthGuard><PortfolioScreen /></AuthGuard>} />
+            <Route path="/management/exchange/implement" element={<AuthGuard><ExchangeImplementScreen /></AuthGuard>} />
+            <Route path="/management/exchange/integrate" element={<AuthGuard><ExchangeImplementScreen /></AuthGuard>} />
+            <Route path="/management/exchange/connect" element={<AuthGuard><ExchangeConnectScreen /></AuthGuard>} />
+            <Route path="/management/exchange/services" element={<AuthGuard><ExchangeServices /></AuthGuard>} />
+            <Route path="/wallet/setup/:walletId" element={<AuthGuard><WalletSetup /></AuthGuard>} />
+            <Route path="/accounting-tax" element={<AuthGuard><AccountingTaxScreen1 /></AuthGuard>} />
+            <Route path="/wallet-creation" element={<AuthGuard><WalletCreationScreen1 /></AuthGuard>} />
+            <Route path="/wallet/connect" element={<AuthGuard><WalletConnect /></AuthGuard>} />
+            <Route path="/wallet/success" element={<AuthGuard><WalletScreen3 /></AuthGuard>} />
+            <Route path="/transaction-history" element={<AuthGuard><TransactionHistoryScreen1 /></AuthGuard>} />
+            <Route path="/transactions" element={<AuthGuard><TransactionHistory /></AuthGuard>} />
+            <Route path="/invoice/:id/payment" element={<AuthGuard><InvoicePayment /></AuthGuard>} />
+            
+            {/* Catch-all route */}
+            <Route path="*" element={<NotFound />} />
+          </Routes>
       </BrowserRouter>
     </AuthProvider>
   </TooltipProvider>

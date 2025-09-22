@@ -7,13 +7,16 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
-import { ArrowLeft, Mail, Lock, Eye, EyeOff, Wallet } from "lucide-react";
+import { ArrowLeft, Mail, Lock, Eye, EyeOff, Wallet, User } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
-const Login = () => {
+const Register = () => {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [displayName, setDisplayName] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const { toast } = useToast();
   const { user } = useAuth();
@@ -26,31 +29,56 @@ const Login = () => {
     }
   }, [user, navigate]);
 
-  const handleEmailLogin = async (e: React.FormEvent) => {
+  const handleEmailSignup = async (e: React.FormEvent) => {
     e.preventDefault();
+    
+    if (password !== confirmPassword) {
+      toast({
+        title: "Password Mismatch",
+        description: "Passwords do not match.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (password.length < 6) {
+      toast({
+        title: "Password Too Short",
+        description: "Password must be at least 6 characters long.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     setIsLoading(true);
     
     try {
-      const { error } = await supabase.auth.signInWithPassword({
+      const { error } = await supabase.auth.signUp({
         email,
         password,
+        options: {
+          emailRedirectTo: `${window.location.origin}/`,
+          data: {
+            full_name: displayName,
+          },
+        },
       });
 
       if (error) {
         toast({
-          title: "Login Failed",
+          title: "Signup Failed",
           description: error.message,
           variant: "destructive",
         });
       } else {
         toast({
-          title: "Login Successful",
-          description: "Welcome back!",
+          title: "Account Created",
+          description: "Please check your email to verify your account.",
         });
       }
     } catch (error) {
       toast({
-        title: "Login Failed",
+        title: "Signup Failed",
         description: "An unexpected error occurred.",
         variant: "destructive",
       });
@@ -59,7 +87,7 @@ const Login = () => {
     }
   };
 
-  const handleGoogleLogin = async () => {
+  const handleGoogleSignup = async () => {
     setIsLoading(true);
     try {
       const { error } = await supabase.auth.signInWithOAuth({
@@ -71,14 +99,14 @@ const Login = () => {
 
       if (error) {
         toast({
-          title: "Google Login Failed",
+          title: "Google Signup Failed",
           description: error.message,
           variant: "destructive",
         });
       }
     } catch (error) {
       toast({
-        title: "Google Login Failed",
+        title: "Google Signup Failed",
         description: "Please try again.",
         variant: "destructive",
       });
@@ -87,19 +115,19 @@ const Login = () => {
     }
   };
 
-  const handleWalletLogin = async () => {
+  const handleWalletConnect = async () => {
     setIsLoading(true);
     try {
       // Simulate wallet connection - replace with actual wallet integration
       await new Promise(resolve => setTimeout(resolve, 1000));
       toast({
-        title: "Wallet Connected",
-        description: "Successfully connected to your wallet!",
+        title: "Wallet Connect Coming Soon",
+        description: "Wallet authentication will be available soon!",
       });
     } catch (error) {
       toast({
         title: "Wallet Connection Failed",
-        description: "Please make sure your wallet is installed and unlocked.",
+        description: "Please try again later.",
         variant: "destructive",
       });
     } finally {
@@ -119,14 +147,30 @@ const Login = () => {
 
         <Card>
           <CardHeader className="text-center">
-            <CardTitle className="text-2xl">Welcome Back</CardTitle>
+            <CardTitle className="text-2xl">Create Account</CardTitle>
             <CardDescription>
-              Sign in to your account to continue
+              Sign up to get started with your crypto wallet
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
-            {/* Email/Password Login */}
-            <form onSubmit={handleEmailLogin} className="space-y-4">
+            {/* Email/Password Signup */}
+            <form onSubmit={handleEmailSignup} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="displayName">Display Name</Label>
+                <div className="relative">
+                  <User className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    id="displayName"
+                    type="text"
+                    placeholder="Enter your name"
+                    value={displayName}
+                    onChange={(e) => setDisplayName(e.target.value)}
+                    className="pl-10"
+                    required
+                  />
+                </div>
+              </div>
+
               <div className="space-y-2">
                 <Label htmlFor="email">Email</Label>
                 <div className="relative">
@@ -150,7 +194,7 @@ const Login = () => {
                   <Input
                     id="password"
                     type={showPassword ? "text" : "password"}
-                    placeholder="Enter your password"
+                    placeholder="Create a password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     className="pl-10 pr-10"
@@ -166,8 +210,31 @@ const Login = () => {
                 </div>
               </div>
 
+              <div className="space-y-2">
+                <Label htmlFor="confirmPassword">Confirm Password</Label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    id="confirmPassword"
+                    type={showConfirmPassword ? "text" : "password"}
+                    placeholder="Confirm your password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    className="pl-10 pr-10"
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                    className="absolute right-3 top-1/2 transform -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  >
+                    {showConfirmPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
+              </div>
+
               <Button type="submit" className="w-full" disabled={isLoading}>
-                {isLoading ? "Signing In..." : "Sign In"}
+                {isLoading ? "Creating Account..." : "Create Account"}
               </Button>
             </form>
 
@@ -180,13 +247,13 @@ const Login = () => {
               </div>
             </div>
 
-            {/* Social & Wallet Login */}
+            {/* Social & Wallet Signup */}
             <div className="space-y-3">
               <Button
                 type="button"
                 variant="outline"
                 className="w-full"
-                onClick={handleGoogleLogin}
+                onClick={handleGoogleSignup}
                 disabled={isLoading}
               >
                 <svg className="mr-2 h-4 w-4" viewBox="0 0 24 24">
@@ -214,7 +281,7 @@ const Login = () => {
                 type="button"
                 variant="outline"
                 className="w-full"
-                onClick={handleWalletLogin}
+                onClick={handleWalletConnect}
                 disabled={isLoading}
               >
                 <Wallet className="mr-2 h-4 w-4" />
@@ -223,9 +290,9 @@ const Login = () => {
             </div>
 
             <div className="text-center text-sm">
-              <span className="text-muted-foreground">Don't have an account? </span>
-              <Link to="/auth/register" className="text-primary hover:underline">
-                Sign up
+              <span className="text-muted-foreground">Already have an account? </span>
+              <Link to="/auth/login" className="text-primary hover:underline">
+                Sign in
               </Link>
             </div>
           </CardContent>
@@ -235,4 +302,4 @@ const Login = () => {
   );
 };
 
-export default Login;
+export default Register;
