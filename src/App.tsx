@@ -3,7 +3,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { Routes, Route } from "react-router-dom";
 import { AuthProvider } from "@/hooks/useAuth";
 import { AuthGuard } from "@/components/AuthGuard";
 import Index from "./pages/Index";
@@ -39,6 +39,7 @@ import Pricing from "./pages/Pricing";
 import TransactionHistoryScreen1 from "./pages/transaction/TransactionHistoryScreen1";
 import TransactionHistory from "./pages/TransactionHistory";
 import InvoicePayment from "./pages/invoice/InvoicePayment";
+import CountryCompanySettings from "./pages/settings/CountryCompanySettings";
 import './App.css';
 
 const queryClient = new QueryClient();
@@ -49,7 +50,6 @@ const App = () => (
       <AuthProvider>
         <Toaster />
         <Sonner />
-        <BrowserRouter>
           <Routes>
             {/* Public routes */}
             <Route path="/" element={<Index />} />
@@ -86,12 +86,11 @@ const App = () => (
             <Route path="/wallet/success" element={<AuthGuard><WalletScreen3 /></AuthGuard>} />
             <Route path="/transaction-history" element={<AuthGuard><TransactionHistoryScreen1 /></AuthGuard>} />
             <Route path="/transactions" element={<AuthGuard><TransactionHistory /></AuthGuard>} />
-            <Route path="/invoice/:id/payment" element={<AuthGuard><InvoicePayment /></AuthGuard>} />
+            <Route path="/settings/country-company" element={<AuthGuard><CountryCompanySettings /></AuthGuard>} />
             
             {/* Catch-all route */}
             <Route path="*" element={<NotFound />} />
           </Routes>
-      </BrowserRouter>
     </AuthProvider>
   </TooltipProvider>
 </QueryClientProvider>

@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { UserProfile } from "@/components/UserProfile";
 import { 
   ArrowLeftRight, 
   Download, 
@@ -16,17 +17,17 @@ const Home = () => {
     <div className="min-h-screen bg-background">
       <div className="container mx-auto p-6">
         {/* Header */}
-        <div className="mb-8 text-center">
-          <h1 className="text-4xl font-bold text-card-foreground mb-2">
-            Financial Hub
-          </h1>
-          <p className="text-muted-foreground text-lg">
-            Your complete financial management solution
-          </p>
-          <div className="mt-4">
-            <Link to="/auth/login">
-              <Button>Login / Sign Up</Button>
-            </Link>
+        <div className="mb-8">
+          <div className="flex justify-between items-center mb-4">
+            <div>
+              <h1 className="text-4xl font-bold text-card-foreground mb-2">
+                Financial Hub
+              </h1>
+              <p className="text-muted-foreground text-lg">
+                Your complete financial management solution
+              </p>
+            </div>
+            <UserProfile showWalletInfo={true} />
           </div>
         </div>
 

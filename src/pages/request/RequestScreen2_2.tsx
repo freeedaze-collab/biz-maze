@@ -2,8 +2,29 @@ import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft } from "lucide-react";
 import { InvoiceGenerator } from "@/components/InvoiceGenerator";
+import { useEffect, useState } from "react";
+
+interface RecipientData {
+  name: string;
+  email: string;
+  address: string;
+  city: string;
+  state: string;
+  zip: string;
+  country: string;
+}
 
 const RequestScreen2_2 = () => {
+  const [selectedRecipient, setSelectedRecipient] = useState<RecipientData | null>(null);
+
+  useEffect(() => {
+    // Load selected recipient from sessionStorage
+    const storedRecipient = sessionStorage.getItem('selectedRecipient');
+    if (storedRecipient) {
+      setSelectedRecipient(JSON.parse(storedRecipient));
+    }
+  }, []);
+
   return (
     <div className="min-h-screen bg-background">
       <div className="container mx-auto p-6">
@@ -26,7 +47,7 @@ const RequestScreen2_2 = () => {
           </div>
           
           <InvoiceGenerator 
-            existingRecipient={{
+            existingRecipient={selectedRecipient || {
               name: "Sample Client",
               email: "client@example.com", 
               address: "123 Client St",
@@ -40,6 +61,8 @@ const RequestScreen2_2 = () => {
             }}
             onInvoiceGenerated={(invoiceData) => {
               console.log('Invoice generated with existing recipient:', invoiceData);
+              // Clear the stored recipient after use
+              sessionStorage.removeItem('selectedRecipient');
             }}
           />
         </div>

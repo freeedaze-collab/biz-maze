@@ -1,6 +1,7 @@
 import { Link, useLocation } from "react-router-dom";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { UserProfile } from "@/components/UserProfile";
 import {
   CreditCard,
   ArrowLeftRight,
@@ -26,6 +27,10 @@ const Navigation = () => {
 
   return (
     <Card className="p-6 mb-8">
+      <div className="flex justify-between items-center mb-4">
+        <h2 className="text-xl font-semibold">Navigation</h2>
+        <UserProfile showWalletInfo={true} />
+      </div>
       <div className="flex flex-wrap gap-4">
         {navItems.map((item) => {
           const Icon = item.icon;

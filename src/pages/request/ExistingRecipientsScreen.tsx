@@ -49,9 +49,17 @@ const ExistingRecipientsScreen = () => {
   }, []);
 
   const handleSelectRecipient = (recipient: Recipient) => {
-    // Store recipient data and navigate to invoice creation with pre-filled data
-    sessionStorage.setItem('selectedRecipient', JSON.stringify(recipient));
-    navigate('/request/new?prefill=true');
+    // Store recipient data in sessionStorage for auto-filling
+    sessionStorage.setItem('selectedRecipient', JSON.stringify({
+      name: recipient.name,
+      email: recipient.email,
+      address: `${Math.floor(Math.random() * 9000) + 1000} ${recipient.name.split(' ')[0]} St`,
+      city: "Sample City", 
+      state: "ST",
+      zip: "12345",
+      country: "United States"
+    }));
+    navigate('/request/existing');
   };
 
   return (

@@ -54,7 +54,19 @@ export function WalletAddressInput({
 
     const success = await connectWallet(address, walletType, walletName);
     if (success) {
+      toast({
+        title: "✅ Wallet Connected Successfully!",
+        description: `Your wallet (${address.substring(0, 6)}...${address.substring(address.length - 4)}) has been linked to your account.`,
+        duration: 5000,
+      });
       navigate('/wallet/success');
+    } else {
+      toast({
+        title: "❌ Connection Failed", 
+        description: "Failed to connect wallet. Please try again or contact support.",
+        variant: "destructive",
+        duration: 5000,
+      });
     }
   };
 

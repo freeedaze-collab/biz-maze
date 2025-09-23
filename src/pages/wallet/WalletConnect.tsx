@@ -23,6 +23,21 @@ const WalletConnect = () => {
             </p>
           </div>
 
+          <div className="max-w-2xl mx-auto mb-6">
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+              <h3 className="text-lg font-semibold text-blue-900 mb-2">How to Connect Your Wallet</h3>
+              <div className="text-sm text-blue-800 space-y-2">
+                <p>To connect your existing wallet:</p>
+                <ol className="list-decimal list-inside space-y-1 ml-2">
+                  <li>Copy your wallet's public address</li>
+                  <li>Paste it in the field below</li>
+                  <li>Click "Connect Wallet" to link it to your account</li>
+                </ol>
+                <p className="mt-3 font-medium">⚠️ Never share your private keys or seed phrases!</p>
+              </div>
+            </div>
+          </div>
+
           <WalletAddressInput />
 
           <Card className="mt-6">
