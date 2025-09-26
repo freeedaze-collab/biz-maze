@@ -29,6 +29,7 @@ import ExchangeImplementScreen from "./pages/management/ExchangeImplementScreen"
 import ExchangeConnectScreen from "./pages/management/ExchangeConnectScreen";
 import ExchangeServices from "./pages/management/ExchangeServices";
 import Login from "./pages/auth/Login";
+import AccountTypeSelection from "./pages/auth/AccountTypeSelection";
 import PaymentGatewayComingSoon from "./pages/payment/PaymentGatewayComingSoon";
 import WalletSetup from "./pages/wallet/WalletSetup";
 import AccountingTaxScreen1 from "./pages/accounting/AccountingTaxScreen1";
@@ -55,6 +56,7 @@ const App = () => (
             <Route path="/" element={<Index />} />
             <Route path="/auth/login" element={<Login />} />
             <Route path="/auth/register" element={<Register />} />
+            <Route path="/auth/account-setup" element={<AccountTypeSelection />} />
             <Route path="/pricing" element={<Pricing />} />
             
             {/* Protected routes */}

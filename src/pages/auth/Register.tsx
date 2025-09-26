@@ -72,8 +72,8 @@ const Register = () => {
         });
       } else {
         toast({
-          title: "Account Created",
-          description: "Please check your email to verify your account.",
+          title: "Account created successfully!",
+          description: "We have sent a verification email. The subject line is 'Financial Hub Account Verification.' Please check your inbox and click the verification link to complete your account setup.",
         });
       }
     } catch (error) {

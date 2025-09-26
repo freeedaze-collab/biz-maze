@@ -490,8 +490,20 @@ export const InvoiceGenerator = ({ existingRecipient, onSaveRecipient, onInvoice
                           </Button>
                         </div>
                       </div>
-                    ))}
-                  </div>
+                     ))}
+                   </div>
+                   
+                   <div>
+                     <Label htmlFor="memo">Memo (for accounting categorization)</Label>
+                     <Textarea
+                       id="memo"
+                       placeholder="e.g., office supplies, consulting fees, software license"
+                       className="min-h-[60px]"
+                     />
+                     <p className="text-sm text-muted-foreground mt-1">
+                       This will be used for automatic journal entry categorization
+                     </p>
+                   </div>
                 </CardContent>
               </Card>
             </TabsContent>

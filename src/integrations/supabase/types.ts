@@ -14,6 +14,42 @@ export type Database = {
   }
   public: {
     Tables: {
+      audit_logs: {
+        Row: {
+          action: string
+          created_at: string
+          id: string
+          ip_address: unknown | null
+          metadata: Json | null
+          resource_id: string | null
+          resource_type: string | null
+          user_agent: string | null
+          user_id: string | null
+        }
+        Insert: {
+          action: string
+          created_at?: string
+          id?: string
+          ip_address?: unknown | null
+          metadata?: Json | null
+          resource_id?: string | null
+          resource_type?: string | null
+          user_agent?: string | null
+          user_id?: string | null
+        }
+        Update: {
+          action?: string
+          created_at?: string
+          id?: string
+          ip_address?: unknown | null
+          metadata?: Json | null
+          resource_id?: string | null
+          resource_type?: string | null
+          user_agent?: string | null
+          user_id?: string | null
+        }
+        Relationships: []
+      }
       crypto_payments: {
         Row: {
           amount: number
@@ -65,36 +101,153 @@ export type Database = {
         }
         Relationships: []
       }
+      customers: {
+        Row: {
+          address: string | null
+          company: string | null
+          created_at: string
+          deleted_at: string | null
+          email: string | null
+          id: string
+          name: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          address?: string | null
+          company?: string | null
+          created_at?: string
+          deleted_at?: string | null
+          email?: string | null
+          id?: string
+          name: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          address?: string | null
+          company?: string | null
+          created_at?: string
+          deleted_at?: string | null
+          email?: string | null
+          id?: string
+          name?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      invoices: {
+        Row: {
+          amount: number
+          created_at: string
+          currency: string
+          customer_id: string | null
+          due_date: string | null
+          id: string
+          invoice_number: string
+          memo: string | null
+          status: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          amount: number
+          created_at?: string
+          currency?: string
+          customer_id?: string | null
+          due_date?: string | null
+          id?: string
+          invoice_number: string
+          memo?: string | null
+          status?: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          amount?: number
+          created_at?: string
+          currency?: string
+          customer_id?: string | null
+          due_date?: string | null
+          id?: string
+          invoice_number?: string
+          memo?: string | null
+          status?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      meter_events: {
+        Row: {
+          amount: number | null
+          cost: number
+          created_at: string
+          currency: string | null
+          event_type: string
+          id: string
+          user_id: string
+        }
+        Insert: {
+          amount?: number | null
+          cost: number
+          created_at?: string
+          currency?: string | null
+          event_type: string
+          id?: string
+          user_id: string
+        }
+        Update: {
+          amount?: number | null
+          cost?: number
+          created_at?: string
+          currency?: string | null
+          event_type?: string
+          id?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       profiles: {
         Row: {
+          account_type: string | null
           avatar_url: string | null
           created_at: string
           display_name: string | null
           email: string | null
           entity_type: string | null
           id: string
+          plan_type: string | null
+          seats_limit: number | null
           tax_country: string | null
           updated_at: string
           user_id: string
         }
         Insert: {
+          account_type?: string | null
           avatar_url?: string | null
           created_at?: string
           display_name?: string | null
           email?: string | null
           entity_type?: string | null
           id?: string
+          plan_type?: string | null
+          seats_limit?: number | null
           tax_country?: string | null
           updated_at?: string
           user_id: string
         }
         Update: {
+          account_type?: string | null
           avatar_url?: string | null
           created_at?: string
           display_name?: string | null
           email?: string | null
           entity_type?: string | null
           id?: string
+          plan_type?: string | null
+          seats_limit?: number | null
           tax_country?: string | null
           updated_at?: string
           user_id?: string
@@ -161,6 +314,69 @@ export type Database = {
           usd_value?: number | null
           user_id?: string
           wallet_address?: string
+        }
+        Relationships: []
+      }
+      user_monthly_counters: {
+        Row: {
+          bundles_used: number | null
+          created_at: string
+          event_count: number | null
+          id: string
+          month_year: string
+          total_cost: number | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          bundles_used?: number | null
+          created_at?: string
+          event_count?: number | null
+          id?: string
+          month_year: string
+          total_cost?: number | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          bundles_used?: number | null
+          created_at?: string
+          event_count?: number | null
+          id?: string
+          month_year?: string
+          total_cost?: number | null
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      user_sessions: {
+        Row: {
+          device_fingerprint: string | null
+          first_seen: string
+          id: string
+          ip_address: unknown | null
+          last_seen: string
+          user_agent: string | null
+          user_id: string
+        }
+        Insert: {
+          device_fingerprint?: string | null
+          first_seen?: string
+          id?: string
+          ip_address?: unknown | null
+          last_seen?: string
+          user_agent?: string | null
+          user_id: string
+        }
+        Update: {
+          device_fingerprint?: string | null
+          first_seen?: string
+          id?: string
+          ip_address?: unknown | null
+          last_seen?: string
+          user_agent?: string | null
+          user_id?: string
         }
         Relationships: []
       }
