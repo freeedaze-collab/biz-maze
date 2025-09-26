@@ -389,6 +389,9 @@ export type Database = {
           last_sync_at: string | null
           updated_at: string
           user_id: string
+          verification_signature: string | null
+          verification_status: string | null
+          verified_at: string | null
           wallet_address: string
           wallet_name: string | null
           wallet_type: string
@@ -401,6 +404,9 @@ export type Database = {
           last_sync_at?: string | null
           updated_at?: string
           user_id: string
+          verification_signature?: string | null
+          verification_status?: string | null
+          verified_at?: string | null
           wallet_address: string
           wallet_name?: string | null
           wallet_type: string
@@ -413,6 +419,9 @@ export type Database = {
           last_sync_at?: string | null
           updated_at?: string
           user_id?: string
+          verification_signature?: string | null
+          verification_status?: string | null
+          verified_at?: string | null
           wallet_address?: string
           wallet_name?: string | null
           wallet_type?: string

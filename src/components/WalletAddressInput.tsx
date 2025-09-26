@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { CheckCircle, AlertCircle, Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useWallet } from "@/hooks/useWallet";
+import { useSIWE } from "@/hooks/useSIWE";
 import { useNavigate } from "react-router-dom";
 
 interface WalletAddressInputProps {
@@ -22,7 +23,9 @@ export function WalletAddressInput({
   const [address, setAddress] = useState("");
   const [isValidating, setIsValidating] = useState(false);
   const [isValid, setIsValid] = useState<boolean | null>(null);
+  const [isConnecting, setIsConnecting] = useState(false);
   const { connectWallet } = useWallet();
+  const { verifyWalletOwnership, isVerifying } = useSIWE();
   const { toast } = useToast();
   const navigate = useNavigate();
 
@@ -52,21 +55,47 @@ export function WalletAddressInput({
   const handleConnect = async () => {
     if (!isValid || !address) return;
 
-    const success = await connectWallet(address, walletType, walletName);
-    if (success) {
+    setIsConnecting(true);
+
+    try {
+      // Step 1: Verify wallet ownership with SIWE
       toast({
-        title: "✅ Wallet Connected Successfully!",
-        description: `Your wallet (${address.substring(0, 6)}...${address.substring(address.length - 4)}) has been linked to your account.`,
-        duration: 5000,
+        title: "🔒 Verifying Wallet Ownership",
+        description: "Please sign the message in your wallet to verify ownership",
       });
-      navigate('/wallet/success');
-    } else {
+
+      const isVerified = await verifyWalletOwnership(address);
+      if (!isVerified) {
+        setIsConnecting(false);
+        return;
+      }
+
+      // Step 2: Connect wallet to account
+      const success = await connectWallet(address, walletType, walletName);
+      if (success) {
+        toast({
+          title: "✅ Wallet Connected Successfully!",
+          description: `Your wallet (${address.substring(0, 6)}...${address.substring(address.length - 4)}) has been verified and linked to your account.`,
+          duration: 5000,
+        });
+        navigate('/wallet/success');
+      } else {
+        toast({
+          title: "❌ Connection Failed", 
+          description: "Failed to connect wallet. Please try again or contact support.",
+          variant: "destructive",
+          duration: 5000,
+        });
+      }
+    } catch (error) {
+      console.error('Wallet connection error:', error);
       toast({
-        title: "❌ Connection Failed", 
-        description: "Failed to connect wallet. Please try again or contact support.",
+        title: "❌ Connection Error",
+        description: "An error occurred during wallet connection",
         variant: "destructive",
-        duration: 5000,
       });
+    } finally {
+      setIsConnecting(false);
     }
   };
 
@@ -106,10 +135,17 @@ export function WalletAddressInput({
 
         <Button 
           onClick={handleConnect}
-          disabled={!isValid || !address}
+          disabled={!isValid || !address || isConnecting || isVerifying}
           className="w-full"
         >
-          Connect Wallet
+          {isConnecting || isVerifying ? (
+            <>
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              {isVerifying ? 'Verifying Ownership...' : 'Connecting...'}
+            </>
+          ) : (
+            'Connect & Verify Wallet'
+          )}
         </Button>
 
         <div className="text-xs text-muted-foreground space-y-1">

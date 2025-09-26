@@ -49,7 +49,7 @@ serve(async (req) => {
   } catch (error) {
     console.error('Error calculating US tax:', error);
     return new Response(
-      JSON.stringify({ error: error.message }),
+      JSON.stringify({ error: (error as Error).message }),
       { 
         status: 400,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -124,8 +124,8 @@ function isOrdinaryIncomeEvent(transaction: any) {
 function calculateCapitalGains(taxEvents: any[]) {
   let shortTerm = 0;
   let longTerm = 0;
-  const shortTermEvents = [];
-  const longTermEvents = [];
+  const shortTermEvents: any[] = [];
+  const longTermEvents: any[] = [];
   
   const holdings = new Map(); // FIFO tracking for cost basis
   

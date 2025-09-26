@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import { SiweMessage } from 'siwe';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 
@@ -8,19 +7,23 @@ export function useSIWE() {
   const { toast } = useToast();
 
   const generateSiweMessage = (address: string, domain: string, uri: string) => {
-    const message = new SiweMessage({
-      domain,
-      address,
-      statement: 'Sign this message to verify your wallet ownership and connect to your account.',
-      uri,
-      version: '1',
-      chainId: 1, // Ethereum mainnet
-      nonce: Math.random().toString(36).substring(2, 15),
-      issuedAt: new Date().toISOString(),
-      expirationTime: new Date(Date.now() + 10 * 60 * 1000).toISOString(), // 10 minutes
-    });
+    const nonce = Math.random().toString(36).substring(2, 15);
+    const issuedAt = new Date().toISOString();
+    const expirationTime = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    
+    const message = `${domain} wants you to sign in with your Ethereum account:
+${address}
 
-    return message.prepareMessage();
+Sign this message to verify your wallet ownership and connect to your account.
+
+URI: ${uri}
+Version: 1
+Chain ID: 1
+Nonce: ${nonce}
+Issued At: ${issuedAt}
+Expiration Time: ${expirationTime}`;
+
+    return message;
   };
 
   const verifySiweSignature = async (message: string, signature: string, address: string) => {
@@ -69,8 +72,8 @@ export function useSIWE() {
       const message = generateSiweMessage(address, domain, uri);
 
       // Request signature from wallet (this would typically use web3 provider)
-      if (typeof window.ethereum !== 'undefined') {
-        const signature = await window.ethereum.request({
+      if (typeof (window as any).ethereum !== 'undefined') {
+        const signature = await (window as any).ethereum.request({
           method: 'personal_sign',
           params: [message, address],
         });
