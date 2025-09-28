@@ -1,236 +1,218 @@
-import { serve } from "https://deno.land/std@0.190.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import "https://deno.land/x/xhr@0.1.0/mod.ts";
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.57.4';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+interface TaxCalculationInput {
+  userId: string;
+  method: 'FIFO' | 'AVERAGE';
+  period: {
+    start: string;
+    end: string;
+  };
+}
+
+interface TaxCalculationOutput {
+  totalIncome: number;
+  totalCapitalGains: number;
+  totalCapitalLosses: number;
+  netCapitalGains: number;
+  estimatedTaxOwed: number;
+  effectiveTaxRate: number;
+  taxBracket: string;
+  calculations: Array<{
+    asset: string;
+    transactions: number;
+    totalGains: number;
+    totalLosses: number;
+    netGainLoss: number;
+    costBasis: number;
+    proceeds: number;
+  }>;
+  transactions: Array<{
+    date: string;
+    type: string;
+    asset: string;
+    amount: number;
+    usd_value: number;
+    gain_loss?: number;
+  }>;
+}
+
 serve(async (req) => {
-  // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
-    const supabase = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-    );
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+    const supabase = createClient(supabaseUrl, supabaseKey);
 
-    const { userId, taxYear = new Date().getFullYear() } = await req.json();
+    const input: TaxCalculationInput = await req.json();
+    const { userId, method = 'FIFO', period } = input;
+    
+    console.log('Calculating US tax for user:', userId, 'method:', method, 'period:', period);
 
-    if (!userId) {
-      throw new Error('User ID is required');
-    }
-
-    // Fetch user's transactions for the tax year
-    const startDate = new Date(taxYear, 0, 1).toISOString();
-    const endDate = new Date(taxYear, 11, 31).toISOString();
-
-    const { data: transactions, error: txError } = await supabase
+    // Fetch transactions for the period
+    const { data: transactions, error } = await supabase
       .from('transactions')
       .select('*')
       .eq('user_id', userId)
-      .eq('transaction_status', 'confirmed')
-      .gte('transaction_date', startDate)
-      .lte('transaction_date', endDate)
+      .gte('transaction_date', period.start)
+      .lte('transaction_date', period.end)
       .order('transaction_date', { ascending: true });
 
-    if (txError) throw txError;
+    if (error) {
+      throw new Error(`Failed to fetch transactions: ${error.message}`);
+    }
 
-    // Calculate US tax obligations
-    const taxCalculation = calculateUSTax(transactions || [], taxYear);
+    if (!transactions || transactions.length === 0) {
+      return new Response(
+        JSON.stringify({
+          totalIncome: 0,
+          totalCapitalGains: 0,
+          totalCapitalLosses: 0,
+          netCapitalGains: 0,
+          estimatedTaxOwed: 0,
+          effectiveTaxRate: 0,
+          taxBracket: "0%",
+          calculations: [],
+          transactions: []
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
 
-    return new Response(JSON.stringify(taxCalculation), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
+    // Calculate tax using specified method
+    const taxData = method === 'FIFO' 
+      ? calculateTaxFIFO(transactions)
+      : calculateTaxAverage(transactions);
+
+    return new Response(
+      JSON.stringify(taxData),
+      {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      }
+    );
 
   } catch (error) {
     console.error('Error calculating US tax:', error);
+    
     return new Response(
       JSON.stringify({ error: (error as Error).message }),
-      { 
-        status: 400,
+      {
+        status: 500,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       }
     );
   }
 });
 
-function calculateUSTax(transactions: any[], taxYear: number) {
-  const taxEvents = identifyTaxableEvents(transactions);
-  const capitalGains = calculateCapitalGains(taxEvents);
-  const ordinaryIncome = calculateOrdinaryIncome(taxEvents);
-  
-  return {
-    taxYear,
-    summary: {
-      totalTransactions: transactions.length,
-      taxableEvents: taxEvents.length,
-      shortTermCapitalGains: capitalGains.shortTerm,
-      longTermCapitalGains: capitalGains.longTerm,
-      ordinaryIncome: ordinaryIncome.total,
-      totalTaxableIncome: capitalGains.shortTerm + capitalGains.longTerm + ordinaryIncome.total
-    },
-    capitalGains: {
-      shortTerm: {
-        totalGain: capitalGains.shortTerm,
-        taxRate: '22-37%', // Ordinary income rates
-        events: capitalGains.shortTermEvents
-      },
-      longTerm: {
-        totalGain: capitalGains.longTerm,
-        taxRate: '0%, 15%, or 20%', // Based on income level
-        events: capitalGains.longTermEvents
-      }
-    },
-    ordinaryIncome: {
-      mining: ordinaryIncome.mining,
-      staking: ordinaryIncome.staking,
-      airdrops: ordinaryIncome.airdrops,
-      total: ordinaryIncome.total
-    },
-    deductions: {
-      transactionFees: calculateDeductibleFees(transactions),
-      total: calculateDeductibleFees(transactions)
-    },
-    forms: {
-      form8949Required: capitalGains.shortTerm > 0 || capitalGains.longTerm > 0,
-      scheduleD: capitalGains.shortTerm > 0 || capitalGains.longTerm > 0,
-      schedule1: ordinaryIncome.total > 0
-    },
-    recommendations: generateTaxRecommendations(capitalGains, ordinaryIncome, transactions)
-  };
-}
+function calculateTaxFIFO(transactions: any[]): TaxCalculationOutput {
+  const assetInventory: { [asset: string]: Array<{ amount: number; costBasis: number; date: string }> } = {};
+  const calculations: { [asset: string]: { gains: number; losses: number; transactions: number; costBasis: number; proceeds: number } } = {};
+  const processedTransactions: any[] = [];
 
-function identifyTaxableEvents(transactions: any[]) {
-  return transactions.filter(tx => {
-    // Taxable events under US tax law
-    return tx.transaction_type === 'send' || 
-           tx.transaction_type === 'swap' || 
-           tx.transaction_type === 'receive' && isOrdinaryIncomeEvent(tx);
-  });
-}
+  let totalGains = 0;
+  let totalLosses = 0;
 
-function isOrdinaryIncomeEvent(transaction: any) {
-  // Mining, staking rewards, airdrops, etc. are ordinary income
-  const ordinaryIncomeTypes = ['mining', 'staking', 'airdrop', 'fork'];
-  return ordinaryIncomeTypes.some(type => 
-    transaction.description?.toLowerCase().includes(type)
-  );
-}
+  for (const tx of transactions) {
+    const asset = tx.asset_symbol || tx.currency;
+    const amount = parseFloat(tx.amount || '0');
+    const usdValue = parseFloat(tx.usd_value_at_tx || tx.usd_value || '0');
 
-function calculateCapitalGains(taxEvents: any[]) {
-  let shortTerm = 0;
-  let longTerm = 0;
-  const shortTermEvents: any[] = [];
-  const longTermEvents: any[] = [];
-  
-  const holdings = new Map(); // FIFO tracking for cost basis
-  
-  taxEvents.forEach(event => {
-    if (event.transaction_type === 'receive' && !isOrdinaryIncomeEvent(event)) {
-      // Add to holdings for cost basis tracking
-      const key = event.currency;
-      if (!holdings.has(key)) holdings.set(key, []);
-      holdings.get(key).push({
-        amount: parseFloat(event.amount),
-        cost: parseFloat(event.usd_value || '0'),
-        date: new Date(event.transaction_date)
+    if (!calculations[asset]) {
+      calculations[asset] = { gains: 0, losses: 0, transactions: 0, costBasis: 0, proceeds: 0 };
+      assetInventory[asset] = [];
+    }
+
+    calculations[asset].transactions++;
+
+    if (tx.direction === 'in' || tx.transaction_type === 'receive') {
+      // Acquisition - add to inventory
+      assetInventory[asset].push({
+        amount,
+        costBasis: usdValue / amount,
+        date: tx.transaction_date
       });
-    } else if (event.transaction_type === 'send' || event.transaction_type === 'swap') {
-      // Disposal event - calculate gain/loss
-      const key = event.currency;
-      if (holdings.has(key) && holdings.get(key).length > 0) {
-        const holding = holdings.get(key).shift(); // FIFO
-        const salePrice = parseFloat(event.usd_value || '0');
-        const costBasis = holding.cost;
-        const gain = salePrice - costBasis;
+      calculations[asset].costBasis += usdValue;
+
+    } else if (tx.direction === 'out' || tx.transaction_type === 'send') {
+      // Disposition - calculate gain/loss using FIFO
+      let remainingAmount = amount;
+      let totalCostBasis = 0;
+      
+      while (remainingAmount > 0 && assetInventory[asset].length > 0) {
+        const oldest = assetInventory[asset][0];
+        const usedAmount = Math.min(remainingAmount, oldest.amount);
         
-        const holdingPeriod = new Date(event.transaction_date).getTime() - holding.date.getTime();
-        const isLongTerm = holdingPeriod > (365 * 24 * 60 * 60 * 1000); // > 1 year
+        totalCostBasis += usedAmount * oldest.costBasis;
         
-        const taxEvent = {
-          date: event.transaction_date,
-          currency: event.currency,
-          amount: event.amount,
-          salePrice,
-          costBasis,
-          gain,
-          holdingPeriod: Math.floor(holdingPeriod / (24 * 60 * 60 * 1000))
-        };
+        oldest.amount -= usedAmount;
+        remainingAmount -= usedAmount;
         
-        if (isLongTerm) {
-          longTerm += gain;
-          longTermEvents.push(taxEvent);
-        } else {
-          shortTerm += gain;
-          shortTermEvents.push(taxEvent);
+        if (oldest.amount <= 0) {
+          assetInventory[asset].shift();
         }
       }
-    }
-  });
-  
-  return { shortTerm, longTerm, shortTermEvents, longTermEvents };
-}
 
-function calculateOrdinaryIncome(taxEvents: any[]) {
-  let mining = 0;
-  let staking = 0;
-  let airdrops = 0;
-  
-  taxEvents.forEach(event => {
-    if (event.transaction_type === 'receive' && isOrdinaryIncomeEvent(event)) {
-      const value = parseFloat(event.usd_value || '0');
-      const description = event.description?.toLowerCase() || '';
+      const gainLoss = usdValue - totalCostBasis;
       
-      if (description.includes('mining')) {
-        mining += value;
-      } else if (description.includes('staking')) {
-        staking += value;
-      } else if (description.includes('airdrop')) {
-        airdrops += value;
+      if (gainLoss > 0) {
+        calculations[asset].gains += gainLoss;
+        totalGains += gainLoss;
+      } else {
+        calculations[asset].losses += Math.abs(gainLoss);
+        totalLosses += Math.abs(gainLoss);
       }
+
+      calculations[asset].proceeds += usdValue;
+
+      processedTransactions.push({
+        ...tx,
+        gain_loss: gainLoss
+      });
     }
-  });
-  
+  }
+
+  const netCapitalGains = totalGains - totalLosses;
+  const estimatedTaxOwed = Math.max(0, netCapitalGains * 0.15); // Simplified 15% capital gains rate
+  const effectiveTaxRate = netCapitalGains > 0 ? (estimatedTaxOwed / netCapitalGains) * 100 : 0;
+
   return {
-    mining,
-    staking,
-    airdrops,
-    total: mining + staking + airdrops
+    totalIncome: 0, // Not calculated from crypto transactions
+    totalCapitalGains: totalGains,
+    totalCapitalLosses: totalLosses,
+    netCapitalGains,
+    estimatedTaxOwed,
+    effectiveTaxRate,
+    taxBracket: netCapitalGains > 40000 ? "20%" : "15%",
+    calculations: Object.entries(calculations).map(([asset, calc]) => ({
+      asset,
+      transactions: calc.transactions,
+      totalGains: calc.gains,
+      totalLosses: calc.losses,
+      netGainLoss: calc.gains - calc.losses,
+      costBasis: calc.costBasis,
+      proceeds: calc.proceeds
+    })),
+    transactions: processedTransactions.map(tx => ({
+      date: tx.transaction_date,
+      type: tx.transaction_type || tx.direction,
+      asset: tx.asset_symbol || tx.currency,
+      amount: parseFloat(tx.amount || '0'),
+      usd_value: parseFloat(tx.usd_value_at_tx || tx.usd_value || '0'),
+      gain_loss: tx.gain_loss
+    }))
   };
 }
 
-function calculateDeductibleFees(transactions: any[]) {
-  return transactions.reduce((total, tx) => {
-    return total + (parseFloat(tx.gas_fee_usd || '0'));
-  }, 0);
-}
-
-function generateTaxRecommendations(capitalGains: any, ordinaryIncome: any, transactions: any[]) {
-  const recommendations = [];
-  
-  if (capitalGains.shortTerm > capitalGains.longTerm * 2) {
-    recommendations.push("Consider holding crypto assets for over one year to benefit from long-term capital gains rates.");
-  }
-  
-  if (ordinaryIncome.total > 5000) {
-    recommendations.push("Significant ordinary income from crypto activities. Consider quarterly estimated tax payments.");
-  }
-  
-  const totalFees = calculateDeductibleFees(transactions);
-  if (totalFees > 1000) {
-    recommendations.push("Significant transaction fees are deductible. Ensure proper documentation for tax filing.");
-  }
-  
-  if (transactions.length > 100) {
-    recommendations.push("Consider using tax software or consulting a tax professional due to high transaction volume.");
-  }
-  
-  recommendations.push("Keep detailed records of all transactions including dates, amounts, and fair market values.");
-  recommendations.push("Consider tax-loss harvesting opportunities before year-end.");
-  
-  return recommendations;
+function calculateTaxAverage(transactions: any[]): TaxCalculationOutput {
+  // Simplified average cost method - in production would need more sophisticated calculation
+  return calculateTaxFIFO(transactions); // For now, use FIFO as fallback
 }

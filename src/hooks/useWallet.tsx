@@ -11,6 +11,7 @@ export interface WalletConnection {
   is_primary: boolean;
   balance_usd: number;
   last_sync_at?: string;
+  chain_last_synced_at?: any; // JSON type from Supabase
 }
 
 export function useWallet() {
@@ -80,35 +81,58 @@ export function useWallet() {
     return true;
   };
 
-  const syncWalletBalance = async (walletId: string) => {
-    // This will be implemented with the blockchain API
+  const syncWalletTransactions = async (walletId: string, chainIds: number[] = [1, 137]) => {
+    if (!user) return;
+
+    const wallet = wallets.find(w => w.id === walletId);
+    if (!wallet) return;
+
     try {
-      const response = await supabase.functions.invoke('sync-wallet-balance', {
-        body: { walletId }
+      setLoading(true);
+      
+      const response = await supabase.functions.invoke('sync-wallet-transactions', {
+        body: { 
+          userId: user.id,
+          walletAddress: wallet.wallet_address,
+          chainIds,
+          since: wallet.chain_last_synced_at?.[chainIds[0]] 
+        }
       });
       
       if (response.error) throw response.error;
       
+      const result = response.data;
+      
       await fetchWallets();
       toast({
         title: "Success",
-        description: "Wallet balance synced",
+        description: `Synced ${result.inserted} new transactions, updated ${result.updated}`,
       });
+      
+      return result;
     } catch (error) {
-      console.error('Error syncing wallet:', error);
+      console.error('Error syncing wallet transactions:', error);
       toast({
         title: "Error",
-        description: "Failed to sync wallet balance",
+        description: "Failed to sync wallet transactions",
         variant: "destructive",
       });
+    } finally {
+      setLoading(false);
     }
+  };
+
+  const syncAllWallets = async () => {
+    const promises = wallets.map(wallet => syncWalletTransactions(wallet.id));
+    await Promise.all(promises);
   };
 
   return {
     wallets,
     loading,
     connectWallet,
-    syncWalletBalance,
+    syncWalletTransactions,
+    syncAllWallets,
     fetchWallets
   };
 }

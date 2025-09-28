@@ -257,61 +257,100 @@ export type Database = {
       transactions: {
         Row: {
           amount: number
+          asset_contract: string | null
+          asset_decimals: number | null
+          asset_symbol: string | null
           block_number: number | null
           blockchain_network: string
+          chain_id: number | null
           created_at: string
           currency: string
+          direction: string | null
+          fee_native: number | null
           from_address: string | null
           gas_fee: number | null
           gas_fee_usd: number | null
           id: string
+          inserted_at: string | null
+          log_index: number | null
+          network: string | null
+          price_source: string | null
           to_address: string | null
           transaction_date: string
-          transaction_hash: string | null
+          transaction_hash: string
           transaction_status: string | null
           transaction_type: string
+          type: string | null
           updated_at: string
+          usd_fee_at_tx: number | null
           usd_value: number | null
+          usd_value_at_tx: number | null
           user_id: string
           wallet_address: string
         }
         Insert: {
           amount: number
+          asset_contract?: string | null
+          asset_decimals?: number | null
+          asset_symbol?: string | null
           block_number?: number | null
           blockchain_network: string
+          chain_id?: number | null
           created_at?: string
           currency: string
+          direction?: string | null
+          fee_native?: number | null
           from_address?: string | null
           gas_fee?: number | null
           gas_fee_usd?: number | null
           id?: string
+          inserted_at?: string | null
+          log_index?: number | null
+          network?: string | null
+          price_source?: string | null
           to_address?: string | null
           transaction_date: string
-          transaction_hash?: string | null
+          transaction_hash: string
           transaction_status?: string | null
           transaction_type: string
+          type?: string | null
           updated_at?: string
+          usd_fee_at_tx?: number | null
           usd_value?: number | null
+          usd_value_at_tx?: number | null
           user_id: string
           wallet_address: string
         }
         Update: {
           amount?: number
+          asset_contract?: string | null
+          asset_decimals?: number | null
+          asset_symbol?: string | null
           block_number?: number | null
           blockchain_network?: string
+          chain_id?: number | null
           created_at?: string
           currency?: string
+          direction?: string | null
+          fee_native?: number | null
           from_address?: string | null
           gas_fee?: number | null
           gas_fee_usd?: number | null
           id?: string
+          inserted_at?: string | null
+          log_index?: number | null
+          network?: string | null
+          price_source?: string | null
           to_address?: string | null
           transaction_date?: string
-          transaction_hash?: string | null
+          transaction_hash?: string
           transaction_status?: string | null
           transaction_type?: string
+          type?: string | null
           updated_at?: string
+          usd_fee_at_tx?: number | null
           usd_value?: number | null
+          usd_value_at_tx?: number | null
           user_id?: string
           wallet_address?: string
         }
@@ -383,6 +422,7 @@ export type Database = {
       wallet_connections: {
         Row: {
           balance_usd: number | null
+          chain_last_synced_at: Json | null
           created_at: string
           id: string
           is_primary: boolean | null
@@ -398,6 +438,7 @@ export type Database = {
         }
         Insert: {
           balance_usd?: number | null
+          chain_last_synced_at?: Json | null
           created_at?: string
           id?: string
           is_primary?: boolean | null
@@ -413,6 +454,7 @@ export type Database = {
         }
         Update: {
           balance_usd?: number | null
+          chain_last_synced_at?: Json | null
           created_at?: string
           id?: string
           is_primary?: boolean | null
