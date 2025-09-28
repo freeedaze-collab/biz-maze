@@ -8,6 +8,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Trash2, Plus } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
+import { useAuth } from "@/hooks/useAuth";
+import { supabase } from "@/integrations/supabase/client";
 
 interface InvoiceItem {
   id: string;
@@ -53,6 +55,7 @@ interface InvoiceGeneratorProps {
 
 export const InvoiceGenerator = ({ existingRecipient, onSaveRecipient, onInvoiceGenerated }: InvoiceGeneratorProps) => {
   const { toast } = useToast();
+  const { user } = useAuth();
   const [invoiceNumber, setInvoiceNumber] = useState("000001");
   const [issuedDate, setIssuedDate] = useState(new Date().toISOString().split('T')[0]);
   const [dueDate, setDueDate] = useState(new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]);
@@ -88,6 +91,34 @@ export const InvoiceGenerator = ({ existingRecipient, onSaveRecipient, onInvoice
   const [items, setItems] = useState<InvoiceItem[]>([
     { id: "1", description: "", quantity: 1, price: 0, amount: 0 }
   ]);
+
+  // Load user profile data for company info
+  useEffect(() => {
+    const loadUserProfile = async () => {
+      if (!user) return;
+      
+      try {
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('display_name, email, account_type, tax_country')
+          .eq('user_id', user.id)
+          .single();
+
+        if (profile) {
+          setCompanyInfo(prev => ({
+            ...prev,
+            email: profile.email || user.email || "",
+            companyName: profile.account_type === 'corporate' ? profile.display_name || "" : "",
+            country: profile.tax_country || "United States"
+          }));
+        }
+      } catch (error) {
+        console.error('Error loading user profile:', error);
+      }
+    };
+
+    loadUserProfile();
+  }, [user]);
 
   // Load existing recipient data
   useEffect(() => {
