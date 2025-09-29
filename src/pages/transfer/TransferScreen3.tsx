@@ -1,104 +1,126 @@
-import { useState, useEffect } from "react";
-import { Link, useNavigate } from "react-router-dom";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Separator } from "@/components/ui/separator";
-import { ArrowLeft, FileText, CheckCircle } from "lucide-react";
+import { useState } from 'react';
+import { useAccount, useSwitchChain, useWriteContract } from 'wagmi';
+import { parseUnits } from 'viem';
+import { useWallet } from '@/hooks/useWallet';
+import { DEFAULT_CHAIN, WETH_POLYGON } from '@/config/wagmi';
 
-const TransferScreen3 = () => {
-  const navigate = useNavigate();
-  const [invoiceData] = useState({
-    invoiceNumber: "INV-2024-001",
-    amount: "1,250.00",
-    recipient: "ACME Corporation",
-    dueDate: "2024-01-15",
-    description: "Web Development Services"
-  });
+/**
+ * TransferScreen3
+ * - Polygon上のWETH(ERC-20, 18桁)送金を実行
+ * - 送金成功後に履歴同期 → Transaction History / Accounting に反映
+ *
+ * 既存の画面遷移で to/amount を受け取っている場合は props を使用。
+ * 何も来ない場合は本コンポーネント内のフォーム入力を使えます。
+ */
 
-  const handleConfirmPayment = () => {
-    navigate('/transfer/complete');
+type Asset = typeof WETH_POLYGON;
+
+export default function TransferScreen3(props?: {
+  to?: string;
+  amount?: string;
+  asset?: Asset;
+}) {
+  const defaultAsset = props?.asset ?? WETH_POLYGON; // Polygon WETH 既定
+  const [to, setTo] = useState<string>(props?.to ?? '');
+  const [amount, setAmount] = useState<string>(props?.amount ?? '');
+  const asset = defaultAsset;
+
+  const { address, chainId } = useAccount();
+  const { switchChainAsync } = useSwitchChain();
+  const { writeContractAsync } = useWriteContract();
+  const { syncWalletTransactions } = useWallet();
+
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [txHash, setTxHash] = useState<string | null>(null);
+
+  const onSend = async () => {
+    setError(null);
+    if (!address) return setError('Wallet not connected.');
+    if (!to || Number(amount) <= 0) return setError('Invalid recipient or amount.');
+
+    setBusy(true);
+    try {
+      // ネットワーク合わせ（Polygon）
+      if (chainId !== asset.chainId) {
+        await switchChainAsync({ chainId: asset.chainId });
+      }
+
+      // WETH(ERC-20) transfer(address,uint256)
+      const hash = await writeContractAsync({
+        address: asset.contract!,
+        abi: [
+          {
+            name: 'transfer',
+            type: 'function',
+            stateMutability: 'nonpayable',
+            inputs: [{ name: 'to', type: 'address' }, { name: 'value', type: 'uint256' }],
+            outputs: [{ name: '', type: 'bool' }],
+          },
+        ] as const,
+        functionName: 'transfer',
+        args: [to as `0x${string}`, parseUnits(amount, asset.decimals)],
+        chainId: DEFAULT_CHAIN.id,
+      });
+
+      setTxHash(hash);
+
+      // 送金後の履歴同期（単発／必要ならポーリングへ拡張可能）
+      await syncWalletTransactions({
+        walletAddress: address,
+        chainIds: [DEFAULT_CHAIN.id],
+        cursor: null,
+      });
+    } catch (e: any) {
+      setError(e?.shortMessage || e?.message || 'Transaction failed.');
+    } finally {
+      setBusy(false);
+    }
   };
 
-  const handleEdit = () => {
-    navigate('/transfer/manual');
-  };
+  const explorerBase = 'https://polygonscan.com';
 
   return (
-    <div className="min-h-screen bg-background">
-      <div className="container mx-auto p-6">
-        <div className="mb-6">
-          <Link to="/transfer" className="inline-flex items-center gap-2 text-muted-foreground hover:text-foreground">
-            <ArrowLeft className="h-4 w-4" />
-            Back to Transfer
-          </Link>
-        </div>
+    <div className="p-4 max-w-xl mx-auto space-y-4">
+      <h1 className="text-xl font-bold">Send WETH on Polygon</h1>
 
-        <div className="max-w-2xl mx-auto">
-          <h1 className="text-4xl font-bold text-card-foreground mb-8">Invoice Payment Confirmation</h1>
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <CheckCircle className="h-5 w-5 text-primary" />
-                Is the following information correct?
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-6">
-              <div className="flex items-center gap-3 p-4 bg-muted rounded-lg">
-                <FileText className="h-8 w-8 text-primary" />
-                <div>
-                  <h3 className="font-medium">Invoice #{invoiceData.invoiceNumber}</h3>
-                  <p className="text-sm text-muted-foreground">{invoiceData.description}</p>
-                </div>
-              </div>
-
-              <div className="space-y-4">
-                <div>
-                  <h3 className="font-medium text-sm text-muted-foreground">Recipient</h3>
-                  <p className="text-lg font-medium">{invoiceData.recipient}</p>
-                </div>
-
-                <div>
-                  <h3 className="font-medium text-sm text-muted-foreground">Amount Due</h3>
-                  <p className="text-2xl font-bold text-primary">
-                    ${invoiceData.amount}
-                  </p>
-                </div>
-
-                <div>
-                  <h3 className="font-medium text-sm text-muted-foreground">Due Date</h3>
-                  <p className="text-lg">{invoiceData.dueDate}</p>
-                </div>
-
-                <Separator />
-
-                <div>
-                  <h3 className="font-medium text-sm text-muted-foreground">Gas Fee (estimated)</h3>
-                  <p className="text-lg">0.0023 ETH (~$5.50)</p>
-                </div>
-
-                <div>
-                  <h3 className="font-medium text-sm text-muted-foreground">Total Payment</h3>
-                  <p className="text-2xl font-bold">
-                    ${invoiceData.amount} + Gas Fee
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex gap-4">
-                <Button onClick={handleEdit} variant="outline" className="flex-1">
-                  Edit Payment
-                </Button>
-                <Button onClick={handleConfirmPayment} className="flex-1">
-                  Confirm Transfer
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+      {/* 入力フォーム（既存フローでprops受け取りの場合はそのまま表示だけでもOK） */}
+      <div className="space-y-2">
+        <label className="block text-sm">Recipient (0x...)</label>
+        <input
+          className="w-full rounded border px-3 py-2"
+          placeholder="0xRecipient"
+          value={to}
+          onChange={(e) => setTo(e.target.value.trim())}
+        />
       </div>
+      <div className="space-y-2">
+        <label className="block text-sm">Amount (WETH)</label>
+        <input
+          className="w-full rounded border px-3 py-2"
+          placeholder="0.05"
+          value={amount}
+          onChange={(e) => setAmount(e.target.value.trim())}
+        />
+      </div>
+
+      <button
+        className="px-4 py-2 rounded bg-black text-white disabled:opacity-50"
+        onClick={onSend}
+        disabled={busy}
+      >
+        {busy ? 'Sending…' : 'Send'}
+      </button>
+
+      {error && <div className="mt-3 text-red-600">{error}</div>}
+      {txHash && (
+        <div className="mt-3">
+          Sent!{' '}
+          <a className="underline" href={`${explorerBase}/tx/${txHash}`} target="_blank" rel="noreferrer">
+            View on Polygonscan
+          </a>
+        </div>
+      )}
     </div>
   );
-};
-
-export default TransferScreen3;
+}
