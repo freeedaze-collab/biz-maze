@@ -1,12 +1,7 @@
 import { useEffect, useState } from 'react';
-import { createClient } from '@supabase/supabase-js';
+import { supabase } from '@/integrations/supabase/client';
 import { useWallet } from '@/hooks/useWallet';
 import { DEFAULT_CHAIN } from '@/config/wagmi';
-
-const supabase = createClient(
-  import.meta.env.VITE_SUPABASE_URL!,
-  import.meta.env.VITE_SUPABASE_ANON_KEY!
-);
 
 type TxRow = {
   id: string;
@@ -28,13 +23,13 @@ export default function TransactionHistory() {
   const fetchRows = async () => {
     const uid = (await supabase.auth.getUser()).data.user?.id;
     if (!uid) return;
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('transactions')
       .select('*')
       .eq('user_id', uid)
       .order('timestamp', { ascending: false })
       .limit(200);
-    setRows((data as any) ?? []);
+    if (!error && data) setRows(data as any);
   };
 
   const handleResync = async () => {
@@ -43,7 +38,7 @@ export default function TransactionHistory() {
     try {
       await syncWalletTransactions({
         walletAddress: activeWallet.address,
-        chainIds: [DEFAULT_CHAIN.id], // Polygon
+        chainIds: [DEFAULT_CHAIN.id],
         cursor: null,
       });
       await fetchRows();
@@ -95,6 +90,7 @@ export default function TransactionHistory() {
                   className="underline"
                   href={`https://polygonscan.com/tx/${r.tx_hash}`}
                   target="_blank"
+                  rel="noreferrer"
                 >
                   {r.tx_hash}
                 </a>
