@@ -1,31 +1,30 @@
-import { createConfig, http } from 'wagmi';
-import { mainnet, polygon } from 'wagmi/chains';
-import { injected, walletConnect } from 'wagmi/connectors';
+import { http, createConfig } from 'wagmi';
+import { polygon } from 'wagmi/chains';
 
-// Configure supported chains
-export const config = createConfig({
-  chains: [mainnet, polygon],
-  connectors: [
-    injected(),
-    walletConnect({
-      projectId: 'your-project-id', // Replace with actual WalletConnect project ID
-    }),
-  ],
+// Polygon優先
+export const SUPPORTED_CHAINS = [polygon];
+export const DEFAULT_CHAIN = polygon;
+
+const ALCHEMY_KEY = import.meta.env.VITE_ALCHEMY_API_KEY;
+
+// wagmi設定（Polygon）
+export const wagmiConfig = createConfig({
+  chains: SUPPORTED_CHAINS,
   transports: {
-    [mainnet.id]: http(),
-    [polygon.id]: http(),
+    [polygon.id]: http(
+      ALCHEMY_KEY
+        ? `https://polygon-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`
+        : undefined
+    ),
   },
+  ssr: false,
 });
 
-export const SUPPORTED_CHAINS = {
-  [mainnet.id]: {
-    name: 'ethereum',
-    nativeSymbol: 'ETH',
-    chainConfig: mainnet,
-  },
-  [polygon.id]: {
-    name: 'polygon',
-    nativeSymbol: 'MATIC',
-    chainConfig: polygon,
-  },
-} as const;
+// WETH（Polygon）定義（18 decimals, ERC-20）
+export const WETH_POLYGON = {
+  type: 'erc20' as const,
+  contract: '0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619' as `0x${string}`,
+  symbol: 'WETH',
+  decimals: 18,
+  chainId: polygon.id,
+};
