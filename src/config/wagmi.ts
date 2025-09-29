@@ -2,7 +2,7 @@ import { http, createConfig } from 'wagmi';
 import { polygon } from 'wagmi/chains';
 
 // Polygon優先
-export const SUPPORTED_CHAINS = [polygon];
+export const SUPPORTED_CHAINS = [polygon] as const;
 export const DEFAULT_CHAIN = polygon;
 
 const ALCHEMY_KEY = import.meta.env.VITE_ALCHEMY_API_KEY;
