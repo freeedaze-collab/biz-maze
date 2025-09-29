@@ -1,206 +1,139 @@
-import { Link } from "react-router-dom";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { ArrowLeft, Wallet, RefreshCw } from "lucide-react";
-import Navigation from "@/components/Navigation";
-import { useAuth } from "@/hooks/useAuth";
-import { useWallet } from "@/hooks/useWallet";
-import { useState, useEffect } from "react";
-import { supabase } from "@/integrations/supabase/client";
-import { useToast } from "@/hooks/use-toast";
-import { Badge } from "@/components/ui/badge";
-import USTaxCalculator from "@/components/USTaxCalculator";
-import IFRSReport from "@/components/IFRSReport";
+import { useEffect, useMemo, useState } from 'react';
+import { createClient } from '@supabase/supabase-js';
+import { useWallet } from '@/hooks/useWallet';
+import { DEFAULT_CHAIN } from '@/config/wagmi';
 
-const AccountingTaxScreen1 = () => {
-  const { user } = useAuth();
-  const { wallets } = useWallet();
-  const { toast } = useToast();
-  const [transactions, setTransactions] = useState<any[]>([]);
-  const [loading, setLoading] = useState(false);
+const supabase = createClient(
+  import.meta.env.VITE_SUPABASE_URL!,
+  import.meta.env.VITE_SUPABASE_ANON_KEY!
+);
 
-  useEffect(() => {
-    if (user) {
-      fetchTransactions();
-    }
-  }, [user]);
-
-  const fetchTransactions = async () => {
-    if (!user) return;
-    
-    setLoading(true);
-    try {
-      const { data, error } = await supabase
-        .from('transactions')
-        .select(`
-          *,
-          wallet_connections!inner(wallet_type, wallet_name)
-        `)
-        .eq('user_id', user.id)
-        .order('transaction_date', { ascending: false });
-
-      if (error) throw error;
-      setTransactions(data || []);
-    } catch (error) {
-      console.error('Error fetching transactions:', error);
-      toast({
-        title: "Error",
-        description: "Failed to fetch transaction history",
-        variant: "destructive",
-      });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const syncAllWallets = async () => {
-    if (wallets.length === 0) return;
-    
-    setLoading(true);
-    try {
-      for (const wallet of wallets) {
-        await supabase.functions.invoke('sync-wallet-balance', {
-          body: { walletId: wallet.id }
-        });
-      }
-      await fetchTransactions();
-      toast({
-        title: "Success",
-        description: "All wallet transactions synced",
-      });
-    } catch (error) {
-      console.error('Error syncing wallets:', error);
-      toast({
-        title: "Error",
-        description: "Failed to sync wallet data",
-        variant: "destructive",
-      });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="min-h-screen bg-background p-4 space-y-6">
-      <div className="max-w-4xl mx-auto">
-        <Link to="/" className="inline-flex items-center text-sm text-muted-foreground hover:text-primary mb-6">
-          <ArrowLeft className="mr-2 h-4 w-4" />
-          Back to Home
-        </Link>
-        
-        <Navigation />
-        
-        <div className="space-y-6">
-          <div className="flex justify-between items-start">
-            <div>
-              <h1 className="text-3xl font-bold tracking-tight">Accounting & Tax Reports</h1>
-              <p className="text-muted-foreground mt-2">
-                Generate comprehensive reports for your cryptocurrency transactions and tax obligations.
-              </p>
-            </div>
-            <Button onClick={syncAllWallets} disabled={loading || wallets.length === 0}>
-              <RefreshCw className={`mr-2 h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-              Sync Wallets
-            </Button>
-          </div>
-
-          {/* Connected Wallets Summary */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center">
-                <Wallet className="mr-2 h-5 w-5" />
-                Connected Wallets
-              </CardTitle>
-              <CardDescription>
-                {wallets.length} wallet{wallets.length !== 1 ? 's' : ''} connected
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="grid gap-4">
-                {wallets.map((wallet) => (
-                  <div key={wallet.id} className="flex items-center justify-between p-3 border rounded-lg">
-                    <div className="flex items-center space-x-3">
-                      <div className="w-8 h-8 bg-primary/10 rounded-full flex items-center justify-center">
-                        <Wallet className="h-4 w-4 text-primary" />
-                      </div>
-                      <div>
-                        <p className="font-medium">{wallet.wallet_name || wallet.wallet_type}</p>
-                        <p className="text-sm text-muted-foreground">
-                          {wallet.wallet_address.substring(0, 6)}...{wallet.wallet_address.substring(-4)}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <p className="font-semibold">${wallet.balance_usd.toFixed(2)}</p>
-                      {wallet.is_primary && <Badge variant="secondary">Primary</Badge>}
-                    </div>
-                  </div>
-                ))}
-                {wallets.length === 0 && (
-                  <p className="text-muted-foreground text-center py-4">
-                    No wallets connected. <Link to="/wallet/creation" className="text-primary hover:underline">Connect a wallet</Link>
-                  </p>
-                )}
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Transaction History */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Transaction History</CardTitle>
-              <CardDescription>
-                {transactions.length} transaction{transactions.length !== 1 ? 's' : ''} found
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-3">
-                {transactions.map((tx) => (
-                  <div key={tx.id} className="flex items-center justify-between p-3 border rounded-lg">
-                    <div className="flex items-center space-x-3">
-                      <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
-                        tx.transaction_type === 'send' ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'
-                      }`}>
-                        {tx.transaction_type === 'send' ? '↗' : '↙'}
-                      </div>
-                      <div>
-                        <p className="font-medium capitalize">{tx.transaction_type} {tx.currency}</p>
-                        <p className="text-sm text-muted-foreground">
-                          {new Date(tx.transaction_date).toLocaleString()}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <p className="font-semibold">
-                        {tx.transaction_type === 'send' ? '-' : '+'}{tx.amount} {tx.currency}
-                      </p>
-                      <p className="text-sm text-muted-foreground">
-                        ${tx.usd_value?.toFixed(2) || '0.00'}
-                      </p>
-                      <Badge variant={tx.transaction_status === 'confirmed' ? 'default' : 'secondary'}>
-                        {tx.transaction_status}
-                      </Badge>
-                    </div>
-                  </div>
-                ))}
-                {transactions.length === 0 && (
-                  <p className="text-muted-foreground text-center py-8">
-                    {loading ? "Loading transactions..." : "No transactions found"}
-                  </p>
-                )}
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Reports Section */}
-          <div className="space-y-6">
-            {user && <USTaxCalculator userId={user.id} />}
-            {user && <IFRSReport userId={user.id} />}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
+type TxRow = {
+  id: string;
+  user_id: string;
+  chain_id: number;
+  network?: string | null;
+  tx_hash: string;
+  log_index: number;
+  timestamp: string; // ISO
+  direction: 'in' | 'out' | 'self';
+  type: string;
+  from_address: string;
+  to_address: string;
+  asset_contract: string | null;
+  asset_symbol: string;
+  asset_decimals: number;
+  amount: string; // human readable
+  fee_native?: string | null;
+  usd_value_at_tx?: string | null;
+  usd_fee_at_tx?: string | null;
+  price_source?: string | null;
 };
 
-export default AccountingTaxScreen1;
+export default function AccountingTaxScreen1() {
+  const { syncAllWallets } = useWallet();
+
+  const [rows, setRows] = useState<TxRow[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const fetchRows = async () => {
+    const uid = (await supabase.auth.getUser()).data.user?.id;
+    if (!uid) return;
+    const { data, error } = await supabase
+      .from('transactions')
+      .select('*')
+      .eq('user_id', uid)
+      .eq('chain_id', DEFAULT_CHAIN.id)
+      .order('timestamp', { ascending: false })
+      .limit(1000);
+    if (!error && data) setRows(data as any);
+  };
+
+  const onSyncAll = async () => {
+    setLoading(true);
+    try {
+      await syncAllWallets();  // Polygonのみ同期
+      await fetchRows();       // 同期後に再取得
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchRows();
+  }, []);
+
+  // すごく簡易な集計（USD換算が入っている分だけ）
+  const summary = useMemo(() => {
+    const totalUsd = rows.reduce((acc, r) => acc + (Number(r.usd_value_at_tx ?? 0) || 0), 0);
+    const totalCount = rows.length;
+    return { totalUsd, totalCount };
+  }, [rows]);
+
+  return (
+    <div className="p-5 space-y-4">
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold">Accounting / Tax (Polygon)</h1>
+        <button
+          onClick={onSyncAll}
+          disabled={loading}
+          className="px-4 py-2 rounded border disabled:opacity-50"
+        >
+          {loading ? 'Syncing…' : 'Sync All (Polygon WETH)'}
+        </button>
+      </div>
+
+      <section className="rounded border p-4">
+        <h2 className="font-semibold mb-2">Summary (very basic)</h2>
+        <div className="text-sm">
+          <div>Total tx rows: <b>{summary.totalCount}</b></div>
+          <div>Sum of USD@Tx (visible rows): <b>${summary.totalUsd.toFixed(2)}</b></div>
+        </div>
+      </section>
+
+      <section className="rounded border p-4 overflow-auto">
+        <h2 className="font-semibold mb-2">Transactions</h2>
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left border-b">
+              <th className="py-2">Time (JST)</th>
+              <th>Type</th>
+              <th>Dir</th>
+              <th>Asset</th>
+              <th>Amount</th>
+              <th>USD @Tx</th>
+              <th>Hash</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={`${r.tx_hash}-${r.log_index}`} className="border-b">
+                <td className="py-2">{new Date(r.timestamp).toLocaleString('ja-JP')}</td>
+                <td>{r.type}</td>
+                <td>{r.direction}</td>
+                <td>{r.asset_symbol}</td>
+                <td>{r.amount}</td>
+                <td>{r.usd_value_at_tx ?? '-'}</td>
+                <td className="truncate max-w-[200px]">
+                  <a
+                    className="underline"
+                    href={`https://polygonscan.com/tx/${r.tx_hash}`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {r.tx_hash}
+                  </a>
+                </td>
+              </tr>
+            ))}
+            {rows.length === 0 && (
+              <tr>
+                <td colSpan={7} className="py-6 text-center text-gray-500">No data.</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </section>
+    </div>
+  );
+}
