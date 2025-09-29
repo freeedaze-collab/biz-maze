@@ -1,12 +1,7 @@
 import { useMemo } from 'react';
-import { createClient } from '@supabase/supabase-js';
+import { supabase } from '@/integrations/supabase/client';
 import { useAccount } from 'wagmi';
 import { DEFAULT_CHAIN } from '@/config/wagmi';
-
-const supabase = createClient(
-  import.meta.env.VITE_SUPABASE_URL!,
-  import.meta.env.VITE_SUPABASE_ANON_KEY!
-);
 
 type SyncParams = {
   walletAddress: string;
@@ -36,7 +31,7 @@ export function useWallet() {
     if (!activeWallet) return;
     await syncWalletTransactions({
       walletAddress: activeWallet.address,
-      chainIds: [DEFAULT_CHAIN.id], // Polygonのみ
+      chainIds: [DEFAULT_CHAIN.id],
       cursor: null,
     });
   };
