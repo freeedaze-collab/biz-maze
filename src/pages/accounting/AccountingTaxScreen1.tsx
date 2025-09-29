@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { useWallet } from '@/hooks/useWallet';
+import { useAuth } from '@/hooks/useAuth';
+import IFRSReport from '@/components/IFRSReport';
+import USTaxCalculator from '@/components/USTaxCalculator';
 import { DEFAULT_CHAIN } from '@/config/wagmi';
 
 type TxRow = {
-  id: string;
+  id?: string;
   user_id: string;
   chain_id: number;
   network?: string | null;
@@ -27,10 +30,33 @@ type TxRow = {
 
 export default function AccountingTaxScreen1() {
   const { syncAllWallets } = useWallet();
+  const { user } = useAuth();
 
   const [rows, setRows] = useState<TxRow[]>([]);
   const [loading, setLoading] = useState(false);
 
+  const [profile, setProfile] = useState<{ account_type?: string; tax_country?: string } | null>(null);
+  const [profileLoading, setProfileLoading] = useState(true);
+
+  // === Profile fetch (account_type / tax_country) ===
+  useEffect(() => {
+    (async () => {
+      try {
+        const uid = (await supabase.auth.getUser()).data.user?.id;
+        if (!uid) return;
+        const { data, error } = await supabase
+          .from('profiles')
+          .select('account_type, tax_country')
+          .eq('user_id', uid)
+          .single();
+        if (!error) setProfile(data ?? {});
+      } finally {
+        setProfileLoading(false);
+      }
+    })();
+  }, []);
+
+  // === Transactions fetch ===
   const fetchRows = async () => {
     const uid = (await supabase.auth.getUser()).data.user?.id;
     if (!uid) return;
@@ -73,9 +99,26 @@ export default function AccountingTaxScreen1() {
           disabled={loading}
           className="px-4 py-2 rounded border disabled:opacity-50"
         >
-          {loading ? 'Syncing…' : 'Sync All (Polygon WETH)'}
+          {loading ? 'Syncing…' : 'Sync All (Polygon)'}
         </button>
       </div>
+
+      {/* 国・種別に応じたコンプライアンスツール（USならUS Tax、それ以外はIFRS） */}
+      {!profileLoading && profile && (
+        <section className="rounded border p-4 space-y-3">
+          <h2 className="font-semibold">Compliance tools</h2>
+          <div className="text-sm text-gray-600">
+            Account type: <b>{profile.account_type ?? '-'}</b> / Country: <b>{profile.tax_country ?? '-'}</b>
+          </div>
+          <div className="border-t pt-3">
+            {profile.tax_country === 'United States' ? (
+              <USTaxCalculator userId={user!.id} />
+            ) : (
+              <IFRSReport userId={user!.id} />
+            )}
+          </div>
+        </section>
+      )}
 
       <section className="rounded border p-4">
         <h2 className="font-semibold mb-2">Summary (very basic)</h2>
