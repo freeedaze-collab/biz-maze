@@ -1,4 +1,7 @@
--- Idempotent unique index for upsert de-duplication
--- Key: (chain_id, tx_hash, log_index)
-create unique index if not exists ux_transactions_chain_tx_log
-  on public.transactions (chain_id, tx_hash, log_index);
+-- user_profiles: 1ユーザー=1プロフィール
+create unique index if not exists ux_user_profiles_user
+  on public.user_profiles (user_id);
+
+-- user_tax_settings: 1ユーザー=1税務設定
+create unique index if not exists ux_user_tax_settings_user
+  on public.user_tax_settings (user_id);
