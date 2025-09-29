@@ -1,6 +1,7 @@
-import { createRoot } from "react-dom/client";
-import { BrowserRouter } from "react-router-dom";
-import App from "./App.tsx";
+import { createRoot } from 'react-dom/client';
+import { BrowserRouter } from 'react-router-dom';
+import App from './App';
+import { WagmiProvider } from '@/providers/WagmiProvider';
 import "./index.css";
 import { useScrollToTop } from "./hooks/useScrollToTop";
 
@@ -9,8 +10,11 @@ function AppWithScrollToTop() {
   return <App />;
 }
 
-createRoot(document.getElementById("root")!).render(
+createRoot(document.getElementById('root')!).render(
   <BrowserRouter>
-    <AppWithScrollToTop />
+    <WagmiProvider>
+      <App />
+    </WagmiProvider>
   </BrowserRouter>
+
 );
