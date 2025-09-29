@@ -19,17 +19,6 @@ export default function Login() {
         return;
       }
 
-      const base = import.meta.env.VITE_SUPABASE_URL as string | undefined;
-      if (!base) throw new Error('VITE_SUPABASE_URL is not set');
-
-      // CORS/URLミスの切り分け
-      const healthRes = await fetch(`${base.replace(/\/+$/,'')}/auth/v1/health`, { mode: 'cors' });
-      if (!healthRes.ok) {
-        setErr(`Auth health NG: ${healthRes.status} ${healthRes.statusText}`);
-        setBusy(false);
-        return;
-      }
-
       const { data, error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw error;
       if (!data?.session) throw new Error('No session returned');
@@ -91,7 +80,7 @@ export default function Login() {
 
         <div className="text-sm text-gray-600">
           <span className="mr-1">No account?</span>
-          <Link className="underline" to="/auth/signup">Create one</Link>
+          <Link className="underline" to="/auth/register">Create one</Link>
         </div>
 
         {/* 開発補助：環境変数警告 */}
