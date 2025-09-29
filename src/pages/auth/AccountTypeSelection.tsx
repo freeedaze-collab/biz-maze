@@ -57,6 +57,8 @@ const AccountTypeSelection = () => {
           seats_limit: accountType === 'individual' ? 1 : 1,
           email: user.email,
           display_name: user.user_metadata?.full_name || user.email
+        }, {
+          onConflict: 'user_id'
         });
 
       if (error) throw error;
