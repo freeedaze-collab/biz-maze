@@ -9,7 +9,6 @@ export default defineConfig({
       '@': path.resolve(__dirname, 'src'),
     },
   },
-  server: {
-    port: 8080
-  },
+  // プレビュー配信のパスが怪しい場合は base を明示（通常は "/" でOK）
+  base: '/',
 });
