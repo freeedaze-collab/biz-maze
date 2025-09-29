@@ -1,12 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { createClient } from '@supabase/supabase-js';
+import { supabase } from '@/integrations/supabase/client';
 import { useWallet } from '@/hooks/useWallet';
 import { DEFAULT_CHAIN } from '@/config/wagmi';
-
-const supabase = createClient(
-  import.meta.env.VITE_SUPABASE_URL!,
-  import.meta.env.VITE_SUPABASE_ANON_KEY!
-);
 
 type TxRow = {
   id: string;
@@ -63,7 +58,6 @@ export default function AccountingTaxScreen1() {
     fetchRows();
   }, []);
 
-  // すごく簡易な集計（USD換算が入っている分だけ）
   const summary = useMemo(() => {
     const totalUsd = rows.reduce((acc, r) => acc + (Number(r.usd_value_at_tx ?? 0) || 0), 0);
     const totalCount = rows.length;
