@@ -17,28 +17,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // 1) 初期セッション確定
+    // 初回：必ず loading を false に落とす
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session ?? null);
       setUser(session?.user ?? null);
       setLoading(false);
     });
 
-    // 2) 以降の変化を購読
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
         setSession(session ?? null);
         setUser(session?.user ?? null);
 
-        // サインイン時：プロフィール自動作成（無ければ）
+        // 任意：サインイン時に profiles 自動作成
         if (event === 'SIGNED_IN' && session?.user) {
-          const { data: existingProfile } = await supabase
+          const { data: existing } = await supabase
             .from('profiles')
             .select('id')
             .eq('user_id', session.user.id)
             .single();
-
-          if (!existingProfile) {
+          if (!existing) {
             await supabase.from('profiles').insert({
               user_id: session.user.id,
               email: session.user.email,
@@ -49,9 +47,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     );
 
-    return () => {
-      subscription.unsubscribe();
-    };
+    return () => subscription.unsubscribe();
   }, []);
 
   const signOut = async () => {
@@ -66,9 +62,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 }
 
 export function useAuth() {
-  const context = useContext(AuthContext);
-  if (context === undefined) {
-    throw new Error('useAuth must be used within an AuthProvider');
-  }
-  return context;
+  const ctx = useContext(AuthContext);
+  if (!ctx) throw new Error('useAuth must be used within an AuthProvider');
+  return ctx;
 }
