@@ -14,7 +14,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <WagmiProvider config={wagmiConfig}>
       <QueryClientProvider client={qc}>
-        {/* ✅ Router はアプリ全体で 1 個だけ。ここで提供します */}
+        {/* Router はアプリ全体で1つだけここに置く */}
         <BrowserRouter>
           <App />
         </BrowserRouter>
