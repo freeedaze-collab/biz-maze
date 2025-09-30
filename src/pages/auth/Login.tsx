@@ -1,96 +1,61 @@
-import { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
-import { supabase } from '@/integrations/supabase/client';
+// src/pages/auth/Login.tsx
+import React, { useState } from 'react'
+import { supabase } from '@/lib/supabaseClient'
 
 export default function Login() {
-  const navigate = useNavigate();
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [err, setErr] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
 
-  const onLogin = async () => {
-    setErr(null);
-    setBusy(true);
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setErr(null)
+    setLoading(true)
     try {
-      if (!email || !password) {
-        setErr('Please enter email and password.');
-        setBusy(false);
-        return;
-      }
-
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) throw error;
-      if (!data?.session) throw new Error('No session returned');
-
-      navigate('/', { replace: true });
+      const { error } = await supabase.auth.signInWithPassword({ email, password })
+      if (error) throw error
+      // 成功 → 画面遷移はルーター側で
     } catch (e: any) {
-      const msg = e?.message || e?.error_description || e?.error?.message || 'Login failed';
-      setErr(msg);
-      console.error('login failed:', e);
+      const msg: string = e?.message ?? String(e)
+      // Supabase SDK の Invalid API key を捕捉し、明示的に案内
+      if (/Invalid API key/i.test(msg)) {
+        setErr([
+          'ログインに失敗しました（Invalid API key）。以下を確認してください：',
+          '1) .env に VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY が正しく設定されているか',
+          '2) 値に余計な空白や改行が入っていないか',
+          '3) ANON KEY（public）を使っているか（Service Role は使用不可）',
+          '4) 変更後は開発サーバを再起動したか（Vite は起動時に env を読むため）',
+        ].join('\n'))
+      } else {
+        setErr(msg)
+      }
     } finally {
-      setBusy(false);
+      setLoading(false)
     }
-  };
-
-  const disabled = busy || !email || !password;
+  }
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-6">
-      <div className="w-full max-w-sm space-y-5">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-bold">Sign in</h1>
-          <p className="text-sm text-gray-500">Use your email and password to continue.</p>
-        </div>
-
-        <div className="space-y-3">
-          <div>
-            <label className="block text-sm text-gray-600 mb-1">Email</label>
-            <input
-              type="email"
-              autoComplete="email"
-              className="w-full border rounded px-3 py-2"
-              placeholder="you@example.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value.trim())}
-            />
-          </div>
-          <div>
-            <label className="block text-sm text-gray-600 mb-1">Password</label>
-            <input
-              type="password"
-              autoComplete="current-password"
-              className="w-full border rounded px-3 py-2"
-              placeholder="••••••••"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-          </div>
-
-          <button
-            className="w-full px-4 py-2 rounded bg-black text-white disabled:opacity-50"
-            onClick={onLogin}
-            disabled={disabled}
-          >
-            {busy ? 'Signing in…' : 'Sign in'}
-          </button>
-
-          {err && <div className="text-red-600 text-sm whitespace-pre-wrap">{err}</div>}
-        </div>
-
-        <div className="text-sm text-gray-600">
-          <span className="mr-1">No account?</span>
-          <Link className="underline" to="/auth/register">Create one</Link>
-        </div>
-
-        {/* 開発補助：環境変数警告 */}
-        {!import.meta.env.VITE_SUPABASE_URL ||
-         !import.meta.env.VITE_SUPABASE_ANON_KEY ? (
-          <div className="text-xs rounded bg-red-50 text-red-700 p-3">
-            Missing <code>VITE_SUPABASE_URL</code> or <code>VITE_SUPABASE_ANON_KEY</code>. Check your <code>.env</code>.
-          </div>
-        ) : null}
-      </div>
-    </div>
-  );
+    <form className="max-w-sm mx-auto p-4 space-y-3" onSubmit={onSubmit}>
+      <h1 className="text-xl font-bold">Login</h1>
+      <input
+        className="w-full border rounded-md px-3 py-2"
+        type="email"
+        placeholder="you@example.com"
+        value={email}
+        onChange={(e) => setEmail(e.target.value)}
+      />
+      <input
+        className="w-full border rounded-md px-3 py-2"
+        type="password"
+        placeholder="password"
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+      />
+      {err && <pre className="text-red-600 whitespace-pre-wrap text-sm">{err}</pre>}
+      <button className="px-4 py-2 border rounded-md" disabled={loading}>
+        {loading ? 'Signing in…' : 'Sign in'}
+      </button>
+    </form>
+  )
 }
