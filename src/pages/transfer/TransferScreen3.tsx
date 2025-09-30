@@ -1,126 +1,136 @@
-import { useState } from 'react';
-import { useAccount, useSwitchChain, useWriteContract } from 'wagmi';
-import { parseUnits } from 'viem';
-import { useWallet } from '@/hooks/useWallet';
-import { DEFAULT_CHAIN, WETH_POLYGON } from '@/config/wagmi';
+// src/pages/transfer/TransferScreen3.tsx
+import React, { useMemo, useState } from 'react'
+import { useAccount, useSwitchChain, useWriteContract } from 'wagmi'
+import { parseUnits, Address, zeroAddress } from 'viem'
+import { polygon } from 'wagmi/chains'
+import { triggerWalletSync } from '@/lib/walletSync'
+import { WalletConnectButton } from '@/components/WalletConnectButton'
 
-/**
- * TransferScreen3
- * - Polygon上のWETH(ERC-20, 18桁)送金を実行
- * - 送金成功後に履歴同期 → Transaction History / Accounting に反映
- *
- * 既存の画面遷移で to/amount を受け取っている場合は props を使用。
- * 何も来ない場合は本コンポーネント内のフォーム入力を使えます。
- */
+// 簡易 ERC20 ABI（transfer のみ）
+const ERC20_ABI = [
+  {
+    type: 'function',
+    name: 'transfer',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'to', type: 'address' },
+      { name: 'amount', type: 'uint256' },
+    ],
+    outputs: [{ name: 'success', type: 'bool' }],
+  },
+] as const
 
-type Asset = typeof WETH_POLYGON;
+type Props = {
+  tokenAddress?: Address // 省略時は WETH on Polygon にする
+  decimals?: number // 未指定時は 18
+}
 
-export default function TransferScreen3(props?: {
-  to?: string;
-  amount?: string;
-  asset?: Asset;
-}) {
-  const defaultAsset = props?.asset ?? WETH_POLYGON; // Polygon WETH 既定
-  const [to, setTo] = useState<string>(props?.to ?? '');
-  const [amount, setAmount] = useState<string>(props?.amount ?? '');
-  const asset = defaultAsset;
+const DEFAULT_WETH_POLYGON = '0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619' as Address // WETH (Polygon)
 
-  const { address, chainId } = useAccount();
-  const { switchChainAsync } = useSwitchChain();
-  const { writeContractAsync } = useWriteContract();
-  const { syncWalletTransactions } = useWallet();
+export default function TransferScreen3({ tokenAddress, decimals = 18 }: Props) {
+  const { isConnected } = useAccount()
+  const { switchChainAsync } = useSwitchChain()
+  const { writeContractAsync, isPending } = useWriteContract()
 
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [txHash, setTxHash] = useState<string | null>(null);
+  const [to, setTo] = useState<string>('')
+  const [amount, setAmount] = useState<string>('0')
+  const [txHash, setTxHash] = useState<string | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+
+  const token = useMemo<Address>(() => (tokenAddress ?? DEFAULT_WETH_POLYGON), [tokenAddress])
+
+  const validate = (): { to?: Address; amountWei?: bigint; error?: string } => {
+    try {
+      if (!to) return { error: 'Destination address required' }
+      if (!/^0x[a-fA-F0-9]{40}$/.test(to)) return { error: 'Invalid address format' }
+      const toAddr = to as Address
+      if (toAddr === zeroAddress) return { error: 'Zero address not allowed' }
+      const n = Number(amount)
+      if (!Number.isFinite(n) || n <= 0) return { error: 'Amount must be positive' }
+      const amountWei = parseUnits(amount, decimals)
+      return { to: toAddr, amountWei }
+    } catch (e: any) {
+      return { error: e?.message ?? 'Validation failed' }
+    }
+  }
 
   const onSend = async () => {
-    setError(null);
-    if (!address) return setError('Wallet not connected.');
-    if (!to || Number(amount) <= 0) return setError('Invalid recipient or amount.');
-
-    setBusy(true);
-    try {
-      // ネットワーク合わせ（Polygon）
-      if (chainId !== asset.chainId) {
-        await switchChainAsync({ chainId: asset.chainId });
-      }
-
-      // WETH(ERC-20) transfer(address,uint256)
-      const hash = await writeContractAsync({
-        address: asset.contract!,
-        abi: [
-          {
-            name: 'transfer',
-            type: 'function',
-            stateMutability: 'nonpayable',
-            inputs: [{ name: 'to', type: 'address' }, { name: 'value', type: 'uint256' }],
-            outputs: [{ name: '', type: 'bool' }],
-          },
-        ] as const,
-        functionName: 'transfer',
-        args: [to as `0x${string}`, parseUnits(amount, asset.decimals)],
-        chainId: DEFAULT_CHAIN.id,
-      });
-
-      setTxHash(hash);
-
-      // 送金後の履歴同期（単発／必要ならポーリングへ拡張可能）
-      await syncWalletTransactions({
-        walletAddress: address,
-        chainIds: [DEFAULT_CHAIN.id],
-        cursor: null,
-      });
-    } catch (e: any) {
-      setError(e?.shortMessage || e?.message || 'Transaction failed.');
-    } finally {
-      setBusy(false);
+    setErr(null)
+    setTxHash(null)
+    if (!isConnected) {
+      setErr('Please connect wallet first')
+      return
     }
-  };
+    // チェーンを Polygon に合わせる（必要なら他チェーンにも拡張可）
+    await switchChainAsync({ chainId: polygon.id }).catch(() => {})
 
-  const explorerBase = 'https://polygonscan.com';
+    const v = validate()
+    if (v.error) {
+      setErr(v.error)
+      return
+    }
+    try {
+      const hash = await writeContractAsync({
+        abi: ERC20_ABI,
+        address: token,
+        functionName: 'transfer',
+        args: [v.to!, v.amountWei!],
+      })
+      setTxHash(hash as string)
+      // 送金後に同期
+      await triggerWalletSync('polygon').catch(() => {})
+    } catch (e: any) {
+      setErr(e?.shortMessage ?? e?.message ?? 'Transaction failed')
+    }
+  }
 
   return (
-    <div className="p-4 max-w-xl mx-auto space-y-4">
-      <h1 className="text-xl font-bold">Send WETH on Polygon</h1>
+    <div className="max-w-xl mx-auto p-4 space-y-4">
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold">Transfer</h1>
+        <WalletConnectButton />
+      </div>
 
-      {/* 入力フォーム（既存フローでprops受け取りの場合はそのまま表示だけでもOK） */}
       <div className="space-y-2">
-        <label className="block text-sm">Recipient (0x...)</label>
+        <label className="block text-sm">To (address)</label>
         <input
-          className="w-full rounded border px-3 py-2"
-          placeholder="0xRecipient"
+          className="w-full rounded-md border px-3 py-2"
+          placeholder="0x..."
           value={to}
           onChange={(e) => setTo(e.target.value.trim())}
         />
       </div>
+
       <div className="space-y-2">
-        <label className="block text-sm">Amount (WETH)</label>
+        <label className="block text-sm">Amount</label>
         <input
-          className="w-full rounded border px-3 py-2"
-          placeholder="0.05"
+          className="w-full rounded-md border px-3 py-2"
+          placeholder="e.g. 0.1"
+          inputMode="decimal"
           value={amount}
-          onChange={(e) => setAmount(e.target.value.trim())}
+          onChange={(e) => setAmount(e.target.value)}
         />
       </div>
 
+      {err && <div className="text-red-600">{err}</div>}
+
       <button
-        className="px-4 py-2 rounded bg-black text-white disabled:opacity-50"
+        className="px-4 py-2 rounded-md border"
         onClick={onSend}
-        disabled={busy}
+        disabled={isPending}
+        title="Send ERC-20 transfer on Polygon"
       >
-        {busy ? 'Sending…' : 'Send'}
+        {isPending ? 'Sending…' : 'Send'}
       </button>
 
-      {error && <div className="mt-3 text-red-600">{error}</div>}
       {txHash && (
-        <div className="mt-3">
-          Sent!{' '}
-          <a className="underline" href={`${explorerBase}/tx/${txHash}`} target="_blank" rel="noreferrer">
-            View on Polygonscan
+        <div className="text-sm">
+          Tx:{" "}
+          <a className="underline" target="_blank" rel="noreferrer" href={`https://polygonscan.com/tx/${txHash}`}>
+            {txHash}
           </a>
         </div>
       )}
     </div>
-  );
+  )
 }
