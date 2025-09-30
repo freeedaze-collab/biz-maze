@@ -8,10 +8,14 @@ import { useToast } from "@/hooks/use-toast";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 interface IFRSReportProps {
-  userId: string;
+  profile?: {
+    id: string;
+    user_id?: string;
+  };
 }
 
-const IFRSReport = ({ userId }: IFRSReportProps) => {
+const IFRSReport = ({ profile }: IFRSReportProps) => {
+  const userId = profile?.user_id || profile?.id || '';
   const [report, setReport] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const { toast } = useToast();

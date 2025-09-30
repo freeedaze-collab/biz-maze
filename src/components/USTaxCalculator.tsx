@@ -9,10 +9,14 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 
 interface USTaxCalculatorProps {
-  userId: string;
+  profile?: {
+    id: string;
+    user_id?: string;
+  };
 }
 
-const USTaxCalculator = ({ userId }: USTaxCalculatorProps) => {
+const USTaxCalculator = ({ profile }: USTaxCalculatorProps) => {
+  const userId = profile?.user_id || profile?.id || '';
   const [taxData, setTaxData] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const { toast } = useToast();

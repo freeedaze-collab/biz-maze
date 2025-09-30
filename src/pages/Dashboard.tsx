@@ -26,7 +26,7 @@ import { useWallet } from "@/hooks/useWallet";
 
 const Dashboard = () => {
   const { user } = useAuth();
-  const { wallets } = useWallet();
+  const { isConnected, address } = useWallet();
 
   return (
     <div className="min-h-screen bg-background">
@@ -63,10 +63,10 @@ const Dashboard = () => {
                 </CardHeader>
                 <CardContent>
                   <div className="text-2xl font-bold">
-                    ${wallets.reduce((sum, wallet) => sum + (wallet.balance_usd || 0), 0).toLocaleString()}
+                    ${isConnected ? '—' : '0.00'}
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    From {wallets.length} connected wallet{wallets.length !== 1 ? 's' : ''}
+                    {isConnected ? 'Wallet connected' : 'No wallet connected'}
                   </p>
                 </CardContent>
               </Card>
@@ -77,9 +77,9 @@ const Dashboard = () => {
                   <Wallet className="h-4 w-4 text-muted-foreground" />
                 </CardHeader>
                 <CardContent>
-                  <div className="text-2xl font-bold">{wallets.length}</div>
+                  <div className="text-2xl font-bold">{isConnected ? '1' : '0'}</div>
                   <p className="text-xs text-muted-foreground">
-                    {wallets.filter(w => (w as any).verification_status === 'verified').length} verified
+                    {isConnected ? `${address?.slice(0, 6)}...${address?.slice(-4)}` : 'Not connected'}
                   </p>
                 </CardContent>
               </Card>

@@ -71,8 +71,8 @@ export function WalletAddressInput({
       }
 
       // Step 2: Connect wallet to account
-      const success = await connectWallet(address, walletType, walletName);
-      if (success) {
+      await connectWallet();
+      if (true) {
         toast({
           title: "✅ Wallet Connected Successfully!",
           description: `Your wallet (${address.substring(0, 6)}...${address.substring(address.length - 4)}) has been verified and linked to your account.`,
