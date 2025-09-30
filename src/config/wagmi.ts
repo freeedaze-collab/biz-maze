@@ -1,30 +1,41 @@
-import { http, createConfig } from 'wagmi';
-import { polygon } from 'wagmi/chains';
+// src/config/wagmi.ts
+import { http, createConfig } from 'wagmi'
+import { polygon, polygonAmoy, mainnet } from 'wagmi/chains'
+import { injected } from 'wagmi/connectors'
+import { walletConnect } from 'wagmi/connectors'
+import { createPublicClient } from 'viem'
+import { defineChain } from 'viem'
 
-// Polygon優先
-export const SUPPORTED_CHAINS = [polygon] as const;
-export const DEFAULT_CHAIN = polygon;
+const ALCHEMY_KEY = import.meta.env.VITE_ALCHEMY_API_KEY as string | undefined
 
-const ALCHEMY_KEY = import.meta.env.VITE_ALCHEMY_API_KEY;
+// 必要に応じて mainnet/polygonAmoy も有効化可能
+const DEFAULT_CHAIN_ID = Number(import.meta.env.VITE_DEFAULT_CHAIN_ID ?? polygon.id)
 
-// wagmi設定（Polygon）
+const CHAIN_MAP: Record<number, typeof polygon> = {
+  [polygon.id]: polygon,
+  [polygonAmoy.id]: polygonAmoy,
+  [mainnet.id]: mainnet,
+}
+
+export const DEFAULT_CHAIN = CHAIN_MAP[DEFAULT_CHAIN_ID] ?? polygon
+
 export const wagmiConfig = createConfig({
-  chains: SUPPORTED_CHAINS,
+  chains: [DEFAULT_CHAIN, polygon, polygonAmoy, mainnet],
+  connectors: [
+    injected({ shimDisconnect: true }),
+    walletConnect({
+      projectId: import.meta.env.VITE_WALLETCONNECT_PROJECT_ID as string,
+      showQrModal: true,
+    }),
+  ],
   transports: {
-    [polygon.id]: http(
-      ALCHEMY_KEY
-        ? `https://polygon-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`
-        : undefined
-    ),
+    [polygon.id]: http(ALCHEMY_KEY ? `https://polygon-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}` : undefined),
+    [polygonAmoy.id]: http(),
+    [mainnet.id]: http(ALCHEMY_KEY ? `https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}` : undefined),
   },
-  ssr: false,
-});
+})
 
-// WETH（Polygon）定義（18 decimals, ERC-20）
-export const WETH_POLYGON = {
-  type: 'erc20' as const,
-  contract: '0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619' as `0x${string}`,
-  symbol: 'WETH',
-  decimals: 18,
-  chainId: polygon.id,
-};
+export const publicClient = createPublicClient({
+  chain: DEFAULT_CHAIN,
+  transport: http(),
+})
