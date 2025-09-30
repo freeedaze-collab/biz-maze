@@ -8,15 +8,19 @@ import { defineChain } from 'viem'
 
 const ALCHEMY_KEY = import.meta.env.VITE_ALCHEMY_API_KEY as string | undefined
 
-// デフォルトチェーンを環境変数から選択
+// 必要に応じて mainnet/polygonAmoy も有効化可能
 const DEFAULT_CHAIN_ID = Number(import.meta.env.VITE_DEFAULT_CHAIN_ID ?? polygon.id)
 
-const ALL_CHAINS = [polygon, polygonAmoy, mainnet] as const
+const CHAIN_MAP: Record<number, typeof polygon> = {
+  [polygon.id]: polygon,
+  [polygonAmoy.id]: polygonAmoy,
+  [mainnet.id]: mainnet,
+}
 
-export const DEFAULT_CHAIN = ALL_CHAINS.find(c => c.id === DEFAULT_CHAIN_ID) ?? polygon
+export const DEFAULT_CHAIN = CHAIN_MAP[DEFAULT_CHAIN_ID] ?? polygon
 
 export const wagmiConfig = createConfig({
-  chains: ALL_CHAINS,
+  chains: [DEFAULT_CHAIN, polygon, polygonAmoy, mainnet],
   connectors: [
     injected({ shimDisconnect: true }),
     walletConnect({

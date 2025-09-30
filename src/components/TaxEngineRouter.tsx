@@ -19,11 +19,7 @@ export default function TaxEngineRouter({ profile }: Props) {
 
   return (
     <React.Suspense fallback={<div>Loading tax components…</div>}>
-      {isUS ? (
-        <USTaxCalculator userId={profile?.id || ''} />
-      ) : (
-        <IFRSReport userId={profile?.id || ''} />
-      )}
+      {isUS ? <USTaxCalculator profile={profile} /> : <IFRSReport profile={profile} />}
     </React.Suspense>
   )
 }
