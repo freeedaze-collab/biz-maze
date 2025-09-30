@@ -15,18 +15,14 @@ const ALL_CHAINS = [polygon, polygonAmoy, mainnet] as const
 
 export const DEFAULT_CHAIN = ALL_CHAINS.find(c => c.id === DEFAULT_CHAIN_ID) ?? polygon
 
-// Only add WalletConnect if we have a valid project ID
-const wcProjectId = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID as string | undefined
-const hasValidWcId = wcProjectId && wcProjectId !== 'your_wc_project_id' && wcProjectId.length > 10
-
 export const wagmiConfig = createConfig({
   chains: ALL_CHAINS,
   connectors: [
     injected({ shimDisconnect: true }),
-    ...(hasValidWcId ? [walletConnect({
-      projectId: wcProjectId,
+    walletConnect({
+      projectId: import.meta.env.VITE_WALLETCONNECT_PROJECT_ID as string,
       showQrModal: true,
-    })] : []),
+    }),
   ],
   transports: {
     [polygon.id]: http(ALCHEMY_KEY ? `https://polygon-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}` : undefined),

@@ -1,5 +1,5 @@
 // src/lib/walletSync.ts
-import { supabase } from '@/integrations/supabase/client'
+import { supabase } from '@/lib/supabaseClient'
 
 export type SyncResult = {
   ok: boolean

@@ -1,12 +1,9 @@
 // src/pages/accounting/AccountingTaxScreen1.tsx
 import React, { useEffect, useMemo, useState } from 'react'
-import { supabase } from '@/integrations/supabase/client'
-import type { Database } from '@/integrations/supabase/types'
+import { supabase, type Profile } from '@/lib/supabaseClient'
 import { triggerWalletSync } from '@/lib/walletSync'
 import { WalletConnectButton } from '@/components/WalletConnectButton'
 import TaxEngineRouter from '@/components/TaxEngineRouter'
-
-type Profile = Database['public']['Tables']['profiles']['Row']
 
 export default function AccountingTaxScreen1() {
   const [profile, setProfile] = useState<Profile | null>(null)
