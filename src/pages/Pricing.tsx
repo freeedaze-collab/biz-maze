@@ -1,6 +1,9 @@
 // src/pages/Pricing.tsx
 import React, { useEffect, useState } from 'react'
-import { supabase, type Profile } from '@/lib/supabaseClient'
+import { supabase } from '@/lib/supabaseClient'
+import type { Database } from '@/integrations/supabase/types'
+
+type Profile = Database['public']['Tables']['profiles']['Row']
 
 type Plan = {
   code: string

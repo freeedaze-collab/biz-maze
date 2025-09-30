@@ -1,6 +1,9 @@
 // src/pages/settings/CountryCompanySettings.tsx
 import React, { useEffect, useState } from 'react'
-import { supabase, type Profile } from '@/lib/supabaseClient'
+import { supabase } from '@/lib/supabaseClient'
+import type { Database } from '@/integrations/supabase/types'
+
+type Profile = Database['public']['Tables']['profiles']['Row']
 
 export default function CountryCompanySettings() {
   const [profile, setProfile] = useState<Profile | null>(null)
@@ -26,7 +29,6 @@ export default function CountryCompanySettings() {
       entity_type: profile.entity_type ?? null,
       tax_country: profile.tax_country ?? null,
       plan_type: profile.plan_type ?? null,
-      wallet_address: profile.wallet_address ?? null,
     }, { onConflict: 'id' })
     setMsg(error ? error.message : 'Saved!')
     setSaving(false)
@@ -41,7 +43,7 @@ export default function CountryCompanySettings() {
         <select
           className="w-full border rounded-md px-3 py-2"
           value={profile?.account_type ?? 'individual'}
-          onChange={(e) => setProfile(p => ({ ...(p as Profile), account_type: e.target.value as any }))}
+          onChange={(e) => setProfile((p: Profile | null) => ({ ...(p as Profile), account_type: e.target.value as any }))}
         >
           <option value="individual">Individual</option>
           <option value="business">Business</option>
@@ -54,7 +56,7 @@ export default function CountryCompanySettings() {
           className="w-full border rounded-md px-3 py-2"
           placeholder="LLC, Sole Proprietor, etc."
           value={profile?.entity_type ?? ''}
-          onChange={(e) => setProfile(p => ({ ...(p as Profile), entity_type: e.target.value }))}
+          onChange={(e) => setProfile((p: Profile | null) => ({ ...(p as Profile), entity_type: e.target.value }))}
         />
       </div>
 
@@ -64,7 +66,7 @@ export default function CountryCompanySettings() {
           className="w-full border rounded-md px-3 py-2"
           placeholder="US / JP / PH / …"
           value={profile?.tax_country ?? ''}
-          onChange={(e) => setProfile(p => ({ ...(p as Profile), tax_country: e.target.value }))}
+          onChange={(e) => setProfile((p: Profile | null) => ({ ...(p as Profile), tax_country: e.target.value }))}
         />
       </div>
 
