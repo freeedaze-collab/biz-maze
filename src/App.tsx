@@ -3,6 +3,7 @@ import React from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import Index from '@/pages/Index'
 import Login from '@/pages/auth/Login'
+import Register from '@/pages/auth/Register'
 import Dashboard from '@/pages/Dashboard'
 import TransactionHistory from '@/pages/TransactionHistory'
 import AccountingTaxScreen1 from '@/pages/accounting/AccountingTaxScreen1'
@@ -19,6 +20,7 @@ export default function App() {
           <Route path="/" element={<Index />} />
           {/* Auth */}
           <Route path="/auth/login" element={<Login />} />
+          <Route path="/auth/register" element={<Register />} />
           {/* 以下は認証必須 */}
           <Route
             path="/dashboard"
