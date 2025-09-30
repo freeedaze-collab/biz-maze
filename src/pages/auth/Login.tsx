@@ -56,7 +56,7 @@ export default function Login() {
       }
 
       // 成功：トップへリダイレクト（ルーター非依存・最も確実）
-      window.location.replace('/')
+      window.location.replace('/dashboard')
 
     } catch (e: any) {
       setErr(e?.message ?? String(e))
