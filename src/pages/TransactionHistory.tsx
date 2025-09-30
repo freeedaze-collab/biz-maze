@@ -1,111 +1,118 @@
-import { useEffect, useState } from 'react';
-import { supabase } from '@/integrations/supabase/client';
-import { useWallet } from '@/hooks/useWallet';
-import { DEFAULT_CHAIN } from '@/config/wagmi';
+// src/pages/TransactionHistory.tsx
+import React, { useEffect, useState } from 'react'
+import { supabase } from '@/lib/supabaseClient'
+import { triggerWalletSync } from '@/lib/walletSync'
+import { WalletConnectButton } from '@/components/WalletConnectButton'
 
-type TxRow = {
-  id: string;
-  chain_id: number;
-  tx_hash: string;
-  timestamp: string;
-  direction: 'in'|'out'|'self';
-  type: string;
-  asset_symbol: string;
-  amount: string;
-  usd_value_at_tx: string | null;
-};
+type Tx = {
+  id: string
+  hash: string
+  direction: 'in' | 'out'
+  asset_symbol: string | null
+  amount: string
+  usd_value_at_tx: number | null
+  timestamp: string
+  chain: string | null
+}
 
 export default function TransactionHistory() {
-  const { activeWallet, syncWalletTransactions } = useWallet();
-  const [rows, setRows] = useState<TxRow[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [rows, setRows] = useState<Tx[]>([])
+  const [loading, setLoading] = useState(false)
+  const [syncing, setSyncing] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
-  const fetchRows = async () => {
-    const uid = (await supabase.auth.getUser()).data.user?.id;
-    if (!uid) return;
+  const fetchTx = async () => {
+    setLoading(true)
+    setError(null)
     const { data, error } = await supabase
       .from('transactions')
       .select('*')
-      .eq('user_id', uid)
       .order('timestamp', { ascending: false })
-      .limit(200);
-    if (!error && data) setRows(data as any);
-  };
-
-  const handleResync = async () => {
-    if (!activeWallet) return;
-    setLoading(true);
-    try {
-      await syncWalletTransactions({
-        walletAddress: activeWallet.address,
-        chainIds: [DEFAULT_CHAIN.id],
-        cursor: null,
-      });
-      await fetchRows();
-    } finally {
-      setLoading(false);
-    }
-  };
+      .limit(200)
+    if (error) setError(error.message)
+    setRows((data as any[]) as Tx[])
+    setLoading(false)
+  }
 
   useEffect(() => {
-    fetchRows();
-  }, []);
+    fetchTx()
+  }, [])
+
+  const handleSync = async () => {
+    setSyncing(true)
+    setError(null)
+    const res = await triggerWalletSync('polygon').catch((e) => ({ ok: false, message: e?.message }))
+    if (!res.ok) setError(res.message ?? 'Sync failed')
+    await fetchTx()
+    setSyncing(false)
+  }
 
   return (
-    <div className="p-4">
-      <div className="flex items-center justify-between mb-3">
-        <h1 className="text-xl font-bold">Transaction History</h1>
-        <button
-          className="px-3 py-1 rounded border"
-          onClick={handleResync}
-          disabled={loading || !activeWallet}
-        >
-          {loading ? 'Syncing…' : 'Resync (Polygon)'}
-        </button>
+    <div className="max-w-5xl mx-auto p-4 space-y-4">
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold">Transaction History</h1>
+        <div className="flex gap-2">
+          <WalletConnectButton />
+          <button
+            className="px-3 py-2 rounded-md border"
+            onClick={handleSync}
+            disabled={syncing}
+            title="Resync from chain (Polygon)"
+          >
+            {syncing ? 'Syncing…' : 'Resync (Polygon)'}
+          </button>
+        </div>
       </div>
 
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="text-left border-b">
-            <th className="py-2">Time (JST)</th>
-            <th>Type</th>
-            <th>Dir</th>
-            <th>Asset</th>
-            <th>Amount</th>
-            <th>USD @Tx</th>
-            <th>Tx Hash</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={r.id} className="border-b">
-              <td className="py-2">{new Date(r.timestamp).toLocaleString('ja-JP')}</td>
-              <td>{r.type}</td>
-              <td>{r.direction}</td>
-              <td>{r.asset_symbol}</td>
-              <td>{r.amount}</td>
-              <td>{r.usd_value_at_tx ?? '-'}</td>
-              <td className="truncate max-w-[160px]">
-                <a
-                  className="underline"
-                  href={`https://polygonscan.com/tx/${r.tx_hash}`}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  {r.tx_hash}
-                </a>
-              </td>
-            </tr>
-          ))}
-          {rows.length === 0 && (
-            <tr>
-              <td colSpan={7} className="py-6 text-center text-gray-500">
-                No transactions yet.
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
+      {error && <div className="text-red-600">{error}</div>}
+      {loading ? (
+        <div>Loading…</div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead>
+              <tr className="text-left border-b">
+                <th className="py-2">Time</th>
+                <th>Hash</th>
+                <th>Dir</th>
+                <th>Asset</th>
+                <th>Amount</th>
+                <th>USD (at tx)</th>
+                <th>Chain</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.id} className="border-b hover:bg-gray-50">
+                  <td className="py-2">{new Date(r.timestamp).toLocaleString()}</td>
+                  <td className="truncate max-w-[220px]">
+                    <a
+                      className="underline"
+                      href={`https://polygonscan.com/tx/${r.hash}`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {r.hash}
+                    </a>
+                  </td>
+                  <td>{r.direction}</td>
+                  <td>{r.asset_symbol ?? '-'}</td>
+                  <td>{r.amount}</td>
+                  <td>{r.usd_value_at_tx ?? '-'}</td>
+                  <td>{r.chain ?? 'polygon'}</td>
+                </tr>
+              ))}
+              {rows.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="py-6 text-center text-gray-500">
+                    No transactions. Connect wallet and click “Resync”.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
-  );
+  )
 }
