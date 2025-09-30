@@ -1,22 +1,15 @@
 // src/pages/auth/Login.tsx
-import React, { useEffect, useState } from 'react'
-import { supabase, hasActiveSession } from '@/lib/supabaseClient'
+import React, { useState } from 'react'
+import { supabase } from '@/lib/supabaseClient'
+import { useNavigate } from 'react-router-dom'
 
 export default function Login() {
+  const nav = useNavigate()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [err, setErr] = useState<string | null>(null)
   const [info, setInfo] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
-
-  // 既にログイン済みならログイン画面を見せない
-  useEffect(() => {
-    ;(async () => {
-      if (await hasActiveSession()) {
-        window.location.replace('/') // 既ログインならトップへ
-      }
-    })()
-  }, [])
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -50,14 +43,12 @@ export default function Login() {
       }
 
       if (!data?.session) {
-        // メール確認が有効で、まだ confirm 済みでない場合に起こり得る
-        setInfo('ログイン要求は受け付けましたが、セッションが確立されていません。確認メールのリンクを踏んでから再度ログインしてください。')
+        setInfo('ログイン要求は受け付けましたが、セッションが確立されていません。確認メール（Confirm Email）後に再ログインしてください。')
         return
       }
 
-      // 成功：トップへ
-      window.location.replace('/')
-
+      // 成功 → ダッシュボードへ
+      nav('/dashboard', { replace: true })
     } catch (e: any) {
       setErr(e?.message ?? String(e))
     } finally {
@@ -70,8 +61,8 @@ export default function Login() {
   }
 
   return (
-    <form className="max-w-sm mx-auto p-4 space-y-3" onSubmit={onSubmit} onKeyDown={onKeyDown}>
-      <h1 className="text-xl font-bold">Login</h1>
+    <form className="max-w-sm mx-auto p-6 space-y-4" onSubmit={onSubmit} onKeyDown={onKeyDown}>
+      <h1 className="text-xl font-bold">Sign in</h1>
 
       <label className="block text-sm">Email</label>
       <input
