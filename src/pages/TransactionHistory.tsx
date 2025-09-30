@@ -1,6 +1,6 @@
 // src/pages/TransactionHistory.tsx
 import React, { useEffect, useState } from 'react'
-import { supabase } from '@/lib/supabaseClient'
+import { supabase } from '@/integrations/supabase/client'
 import { triggerWalletSync } from '@/lib/walletSync'
 import { WalletConnectButton } from '@/components/WalletConnectButton'
 

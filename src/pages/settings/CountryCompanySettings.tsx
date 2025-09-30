@@ -1,6 +1,9 @@
 // src/pages/settings/CountryCompanySettings.tsx
 import React, { useEffect, useState } from 'react'
-import { supabase, type Profile } from '@/lib/supabaseClient'
+import { supabase } from '@/integrations/supabase/client'
+import type { Database } from '@/integrations/supabase/types'
+
+type Profile = Database['public']['Tables']['profiles']['Row']
 
 export default function CountryCompanySettings() {
   const [profile, setProfile] = useState<Profile | null>(null)
@@ -26,7 +29,6 @@ export default function CountryCompanySettings() {
       entity_type: profile.entity_type ?? null,
       tax_country: profile.tax_country ?? null,
       plan_type: profile.plan_type ?? null,
-      wallet_address: profile.wallet_address ?? null,
     }, { onConflict: 'id' })
     setMsg(error ? error.message : 'Saved!')
     setSaving(false)
