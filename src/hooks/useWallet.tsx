@@ -1,63 +1,96 @@
-import { useMemo } from 'react';
-import { supabase } from '@/integrations/supabase/client';
-import { useAccount } from 'wagmi';
-import { DEFAULT_CHAIN } from '@/config/wagmi';
+// src/hooks/useWallet.tsx
+import { useAccount, useDisconnect, useConnect, useSignMessage } from 'wagmi'
+import { getAddress, isAddress } from 'viem'
+import { supabase } from '@/lib/supabaseClient'
 
-type SyncParams = {
-  walletAddress: string;
-  chainIds: number[];
-  since?: string;
-  cursor?: string | null;
-};
+type Options = {
+  requireAuth?: boolean // Supabaseログイン必須にするか
+}
 
-// Minimal wallet info for dashboard metrics
-type WalletInfo = {
-  address: `0x${string}`;
-  chainId: number;
-  balance_usd?: number;
-  verification_status?: 'verified' | 'unverified';
-};
+export function useWallet(opts: Options = {}) {
+  const { isConnected, address } = useAccount()
+  const { disconnectAsync } = useDisconnect()
+  const { connectAsync, connectors, isPending: isConnecting } = useConnect()
+  const { signMessageAsync } = useSignMessage()
 
-export function useWallet() {
-  const { address: activeAddress, chainId: activeChainId } = useAccount();
+  // 任意：SIWE風の簡易署名検証（Edge Function に合わせて文字列を固定）
+  const signInWithEthereum = async (addr: `0x${string}`) => {
+    const message = `Link wallet to account: ${addr}`
+    const signature = await signMessageAsync({ message })
+    // Edge Function verify-wallet-signature がある前提
+    const resp = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/verify-wallet-signature`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ address: addr, message, signature }),
+    })
+    if (!resp.ok) {
+      const t = await resp.text()
+      throw new Error(`Signature verification failed: ${t}`)
+    }
+  }
 
-const activeWallet = useMemo(() => {
-    if (!activeAddress) return null;
-    return { address: activeAddress, chainId: activeChainId ?? DEFAULT_CHAIN.id };
-  }, [activeAddress, activeChainId]);
+  const connectWallet = async () => {
+    // 1) コネクタ選択（優先: injected → walletConnect）
+    const injected = connectors.find(c => c.id === 'io.metamask' || c.id === 'injected')
+    const connector = injected ?? connectors[0]
+    if (!connector) throw new Error('No wallet connector available')
 
-  const wallets: WalletInfo[] = useMemo(() => {
-    return activeWallet
-      ? [{ address: activeWallet.address as `0x${string}`, chainId: activeWallet.chainId }]
-      : [];
-  }, [activeWallet]);
+    const { accounts } = await connectAsync({ connector })
+    const raw = accounts?.[0]
+    if (!raw) throw new Error('No account returned from connector')
 
-  const syncWalletTransactions = async (params: SyncParams) => {
-    const userId = (await supabase.auth.getUser()).data.user?.id;
-    const { data, error } = await supabase.functions.invoke('sync-wallet-transactions', {
-      body: { userId, ...params },
-    });
-    if (error) throw error;
-    return data;
-  };
+    const checksummed = getAddress(raw as `0x${string}`)
 
-const syncAllWallets = async () => {
-    if (!activeWallet) return;
-    await syncWalletTransactions({
-      walletAddress: activeWallet.address,
-      chainIds: [DEFAULT_CHAIN.id],
-      cursor: null,
-    });
-  };
+    // 2) 署名でリンク（必要に応じて）
+    if (opts.requireAuth) {
+      await signInWithEthereum(checksummed)
+    }
 
-// Minimal connectWallet to satisfy UI typing without altering behavior
-  const connectWallet = async (
-    _address: string,
-    _walletType?: string,
-    _walletName?: string
-  ): Promise<boolean> => {
-    throw new Error('connectWallet not implemented');
-  };
+    // 3) Supabase プロファイルへ保存（wallet_address）
+    const {
+      data: { user },
+      error: authErr,
+    } = await supabase.auth.getUser()
+    if (authErr) throw authErr
+    if (!user) {
+      // 未ログインでも接続自体は成功させる。リンクは後で。
+      return checksummed
+    }
 
-  return { activeWallet, wallets, syncWalletTransactions, syncAllWallets, connectWallet };
+    const { error: upsertErr } = await supabase.from('profiles').upsert(
+      {
+        id: user.id,
+        wallet_address: checksummed,
+      },
+      { onConflict: 'id' }
+    )
+    if (upsertErr) throw upsertErr
+
+    return checksummed
+  }
+
+  const disconnectWallet = async () => {
+    await disconnectAsync()
+  }
+
+  const ensureValidAddress = (addr?: string | null) => {
+    if (!addr) return null
+    try {
+      const a = getAddress(addr as `0x${string}`)
+      return a
+    } catch {
+      return null
+    }
+  }
+
+  return {
+    isConnected,
+    address: ensureValidAddress(address),
+    connectWallet,
+    disconnectWallet,
+    isConnecting,
+  }
 }
