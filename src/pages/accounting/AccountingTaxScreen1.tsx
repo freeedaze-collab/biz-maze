@@ -1,8 +1,6 @@
 // src/pages/accounting/AccountingTaxScreen1.tsx
 import React, { useEffect, useMemo, useState } from 'react'
-import { supabase } from '@/lib/supabaseClient'
-import type { Database } from '@/integrations/supabase/types'
-type Profile = Database['public']['Tables']['profiles']['Row']
+import { supabase, type Profile } from '@/lib/supabaseClient'
 import { triggerWalletSync } from '@/lib/walletSync'
 import { WalletConnectButton } from '@/components/WalletConnectButton'
 import TaxEngineRouter from '@/components/TaxEngineRouter'

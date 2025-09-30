@@ -1,7 +1,6 @@
 // src/components/TaxEngineRouter.tsx
 import React from 'react'
-import type { Database } from '@/integrations/supabase/types'
-type Profile = Database['public']['Tables']['profiles']['Row']
+import { type Profile } from '@/lib/supabaseClient'
 
 // 既存の実装がある前提のダミーインポート名
 // 実プロジェクトでは実体コンポーネント/関数を参照してください。

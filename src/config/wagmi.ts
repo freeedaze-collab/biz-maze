@@ -11,7 +11,7 @@ const ALCHEMY_KEY = import.meta.env.VITE_ALCHEMY_API_KEY as string | undefined
 // 必要に応じて mainnet/polygonAmoy も有効化可能
 const DEFAULT_CHAIN_ID = Number(import.meta.env.VITE_DEFAULT_CHAIN_ID ?? polygon.id)
 
-const CHAIN_MAP: Record<number, any> = {
+const CHAIN_MAP: Record<number, typeof polygon> = {
   [polygon.id]: polygon,
   [polygonAmoy.id]: polygonAmoy,
   [mainnet.id]: mainnet,
