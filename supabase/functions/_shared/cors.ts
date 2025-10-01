@@ -1,7 +1,7 @@
 // supabase/functions/_shared/cors.ts
 export const allowOrigins = [
   // ここに本番/プレビュー/ローカルなど、許可したいオリジンを列挙
-  'https://<YOUR_PREVIEW>.lovableproject.com',
+  'https://73b9ac6a-d761-4d7a-90d7-97ce374506c7.lovableproject.com',
   'http://localhost:5173',
 ]
 
