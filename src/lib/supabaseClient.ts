@@ -1,24 +1,6 @@
 // src/lib/supabaseClient.ts
-import { createClient } from '@supabase/supabase-js'
+// 既存の重複を解消して、統一した Supabase クライアントを再エクスポート
+export { supabase } from '@/integrations/supabase/client'
 
-export const supabase = createClient(
-  import.meta.env.VITE_SUPABASE_URL as string,
-  import.meta.env.VITE_SUPABASE_ANON_KEY as string,
-  {
-    auth: {
-      persistSession: true,
-      autoRefreshToken: true,
-      detectSessionInUrl: true,
-    },
-  }
-)
-
-// 型補助（存在しなくてもビルド通るよう緩めに）
-export type Profile = {
-  id: string
-  account_type?: 'individual' | 'business'
-  entity_type?: string | null
-  tax_country?: string | null
-  plan_type?: string | null
-  wallet_address?: string | null
-}
+// 型が必要な場合は integrations 側の types を再エクスポート
+export type { Database } from '@/integrations/supabase/types'
