@@ -1,21 +1,20 @@
-import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
-import path from 'path';
-import { componentTagger } from "lovable-tagger";
+// vite.config.ts
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
 
-export default defineConfig(({ mode }) => ({
+// ポートを 5173 に固定し、占有時はエラー(自動で別ポートに逃げない)
+// Network アクセスも許可（モバイルWalletからのアクセス用途）
+export default defineConfig({
+  plugins: [react()],
   server: {
-    host: "::",
-    port: 8080,
+    host: true,          // 0.0.0.0 で待受
+    port: 5173,          // 固定
+    strictPort: true,    // 使えなければ起動失敗
+    open: true,
   },
-  plugins: [
-    react(),
-    mode === 'development' && componentTagger(),
-  ].filter(Boolean),
-  resolve: {
-    alias: {
-      "@": path.resolve(__dirname, "./src"),
-    },
+  preview: {
+    host: true,
+    port: 5173,
+    strictPort: true,
   },
-  base: '/',
-}));
+})
