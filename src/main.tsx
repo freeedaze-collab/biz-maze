@@ -13,10 +13,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // router
 import { HashRouter } from "react-router-dom";
 
-// ★ 追加: AuthProvider を読み込み
-import { AuthProvider } from "@/contexts/AuthProvider"; 
-// ※ 実際のファイルパスが src/contexts/AuthProvider.tsx or src/context/useAuth.tsx などか要確認。
-// プロジェクト内の AuthProvider 定義ファイルに合わせて修正してください。
+// ★ src/hooks/useAuth.tsx から AuthProvider を import
+import { AuthProvider } from "@/hooks/useAuth";
 
 const isDev = import.meta.env.DEV;
 const queryClient = new QueryClient();
@@ -24,7 +22,7 @@ const queryClient = new QueryClient();
 const Root = (
   <WagmiProvider config={wagmiConfig}>
     <QueryClientProvider client={queryClient}>
-      <AuthProvider> {/* ★ ここでAuthProviderで全体をラップ */}
+      <AuthProvider> {/* AuthProvider でラップ */}
         <HashRouter>
           <App />
         </HashRouter>
