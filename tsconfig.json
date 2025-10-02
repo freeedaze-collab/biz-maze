@@ -1,19 +1,20 @@
 {
   "compilerOptions": {
     "target": "ES2020",
-    "lib": ["ES2020", "DOM"],
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
     "module": "ESNext",
-    "jsx": "react-jsx",
     "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+
+    // ★ ここが重要：@ エイリアスを src に向ける
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"]
-    },
-    "types": ["vite/client"],
-    "strict": true,
-    "skipLibCheck": true,
-    "noEmit": true
+      "@/*": ["src/*"]
+    }
   },
-  "include": ["./src"],
-  "exclude": ["node_modules", "dist"]
+  "include": ["src"]
 }
