@@ -8,6 +8,7 @@ import { createPublicClient } from 'viem'
 const ALCHEMY_KEY = import.meta.env.VITE_ALCHEMY_API_KEY as string | undefined
 const WALLETCONNECT_PROJECT_ID = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID as string | undefined
 
+// 実行中のオリジンに追従（Allowlistと一致させる）
 const ORIGIN = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5173'
 const APP_METADATA = {
   name: 'Biz Maze',
@@ -32,7 +33,7 @@ export const wagmiConfig = createConfig({
   ],
   transports: {
     [polygon.id]: http(ALCHEMY_KEY ? `https://polygon-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}` : undefined),
-    [polygonAmoy.id]: http(),
+    [polygonAmoy.id]: http(), // 必要ならAlchemyに差し替え
     [mainnet.id]: http(ALCHEMY_KEY ? `https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}` : undefined),
   },
 })
