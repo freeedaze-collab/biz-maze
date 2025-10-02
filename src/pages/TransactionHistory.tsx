@@ -1,118 +1,62 @@
 // src/pages/TransactionHistory.tsx
-import React, { useEffect, useState } from 'react'
-import { supabase } from '@/lib/supabaseClient'
-import { triggerWalletSync } from '@/lib/walletSync'
-import { WalletConnectButton } from '@/components/WalletConnectButton'
+import { useEffect, useState } from "react";
+import { supabase } from "../integrations/supabase/client";
 
-type Tx = {
-  id: string
-  hash: string
-  direction: 'in' | 'out'
-  asset_symbol: string | null
-  amount: string
-  usd_value_at_tx: number | null
-  timestamp: string
-  chain: string | null
+interface Transaction {
+  id: string;
+  amount: number;
+  status: string;
+  created_at: string;
 }
 
 export default function TransactionHistory() {
-  const [rows, setRows] = useState<Tx[]>([])
-  const [loading, setLoading] = useState(false)
-  const [syncing, setSyncing] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  const fetchTx = async () => {
-    setLoading(true)
-    setError(null)
-    const { data, error } = await supabase
-      .from('transactions')
-      .select('*')
-      .order('timestamp', { ascending: false })
-      .limit(200)
-    if (error) setError(error.message)
-    setRows((data as any[]) as Tx[])
-    setLoading(false)
-  }
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetchTx()
-  }, [])
+    const fetchTransactions = async () => {
+      const { data, error } = await supabase
+        .from("transactions")
+        .select("*")
+        .order("created_at", { ascending: false });
 
-  const handleSync = async () => {
-    setSyncing(true)
-    setError(null)
-    const res = await triggerWalletSync('polygon').catch((e) => ({ ok: false, message: e?.message }))
-    if (!res.ok) setError(res.message ?? 'Sync failed')
-    await fetchTx()
-    setSyncing(false)
+      if (error) {
+        console.error("Error fetching transactions:", error.message);
+        setTransactions([]);
+      } else {
+        setTransactions(data ?? []);
+      }
+      setLoading(false);
+    };
+
+    fetchTransactions();
+  }, []);
+
+  if (loading) return <p>Loading...</p>;
+
+  if (transactions.length === 0) {
+    return (
+      <div>
+        <h2>Transaction History</h2>
+        <p>No transactions yet.</p>
+        <p>Total: 0</p>
+      </div>
+    );
   }
 
-  return (
-    <div className="max-w-5xl mx-auto p-4 space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Transaction History</h1>
-        <div className="flex gap-2">
-          <WalletConnectButton />
-          <button
-            className="px-3 py-2 rounded-md border"
-            onClick={handleSync}
-            disabled={syncing}
-            title="Resync from chain (Polygon)"
-          >
-            {syncing ? 'Syncing…' : 'Resync (Polygon)'}
-          </button>
-        </div>
-      </div>
+  const total = transactions.reduce((sum, tx) => sum + (tx.amount || 0), 0);
 
-      {error && <div className="text-red-600">{error}</div>}
-      {loading ? (
-        <div>Loading…</div>
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-sm">
-            <thead>
-              <tr className="text-left border-b">
-                <th className="py-2">Time</th>
-                <th>Hash</th>
-                <th>Dir</th>
-                <th>Asset</th>
-                <th>Amount</th>
-                <th>USD (at tx)</th>
-                <th>Chain</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => (
-                <tr key={r.id} className="border-b hover:bg-gray-50">
-                  <td className="py-2">{new Date(r.timestamp).toLocaleString()}</td>
-                  <td className="truncate max-w-[220px]">
-                    <a
-                      className="underline"
-                      href={`https://polygonscan.com/tx/${r.hash}`}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      {r.hash}
-                    </a>
-                  </td>
-                  <td>{r.direction}</td>
-                  <td>{r.asset_symbol ?? '-'}</td>
-                  <td>{r.amount}</td>
-                  <td>{r.usd_value_at_tx ?? '-'}</td>
-                  <td>{r.chain ?? 'polygon'}</td>
-                </tr>
-              ))}
-              {rows.length === 0 && (
-                <tr>
-                  <td colSpan={7} className="py-6 text-center text-gray-500">
-                    No transactions. Connect wallet and click “Resync”.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      )}
+  return (
+    <div>
+      <h2>Transaction History</h2>
+      <p>Total: {total}</p>
+      <ul>
+        {transactions.map((tx) => (
+          <li key={tx.id}>
+            {tx.created_at}: {tx.amount} ({tx.status})
+          </li>
+        ))}
+      </ul>
     </div>
-  )
+  );
 }
