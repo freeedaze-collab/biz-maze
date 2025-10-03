@@ -12,53 +12,73 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+// dev専用ロガー（本番では出ません）
+const devLog = (...args: any[]) => {
+  if (import.meta.env.DEV) {
+    // eslint-disable-next-line no-console
+    console.log("[Auth]", ...args);
+  }
+};
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // 初回: セッション取得
+    devLog("mount: start getSession()");
     supabase.auth.getSession().then(({ data: { session } }) => {
+      devLog("getSession() returned:", !!session, session?.user?.id);
       setSession(session ?? null);
       setUser(session?.user ?? null);
       setLoading(false);
+      devLog("getSession() state set -> loading=false");
     });
 
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange(async (event, session) => {
+      devLog("onAuthStateChange:", event, "user?", !!session?.user, session?.user?.id);
       setSession(session ?? null);
       setUser(session?.user ?? null);
 
-      // 任意: サインイン時に profiles 自動作成
+      // 任意: サインイン時に profiles 自動作成（既存仕様を維持）
       if (event === "SIGNED_IN" && session?.user) {
-        const { data: existing } = await supabase
-          .from("profiles")
-          .select("id")
-          .eq("user_id", session.user.id)
-          .single();
-        if (!existing) {
-          await supabase.from("profiles").insert({
-            user_id: session.user.id,
-            email: session.user.email,
-            display_name:
-              session.user.user_metadata?.full_name || session.user.email,
-          });
+        try {
+          const { data: existing } = await supabase
+            .from("profiles")
+            .select("id")
+            .eq("user_id", session.user.id)
+            .single();
+          if (!existing) {
+            devLog("profiles: creating for user", session.user.id);
+            await supabase.from("profiles").insert({
+              user_id: session.user.id,
+              email: session.user.email,
+              display_name:
+                session.user.user_metadata?.full_name || session.user.email,
+            });
+          }
+        } catch (e) {
+          devLog("profiles upsert error:", e);
         }
       }
     });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      devLog("unmount: unsubscribe onAuthStateChange");
+      subscription.unsubscribe();
+    };
   }, []);
 
   const signOut = async () => {
+    devLog("signOut()");
     await supabase.auth.signOut();
   };
 
   return (
     <AuthContext.Provider value={{ user, session, loading, signOut }}>
-      {/* ローディング中は必ず表示 */}
+      {/* ローディング中は必ず表示（空白回避） */}
       {loading ? <p className="p-4">Loading session...</p> : children}
     </AuthContext.Provider>
   );
