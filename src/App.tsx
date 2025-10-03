@@ -25,7 +25,7 @@ import Billing from '@/pages/Billing'
 // Guard & Dev tools
 import { AuthGuard } from '@/components/AuthGuard'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
-import DevAuthPanel from '@/components/DevAuthPanel' // ← 新規追加（DEVのみ表示）
+import DevAuthPanel from '@/components/DevAuthPanel' // ← 既存
 
 export default function App() {
   return (
