@@ -15,115 +15,53 @@ import SynthesisStatus from '@/pages/SynthesisStatus'
 import InvoiceStatusCheck from '@/pages/invoice/InvoiceStatusCheck'
 import WalletSelection from '@/pages/wallet/WalletSelection'
 import WithdrawalRequest from '@/pages/withdrawal/WithdrawalRequest'
-
-// Others already inプロジェクト
 import AccountingTaxScreen1 from '@/pages/accounting/AccountingTaxScreen1'
 import Pricing from '@/pages/Pricing'
 import TransferScreen3 from '@/pages/transfer/TransferScreen3'
 
-// Guard
+// Billing（請求書作成）
+import Billing from '@/pages/Billing'
+
+// Guard & Dev tools
 import { AuthGuard } from '@/components/AuthGuard'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
+import DevAuthPanel from '@/components/DevAuthPanel' // ← 新規追加（DEVのみ表示）
 
 export default function App() {
   return (
     <div className="min-h-screen flex flex-col">
       <main className="flex-1">
-        <Routes>
-          {/* Public */}
-          <Route path="/" element={<Index />} />
-          <Route path="/auth/login" element={<Login />} />
+        <ErrorBoundary>
+          <Routes>
+            {/* Public */}
+            <Route path="/" element={<Index />} />
+            <Route path="/auth/login" element={<Login />} />
 
-          {/* Auth required */}
-          <Route
-            path="/dashboard"
-            element={
-              <AuthGuard>
-                <Dashboard />
-              </AuthGuard>
-            }
-          />
+            {/* Auth required */}
+            <Route path="/dashboard" element={<AuthGuard><Dashboard /></AuthGuard>} />
+            <Route path="/transactions" element={<AuthGuard><TransactionHistory /></AuthGuard>} />
+            <Route path="/transaction-history" element={<AuthGuard><TransactionHistory /></AuthGuard>} />
+            <Route path="/synthesis-status" element={<AuthGuard><SynthesisStatus /></AuthGuard>} />
+            <Route path="/invoice-status" element={<AuthGuard><InvoiceStatusCheck /></AuthGuard>} />
+            <Route path="/wallet" element={<AuthGuard><WalletSelection /></AuthGuard>} />
+            <Route path="/withdrawal" element={<AuthGuard><WithdrawalRequest /></AuthGuard>} />
 
-          {/* Navigation ボタンに対応するルートを追加 */}
-          <Route
-            path="/transactions"
-            element={
-              <AuthGuard>
-                {/* 「取引一覧」は TransactionHistory を流用 */}
-                <TransactionHistory />
-              </AuthGuard>
-            }
-          />
-          <Route
-            path="/transaction-history"
-            element={
-              <AuthGuard>
-                <TransactionHistory />
-              </AuthGuard>
-            }
-          />
-          <Route
-            path="/synthesis-status"
-            element={
-              <AuthGuard>
-                <SynthesisStatus />
-              </AuthGuard>
-            }
-          />
-          <Route
-            path="/invoice-status"
-            element={
-              <AuthGuard>
-                <InvoiceStatusCheck />
-              </AuthGuard>
-            }
-          />
-          <Route
-            path="/wallet"
-            element={
-              <AuthGuard>
-                <WalletSelection />
-              </AuthGuard>
-            }
-          />
-          <Route
-            path="/withdrawal"
-            element={
-              <AuthGuard>
-                <WithdrawalRequest />
-              </AuthGuard>
-            }
-          />
+            {/* Billing */}
+            <Route path="/billing" element={<AuthGuard><Billing /></AuthGuard>} />
 
-          {/* 既存の機能ページ（必要に応じて） */}
-          <Route
-            path="/accounting"
-            element={
-              <AuthGuard>
-                <AccountingTaxScreen1 />
-              </AuthGuard>
-            }
-          />
-          <Route
-            path="/pricing"
-            element={
-              <AuthGuard>
-                <Pricing />
-              </AuthGuard>
-            }
-          />
-          <Route
-            path="/transfer"
-            element={
-              <AuthGuard>
-                <TransferScreen3 />
-              </AuthGuard>
-            }
-          />
+            {/* Optional features */}
+            <Route path="/pricing" element={<AuthGuard><Pricing /></AuthGuard>} />
+            <Route path="/accounting" element={<AuthGuard><AccountingTaxScreen1 /></AuthGuard>} />
+            <Route path="/transfer" element={<AuthGuard><TransferScreen3 /></AuthGuard>} />
 
-          {/* Fallback */}
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
+            {/* Fallback */}
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </ErrorBoundary>
       </main>
+
+      {/* DEVのときだけ小さなデバッグパネルを表示（本番では出ません） */}
+      {import.meta.env.DEV && <DevAuthPanel />}
     </div>
   )
 }
