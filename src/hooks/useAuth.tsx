@@ -12,7 +12,7 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-// dev専用ロガー（本番では出ません）
+// ▼▼ 追加: DEV時のみログ出力（本番では出ません） ▼▼
 const devLog = (...args: any[]) => {
   if (import.meta.env.DEV) {
     // eslint-disable-next-line no-console
@@ -21,18 +21,19 @@ const devLog = (...args: any[]) => {
 };
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
+  devLog("AuthProvider mount");
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    devLog("mount: start getSession()");
+    devLog("start getSession()");
     supabase.auth.getSession().then(({ data: { session } }) => {
       devLog("getSession() returned:", !!session, session?.user?.id);
       setSession(session ?? null);
       setUser(session?.user ?? null);
       setLoading(false);
-      devLog("getSession() state set -> loading=false");
+      devLog("getSession() state -> loading=false");
     });
 
     const {
@@ -42,7 +43,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setSession(session ?? null);
       setUser(session?.user ?? null);
 
-      // 任意: サインイン時に profiles 自動作成（既存仕様を維持）
+      // 既存仕様: サインイン時に profiles を自動作成
       if (event === "SIGNED_IN" && session?.user) {
         try {
           const { data: existing } = await supabase
@@ -51,7 +52,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             .eq("user_id", session.user.id)
             .single();
           if (!existing) {
-            devLog("profiles: creating for user", session.user.id);
+            devLog("profiles insert for", session.user.id);
             await supabase.from("profiles").insert({
               user_id: session.user.id,
               email: session.user.email,
@@ -66,7 +67,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
 
     return () => {
-      devLog("unmount: unsubscribe onAuthStateChange");
+      devLog("unsubscribe onAuthStateChange");
       subscription.unsubscribe();
     };
   }, []);
@@ -76,10 +77,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await supabase.auth.signOut();
   };
 
+  // ▼▼ 重要: 観測のため loading 中でも children を描画する ▼▼
+  // これにより App.tsx 側の DevAuthPanel が常に表示可能になり、データの有無が見えるようになります。
   return (
     <AuthContext.Provider value={{ user, session, loading, signOut }}>
-      {/* ローディング中は必ず表示（空白回避） */}
-      {loading ? <p className="p-4">Loading session...</p> : children}
+      {import.meta.env.DEV && loading && (
+        <p className="p-4">Loading session...</p>
+      )}
+      {children}
     </AuthContext.Provider>
   );
 }
