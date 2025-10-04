@@ -24,7 +24,6 @@ export const supabase: SupabaseClient =
   createClient(FALLBACK_URL, FALLBACK_ANON, {
     auth: {
       storage: localStorage,   // ← 追加
-      storageKey: 'bizmaze-auth',
       persistSession: true,
       autoRefreshToken: true,
       detectSessionInUrl: true,
