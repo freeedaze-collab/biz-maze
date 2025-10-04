@@ -23,7 +23,8 @@ export const supabase: SupabaseClient =
   globalThis.__supabase__ ??
   createClient(FALLBACK_URL, FALLBACK_ANON, {
     auth: {
-      storage: localStorage,   // ← 追加
+      // storageKey は削除 → デフォルトの `sb-<projectref>-auth-token` を利用
+      storage: localStorage,
       persistSession: true,
       autoRefreshToken: true,
       detectSessionInUrl: true,
