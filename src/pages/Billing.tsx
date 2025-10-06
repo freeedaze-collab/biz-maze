@@ -1,177 +1,201 @@
-// src/pages/Billing.tsx
-// 目的: cryptoinvoice.new のように「請求書を作成」できるフォーム画面
-// - 顧客名 / 金額 / 通貨 / メモ を入力
-// - Supabase の invoices に INSERT（RLS: user_id = auth.uid()）
-// - 作成後、請求IDを表示 & ステータス確認ページへの導線
-import { useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
-import Navigation from "@/components/Navigation";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
-import { Badge } from "@/components/ui/badge";
-import { CreditCard, CheckCircle } from "lucide-react";
+import React, { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { useAuth } from "@/hooks/useAuth";
 
-type Currency = "USD" | "BTC" | "ETH";
+interface Company {
+  id: string;
+  name: string;
+  address?: string;
+  country?: string;
+  email?: string;
+}
+
+interface Client {
+  id: string;
+  name: string;
+  address?: string;
+  country?: string;
+  email?: string;
+}
+
+interface InvoiceItem {
+  description: string;
+  amount: number;
+  currency: string;
+}
 
 export default function Billing() {
-  const { user } = useAuth();
-  const nav = useNavigate();
-  const [customer, setCustomer] = useState("");
-  const [amount, setAmount] = useState<string>("");
-  const [currency, setCurrency] = useState<Currency>("USD");
-  const [memo, setMemo] = useState("");
-  const [creating, setCreating] = useState(false);
-  const [result, setResult] = useState<{ id: string } | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [companies, setCompanies] = useState<Company[]>([]);
+  const [clients, setClients] = useState<Client[]>([]);
+  const [selectedCompany, setSelectedCompany] = useState<string>("");
+  const [selectedClient, setSelectedClient] = useState<string>("");
+  const [items, setItems] = useState<InvoiceItem[]>([
+    { description: "", amount: 0, currency: "USD" },
+  ]);
+  const [loading, setLoading] = useState(false);
 
-  const canSubmit = !!user?.id && customer.trim() && amount.trim();
+  // 会社・クライアントのロード
+  useEffect(() => {
+    const fetchData = async () => {
+      const { data: comp } = await supabase.from("companies").select("*");
+      const { data: cli } = await supabase.from("clients").select("*");
+      if (comp) setCompanies(comp);
+      if (cli) setClients(cli);
+    };
+    fetchData();
+  }, []);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!canSubmit) return;
-    setCreating(true);
-    setError(null);
-    try {
-      // invoices テーブル想定カラム:
-      // id (uuid/serial), user_id uuid, customer_name text, amount numeric, currency text,
-      // memo text, status text default 'unpaid', created_at timestamp
-      const payload = {
-        user_id: user!.id,
-        customer_name: customer,
-        amount: Number(amount),
-        currency,
-        memo,
-        status: "unpaid",
-      } as const;
+  // 会社新規保存
+  const saveCompany = async (company: Partial<Company>) => {
+    const { data, error } = await supabase.from("companies").insert(company).select();
+    if (!error && data) setCompanies((prev) => [...prev, ...data]);
+  };
 
-      const { data, error } = await supabase
-        .from("invoices")
-        .insert(payload)
-        .select("id")
-        .single();
+  // クライアント新規保存
+  const saveClient = async (client: Partial<Client>) => {
+    const { data, error } = await supabase.from("clients").insert(client).select();
+    if (!error && data) setClients((prev) => [...prev, ...data]);
+  };
 
-      if (error) throw error;
-      setResult({ id: data!.id as string });
+  // 請求書保存
+  const saveInvoice = async () => {
+    if (!selectedCompany || !selectedClient || items.length === 0) {
+      alert("Company, Client and at least 1 item are required");
+      return;
+    }
+    setLoading(true);
 
-      // cryptoinvoice.new 風: そのまま完了表示 + ステータス確認へ誘導
-      // 必要なら自動遷移: nav("/invoice-status") も可
-    } catch (e: any) {
-      setError(e?.message ?? "Failed to create invoice");
-    } finally {
-      setCreating(false);
+    const total = items.reduce((sum, i) => sum + i.amount, 0);
+
+    const { error } = await supabase.from("invoices").insert({
+      company_id: selectedCompany,
+      client_id: selectedClient,
+      customer_name: clients.find((c) => c.id === selectedClient)?.name || "",
+      total_amount: total,
+      currency: items[0].currency,
+      items: items, // JSONB カラムを想定
+    });
+
+    setLoading(false);
+    if (error) {
+      console.error(error);
+      alert("Failed to save invoice");
+    } else {
+      alert("Invoice saved!");
     }
   };
 
+  // 品目の追加/変更
+  const updateItem = (index: number, key: keyof InvoiceItem, value: any) => {
+    const updated = [...items];
+    updated[index][key] = value;
+    setItems(updated);
+  };
+
   return (
-    <div className="min-h-screen bg-background">
-      <div className="container mx-auto p-6">
-        <div className="mb-8">
-          <div className="flex items-center gap-4 mb-4">
-            <CreditCard className="h-6 w-6" />
-            <div>
-              <h1 className="text-2xl font-bold">Create Invoice</h1>
-              <p className="text-muted-foreground">Issue a crypto-friendly invoice</p>
-            </div>
-          </div>
-          <Navigation />
-        </div>
+    <div className="p-6">
+      <h1 className="text-2xl font-bold mb-4">Create Invoice</h1>
 
-        <Card className="max-w-2xl mx-auto">
-          <CardHeader>
-            <CardTitle>New Invoice</CardTitle>
-            <CardDescription>
-              Enter recipient and amount. Status starts as <Badge>unpaid</Badge>.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            {result ? (
-              <div className="space-y-4">
-                <div className="flex items-center gap-2 text-success">
-                  <CheckCircle className="h-5 w-5" />
-                  <span className="font-medium">Invoice created</span>
-                </div>
-                <div className="rounded-md border p-3">
-                  <div className="text-sm text-muted-foreground">Invoice ID</div>
-                  <div className="font-mono">{result.id}</div>
-                </div>
-                <div className="flex gap-2">
-                  <Button asChild>
-                    <Link to="/invoice-status">Check Status</Link>
-                  </Button>
-                  <Button variant="outline" onClick={() => { setResult(null); setCustomer(""); setAmount(""); setMemo(""); }}>
-                    Create Another
-                  </Button>
-                </div>
-              </div>
-            ) : (
-              <form className="space-y-4" onSubmit={handleSubmit}>
-                <div className="space-y-2">
-                  <Label htmlFor="customer">Customer</Label>
-                  <Input
-                    id="customer"
-                    placeholder="ACME Inc."
-                    value={customer}
-                    onChange={(e) => setCustomer(e.target.value)}
-                    required
-                  />
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="amount">Amount</Label>
-                    <Input
-                      id="amount"
-                      type="number"
-                      inputMode="decimal"
-                      placeholder="1000"
-                      min="0"
-                      step="0.01"
-                      value={amount}
-                      onChange={(e) => setAmount(e.target.value)}
-                      required
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Currency</Label>
-                    <Select value={currency} onValueChange={(v) => setCurrency(v as Currency)}>
-                      <SelectTrigger className="w-full">
-                        <SelectValue placeholder="Select currency" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="USD">USD</SelectItem>
-                        <SelectItem value="BTC">BTC</SelectItem>
-                        <SelectItem value="ETH">ETH</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="memo">Memo (optional)</Label>
-                  <Textarea
-                    id="memo"
-                    placeholder="Service description, notes, etc."
-                    value={memo}
-                    onChange={(e) => setMemo(e.target.value)}
-                  />
-                </div>
-
-                {error && <p className="text-destructive text-sm">{error}</p>}
-
-                <Button type="submit" disabled={!canSubmit || creating}>
-                  {creating ? "Creating..." : "Create Invoice"}
-                </Button>
-              </form>
-            )}
-          </CardContent>
-        </Card>
+      {/* Company */}
+      <div className="mb-6">
+        <label className="block font-semibold mb-2">Your Company</label>
+        <select
+          className="border rounded p-2 w-full mb-2"
+          value={selectedCompany}
+          onChange={(e) => setSelectedCompany(e.target.value)}
+        >
+          <option value="">-- Select Company --</option>
+          {companies.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
+            </option>
+          ))}
+        </select>
+        <button
+          className="bg-blue-500 text-white px-3 py-1 rounded"
+          onClick={() =>
+            saveCompany({
+              name: prompt("Company name?") || "",
+              email: prompt("Email?") || "",
+            })
+          }
+        >
+          + Add Company
+        </button>
       </div>
+
+      {/* Client */}
+      <div className="mb-6">
+        <label className="block font-semibold mb-2">Your Client</label>
+        <select
+          className="border rounded p-2 w-full mb-2"
+          value={selectedClient}
+          onChange={(e) => setSelectedClient(e.target.value)}
+        >
+          <option value="">-- Select Client --</option>
+          {clients.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
+            </option>
+          ))}
+        </select>
+        <button
+          className="bg-blue-500 text-white px-3 py-1 rounded"
+          onClick={() =>
+            saveClient({
+              name: prompt("Client name?") || "",
+              email: prompt("Email?") || "",
+            })
+          }
+        >
+          + Add Client
+        </button>
+      </div>
+
+      {/* Items */}
+      <div className="mb-6">
+        <label className="block font-semibold mb-2">Items</label>
+        {items.map((item, idx) => (
+          <div key={idx} className="flex gap-2 mb-2">
+            <input
+              type="text"
+              placeholder="Description"
+              className="border p-2 flex-1"
+              value={item.description}
+              onChange={(e) => updateItem(idx, "description", e.target.value)}
+            />
+            <input
+              type="number"
+              placeholder="Amount"
+              className="border p-2 w-24"
+              value={item.amount}
+              onChange={(e) => updateItem(idx, "amount", parseFloat(e.target.value))}
+            />
+            <select
+              className="border p-2 w-24"
+              value={item.currency}
+              onChange={(e) => updateItem(idx, "currency", e.target.value)}
+            >
+              <option>USD</option>
+              <option>JPY</option>
+              <option>EUR</option>
+            </select>
+          </div>
+        ))}
+        <button
+          className="bg-gray-500 text-white px-3 py-1 rounded"
+          onClick={() => setItems([...items, { description: "", amount: 0, currency: "USD" }])}
+        >
+          + Add Item
+        </button>
+      </div>
+
+      <button
+        className="bg-green-600 text-white px-4 py-2 rounded"
+        onClick={saveInvoice}
+        disabled={loading}
+      >
+        {loading ? "Saving..." : "Save Invoice"}
+      </button>
     </div>
   );
 }
