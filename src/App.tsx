@@ -1,133 +1,67 @@
 // src/App.tsx
-import React, { Suspense } from "react";
-import { HashRouter, Routes, Route, Navigate } from "react-router-dom";
+import React from 'react'
+import { Routes, Route, Navigate } from 'react-router-dom'
 
 // Public pages
-import Index from "@/pages/Index";
-import Login from "@/pages/auth/Login";
-import Signup from "@/pages/auth/Signup";
-import Pricing from "@/pages/Pricing";
+import Index from '@/pages/Index'
+import Login from '@/pages/auth/Login'
 
-// Auth-only pages
-import Dashboard from "@/pages/Dashboard";
-import TransactionHistory from "@/pages/TransactionHistory";
-import Billing from "@/pages/Billing";
-import Profile from "@/pages/Profile";
-import WalletSelection from "@/pages/wallet/WalletSelection";
-import PaymentGateway from "@/pages/payment/PaymentGateway";
+// Dashboard (requires auth)
+import Dashboard from '@/pages/Dashboard'
 
-// Transfer flows (ETH first)
-import TransferHome from "@/pages/transfer/TransferHome";
-import NewRecipient from "@/pages/transfer/NewRecipient";
-import ExistingClientTransfer from "@/pages/transfer/ExistingClientTransfer";
-import PayFromInvoice from "@/pages/transfer/PayFromInvoice";
+// Feature pages (requires auth)
+import TransactionHistory from '@/pages/TransactionHistory'
+import SynthesisStatus from '@/pages/SynthesisStatus'
+import InvoiceStatusCheck from '@/pages/invoice/InvoiceStatusCheck'
+import WalletSelection from '@/pages/wallet/WalletSelection'
+import WithdrawalRequest from '@/pages/withdrawal/WithdrawalRequest'
+import AccountingTaxScreen1 from '@/pages/accounting/AccountingTaxScreen1'
+import Pricing from '@/pages/Pricing'
+import TransferScreen3 from '@/pages/transfer/TransferScreen3'
 
-// Guards / Error boundary
-import { AuthGuard } from "@/components/AuthGuard";
-import { ErrorBoundary } from "@/components/ErrorBoundary";
+// Billing（請求書作成）
+import Billing from '@/pages/Billing'
 
-// ※ リロード時の白画面対策として HashRouter を採用（サーバ側のルーティング設定が不要）
+// Guard & Dev tools
+import { AuthGuard } from '@/components/AuthGuard'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
+import DevAuthPanel from '@/components/DevAuthPanel' // ← 既存
+
 export default function App() {
   return (
-    <HashRouter>
-      <ErrorBoundary>
-        <Suspense fallback={<div className="p-6">Loading...</div>}>
+    <div className="min-h-screen flex flex-col">
+      <main className="flex-1">
+        <ErrorBoundary>
           <Routes>
             {/* Public */}
             <Route path="/" element={<Index />} />
             <Route path="/auth/login" element={<Login />} />
-            <Route path="/auth/signup" element={<Signup />} />
-            <Route path="/pricing" element={<Pricing />} />
 
-            {/* Auth-only */}
-            <Route
-              path="/dashboard"
-              element={
-                <AuthGuard>
-                  <Dashboard />
-                </AuthGuard>
-              }
-            />
-            <Route
-              path="/transaction-history"
-              element={
-                <AuthGuard>
-                  <TransactionHistory />
-                </AuthGuard>
-              }
-            />
-            <Route
-              path="/billing"
-              element={
-                <AuthGuard>
-                  <Billing />
-                </AuthGuard>
-              }
-            />
-            <Route
-              path="/profile"
-              element={
-                <AuthGuard>
-                  <Profile />
-                </AuthGuard>
-              }
-            />
-            <Route
-              path="/wallet"
-              element={
-                <AuthGuard>
-                  <WalletSelection />
-                </AuthGuard>
-              }
-            />
-            <Route
-              path="/payment-gateway"
-              element={
-                <AuthGuard>
-                  <PaymentGateway />
-                </AuthGuard>
-              }
-            />
+            {/* Auth required */}
+            <Route path="/dashboard" element={<AuthGuard><Dashboard /></AuthGuard>} />
+            <Route path="/transactions" element={<AuthGuard><TransactionHistory /></AuthGuard>} />
+            <Route path="/transaction-history" element={<AuthGuard><TransactionHistory /></AuthGuard>} />
+            <Route path="/synthesis-status" element={<AuthGuard><SynthesisStatus /></AuthGuard>} />
+            <Route path="/invoice-status" element={<AuthGuard><InvoiceStatusCheck /></AuthGuard>} />
+            <Route path="/wallet" element={<AuthGuard><WalletSelection /></AuthGuard>} />
+            <Route path="/withdrawal" element={<AuthGuard><WithdrawalRequest /></AuthGuard>} />
 
-            {/* Transfer (ETH) */}
-            <Route
-              path="/transfer"
-              element={
-                <AuthGuard>
-                  <TransferHome />
-                </AuthGuard>
-              }
-            />
-            <Route
-              path="/transfer/new"
-              element={
-                <AuthGuard>
-                  <NewRecipient />
-                </AuthGuard>
-              }
-            />
-            <Route
-              path="/transfer/existing"
-              element={
-                <AuthGuard>
-                  <ExistingClientTransfer />
-                </AuthGuard>
-              }
-            />
-            <Route
-              path="/transfer/from-invoice"
-              element={
-                <AuthGuard>
-                  <PayFromInvoice />
-                </AuthGuard>
-              }
-            />
+            {/* Billing */}
+            <Route path="/billing" element={<AuthGuard><Billing /></AuthGuard>} />
+
+            {/* Optional features */}
+            <Route path="/pricing" element={<AuthGuard><Pricing /></AuthGuard>} />
+            <Route path="/accounting" element={<AuthGuard><AccountingTaxScreen1 /></AuthGuard>} />
+            <Route path="/transfer" element={<AuthGuard><TransferScreen3 /></AuthGuard>} />
 
             {/* Fallback */}
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
-        </Suspense>
-      </ErrorBoundary>
-    </HashRouter>
-  );
+        </ErrorBoundary>
+      </main>
+
+      {/* DEVのときだけ小さなデバッグパネルを表示（本番では出ません） */}
+      {import.meta.env.DEV && <DevAuthPanel />}
+    </div>
+  )
 }
