@@ -1,64 +1,131 @@
-import { Link } from "react-router-dom";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ArrowLeft } from "lucide-react";
-import { WalletAddressInput } from "@/components/WalletAddressInput";
+// src/pages/wallet/WalletSelection.tsx
+// ETHのみ：MetaMask 実接続 + 手動アドレス保存（複数可）
+import Navigation from "@/components/Navigation";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { useAuth } from "@/hooks/useAuth";
+import { useEffect, useState } from "react";
+import { supabase } from "@/integrations/supabase/client";
+import { useAccount, useConnect, useDisconnect } from "wagmi";
+import { InjectedConnector } from "wagmi/connectors/injected";
 
-const WalletConnect = () => {
+type WalletRow = {
+  id: string;
+  user_id: string;
+  provider: string; // metamask | manual
+  address: string;
+  created_at?: string;
+};
+
+export default function WalletSelection() {
+  const { user } = useAuth();
+  const { address, isConnected } = useAccount();
+  const { connect, connectors, error: connectErr, isPending } = useConnect();
+  const { disconnect } = useDisconnect();
+
+  const [list, setList] = useState<WalletRow[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [manualAddress, setManualAddress] = useState("");
+
+  const load = async () => {
+    if (!user) return;
+    const { data } = await supabase.from("wallet_connections").select("*").eq("user_id", user.id).order("created_at", { ascending: false });
+    setList(data || []);
+  };
+
+  useEffect(() => { load(); }, [user?.id]);
+
+  const saveWallet = async (provider: string, addr: string) => {
+    if (!user || !addr) return;
+    setSaving(true);
+    await supabase.from("wallet_connections").insert({ user_id: user.id, provider, address: addr });
+    setSaving(false);
+    setManualAddress("");
+    await load();
+  };
+
+  const connectMetamask = async () => {
+    try {
+      const injected = connectors.find(c => c.id === "injected") || new InjectedConnector();
+      await connect({ connector: injected });
+      // wagmi の address は次のレンダリングで反映されるので、手動保存ボタンも用意
+    } catch (e) {
+      console.error("metamask connect error", e);
+    }
+  };
+
+  const saveConnected = async () => {
+    if (address) await saveWallet("metamask", address);
+  };
+
+  const linkManual = async () => {
+    if (!manualAddress) return;
+    await saveWallet("manual", manualAddress);
+  };
 
   return (
     <div className="min-h-screen bg-background">
       <div className="container mx-auto p-6">
-        <div className="mb-6">
-          <Link to="/wallet-creation" className="inline-flex items-center gap-2 text-muted-foreground hover:text-foreground">
-            <ArrowLeft className="h-4 w-4" />
-            Back to Wallet Selection
-          </Link>
-        </div>
+        <Navigation />
 
-        <div className="max-w-2xl mx-auto">
-          <div className="text-center mb-8">
-            <h1 className="text-3xl font-bold">Connect Existing Wallet</h1>
-            <p className="text-muted-foreground mt-2">
-              Enter your wallet address to connect your existing wallet
-            </p>
-          </div>
-
-          <div className="max-w-2xl mx-auto mb-6">
-            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-              <h3 className="text-lg font-semibold text-blue-900 mb-2">How to Connect Your Wallet</h3>
-              <div className="text-sm text-blue-800 space-y-2">
-                <p>To connect your existing wallet:</p>
-                <ol className="list-decimal list-inside space-y-1 ml-2">
-                  <li>Copy your wallet's public address</li>
-                  <li>Paste it in the field below</li>
-                  <li>Click "Connect Wallet" to link it to your account</li>
-                </ol>
-                <p className="mt-3 font-medium">⚠️ Never share your private keys or seed phrases!</p>
-              </div>
-            </div>
-          </div>
-
-          <WalletAddressInput />
-
-          <Card className="mt-6">
+        <div className="grid lg:grid-cols-2 gap-6 mt-6">
+          <Card>
             <CardHeader>
-              <CardTitle className="text-lg">Supported Wallets</CardTitle>
+              <CardTitle>Connect Wallet (ETH)</CardTitle>
+              <CardDescription>Use MetaMask or link address manually.</CardDescription>
             </CardHeader>
-            <CardContent>
-              <div className="text-sm text-muted-foreground space-y-2">
-                <p>You can connect any wallet by entering its address:</p>
-                <ul className="list-disc list-inside space-y-1 ml-4">
-                  <li>MetaMask, Coinbase Wallet, Exodus</li>
-                  <li>Hardware wallets (Ledger, Trezor)</li>
-                  <li>Any Ethereum or Bitcoin wallet</li>
-                </ul>
+            <CardContent className="space-y-3">
+              <div className="flex gap-2">
+                <Button onClick={connectMetamask} disabled={isPending}>
+                  {isConnected ? "Re-connect MetaMask" : "Connect MetaMask"}
+                </Button>
+                <Button variant="outline" onClick={() => disconnect()} disabled={!isConnected}>
+                  Disconnect
+                </Button>
+                <Button variant="secondary" onClick={saveConnected} disabled={!address}>Save connected</Button>
               </div>
+              {connectErr && <p className="text-destructive text-sm">{String(connectErr?.message || connectErr)}</p>}
+
+              <div className="rounded-md border p-3 space-y-2">
+                <Label>Manual link (address only)</Label>
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="col-span-3 md:col-span-2">
+                    <Input placeholder="0x..." value={manualAddress} onChange={(e) => setManualAddress(e.target.value)} />
+                  </div>
+                  <Button onClick={linkManual} disabled={saving || !manualAddress}>Link</Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  * You can link multiple wallets. Only ETH chain is supported for now.
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Linked Wallets</CardTitle>
+              <CardDescription>Multiple wallets can be linked.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {list.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No wallets linked yet.</p>
+              ) : (
+                list.map((w) => (
+                  <div key={w.id} className="flex items-center justify-between border rounded-md px-3 py-2">
+                    <div className="text-sm">
+                      <div className="font-medium">{w.provider}</div>
+                      <div className="font-mono text-xs opacity-80">{w.address}</div>
+                    </div>
+                    {/* 将来：削除/既定化 など */}
+                  </div>
+                ))
+              )}
             </CardContent>
           </Card>
         </div>
       </div>
     </div>
   );
-};
-
-export default WalletConnect;
+}
