@@ -28,35 +28,78 @@ export default function Billing() {
   const [clients, setClients] = useState<Client[]>([]);
   const [selectedCompany, setSelectedCompany] = useState<string>("");
   const [selectedClient, setSelectedClient] = useState<string>("");
+
+  const [invoiceNumber, setInvoiceNumber] = useState("");
+  const [issueDate, setIssueDate] = useState<string>("");
+  const [dueDate, setDueDate] = useState<string>("");
+  const [taxRate, setTaxRate] = useState<number>(0);
+  const [notes, setNotes] = useState("");
+
   const [items, setItems] = useState<InvoiceItem[]>([
     { description: "", amount: 0, currency: "USD" },
   ]);
   const [loading, setLoading] = useState(false);
 
-  // 会社・クライアントのロード
+  // 初期ロード: companies / clients + 次の請求書番号
   useEffect(() => {
     const fetchData = async () => {
       const { data: comp } = await supabase.from("companies").select("*");
       const { data: cli } = await supabase.from("clients").select("*");
       if (comp) setCompanies(comp);
       if (cli) setClients(cli);
+
+      await generateNextInvoiceNumber();
     };
     fetchData();
   }, []);
 
-  // 会社新規保存
+  // 次の請求書番号を生成
+  const generateNextInvoiceNumber = async () => {
+    const year = new Date().getFullYear();
+
+    const { data, error } = await supabase
+      .from("invoices")
+      .select("invoice_number")
+      .ilike("invoice_number", `INV-${year}-%`)
+      .order("invoice_number", { ascending: false })
+      .limit(1);
+
+    if (error) {
+      console.error("Failed to fetch last invoice:", error);
+      setInvoiceNumber(`INV-${year}-001`);
+      return;
+    }
+
+    if (data && data.length > 0) {
+      const last = data[0].invoice_number as string;
+      const match = last.match(/INV-(\d+)-(\d+)/);
+      if (match) {
+        const seq = parseInt(match[2], 10) + 1;
+        setInvoiceNumber(`INV-${year}-${String(seq).padStart(3, "0")}`);
+        return;
+      }
+    }
+
+    // データがない場合は初期値
+    setInvoiceNumber(`INV-${year}-001`);
+  };
+
   const saveCompany = async (company: Partial<Company>) => {
-    const { data, error } = await supabase.from("companies").insert(company).select();
+    const { data, error } = await supabase
+      .from("companies")
+      .insert(company)
+      .select();
     if (!error && data) setCompanies((prev) => [...prev, ...data]);
   };
 
-  // クライアント新規保存
   const saveClient = async (client: Partial<Client>) => {
-    const { data, error } = await supabase.from("clients").insert(client).select();
+    const { data, error } = await supabase
+      .from("clients")
+      .insert(client)
+      .select();
     if (!error && data) setClients((prev) => [...prev, ...data]);
   };
 
-  // 請求書保存
   const saveInvoice = async () => {
     if (!selectedCompany || !selectedClient || items.length === 0) {
       alert("Company, Client and at least 1 item are required");
@@ -65,14 +108,23 @@ export default function Billing() {
     setLoading(true);
 
     const total = items.reduce((sum, i) => sum + i.amount, 0);
+    const company = companies.find((c) => c.id === selectedCompany);
+    const client = clients.find((c) => c.id === selectedClient);
 
     const { error } = await supabase.from("invoices").insert({
       company_id: selectedCompany,
       client_id: selectedClient,
-      customer_name: clients.find((c) => c.id === selectedClient)?.name || "",
+      customer_name: client?.name || "",
       total_amount: total,
       currency: items[0].currency,
-      items: items, // JSONB カラムを想定
+      items: items,
+      invoice_number: invoiceNumber,
+      issue_date: issueDate || new Date().toISOString().slice(0, 10),
+      due_date: dueDate || null,
+      notes,
+      tax_rate: taxRate,
+      company_address: company?.address || "",
+      billing_address: client?.address || "",
     });
 
     setLoading(false);
@@ -80,11 +132,11 @@ export default function Billing() {
       console.error(error);
       alert("Failed to save invoice");
     } else {
-      alert("Invoice saved!");
+      alert(`Invoice ${invoiceNumber} saved!`);
+      await generateNextInvoiceNumber(); // 次番号に更新
     }
   };
 
-  // 品目の追加/変更
   const updateItem = (index: number, key: keyof InvoiceItem, value: any) => {
     const updated = [...items];
     updated[index][key] = value;
@@ -94,6 +146,47 @@ export default function Billing() {
   return (
     <div className="p-6">
       <h1 className="text-2xl font-bold mb-4">Create Invoice</h1>
+
+      {/* Invoice Metadata */}
+      <div className="grid grid-cols-2 gap-4 mb-6">
+        <div>
+          <label className="block font-semibold mb-1">Invoice Number</label>
+          <input
+            type="text"
+            className="border p-2 w-full bg-gray-100"
+            value={invoiceNumber}
+            readOnly
+          />
+        </div>
+        <div>
+          <label className="block font-semibold mb-1">Issue Date</label>
+          <input
+            type="date"
+            className="border p-2 w-full"
+            value={issueDate}
+            onChange={(e) => setIssueDate(e.target.value)}
+          />
+        </div>
+        <div>
+          <label className="block font-semibold mb-1">Due Date</label>
+          <input
+            type="date"
+            className="border p-2 w-full"
+            value={dueDate}
+            onChange={(e) => setDueDate(e.target.value)}
+          />
+        </div>
+        <div>
+          <label className="block font-semibold mb-1">Tax Rate (%)</label>
+          <input
+            type="number"
+            className="border p-2 w-full"
+            value={taxRate}
+            onChange={(e) => setTaxRate(parseFloat(e.target.value))}
+            placeholder="0"
+          />
+        </div>
+      </div>
 
       {/* Company */}
       <div className="mb-6">
@@ -116,6 +209,7 @@ export default function Billing() {
             saveCompany({
               name: prompt("Company name?") || "",
               email: prompt("Email?") || "",
+              address: prompt("Address?") || "",
             })
           }
         >
@@ -144,6 +238,7 @@ export default function Billing() {
             saveClient({
               name: prompt("Client name?") || "",
               email: prompt("Email?") || "",
+              address: prompt("Address?") || "",
             })
           }
         >
@@ -168,7 +263,9 @@ export default function Billing() {
               placeholder="Amount"
               className="border p-2 w-24"
               value={item.amount}
-              onChange={(e) => updateItem(idx, "amount", parseFloat(e.target.value))}
+              onChange={(e) =>
+                updateItem(idx, "amount", parseFloat(e.target.value))
+              }
             />
             <select
               className="border p-2 w-24"
@@ -183,10 +280,26 @@ export default function Billing() {
         ))}
         <button
           className="bg-gray-500 text-white px-3 py-1 rounded"
-          onClick={() => setItems([...items, { description: "", amount: 0, currency: "USD" }])}
+          onClick={() =>
+            setItems([
+              ...items,
+              { description: "", amount: 0, currency: "USD" },
+            ])
+          }
         >
           + Add Item
         </button>
+      </div>
+
+      {/* Notes */}
+      <div className="mb-6">
+        <label className="block font-semibold mb-1">Notes</label>
+        <textarea
+          className="border p-2 w-full"
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          placeholder="Additional information, payment terms, etc."
+        />
       </div>
 
       <button
