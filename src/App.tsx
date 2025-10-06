@@ -1,6 +1,6 @@
 // src/App.tsx
 import React from 'react'
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { Routes, Route, Navigate } from 'react-router-dom'
 
 // Public pages
 import Index from '@/pages/Index'
