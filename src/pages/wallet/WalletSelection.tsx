@@ -40,6 +40,8 @@ export default function WalletSelection() {
     setMsg(null);
   };
 
+console.log("FUNCTIONS_BASE:", FUNCTIONS_BASE);
+  
   const verifyAndLink = async () => {
     setMsg(null);
     if (!valid) {
