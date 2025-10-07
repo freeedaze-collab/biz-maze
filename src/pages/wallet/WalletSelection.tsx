@@ -1,9 +1,9 @@
-// ユーザーの操作フロー：
-// 1) 「Link Wallet」ボタン → アドレス入力欄が出る
-// 2) アドレスを入力（0x... 形式チェック）
-// 3) 「Verify & Link with MetaMask」→ MetaMaskと接続し、入力アドレスと選択アカウント一致チェック
-// 4) 署名フロー：Edge Function(GETでnonce取得→署名→POSTで検証) → 成功したら profiles.primary_wallet に保存
-// 5) 非接続・MetaMask無しの場合でも「Manual Save」（但し本人性検証は不可なので非推奨／推奨は上記の署名フロー）
+// src/pages/wallet/WalletSelection.tsx
+// フロー：
+// 1) 「Link Wallet」→ アドレス入力欄が表示
+// 2) アドレス入力（0x + 40hex バリデーション）
+// 3) 「Verify & Link」→ MetaMask接続 → 入力アドレスと接続アカウント一致を確認
+// 4) Edge Function: GET(Nonce) → 署名 → POST(検証&保存)
 
 import { useState, useMemo } from "react";
 import { useAccount, useBalance, useConnect, useDisconnect, useSignMessage } from "wagmi";
@@ -12,6 +12,9 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 
 const isEthAddress = (v: string) => /^0x[a-fA-F0-9]{40}$/.test(v || "");
+
+// ★ Edge Function のフルURL（相対ではなくフル）にするのが重要！
+const FUNCTIONS_BASE = `${(import.meta.env.VITE_SUPABASE_URL || "").replace(/\/+$/, "")}/functions/v1/verify_wallet`;
 
 export default function WalletSelection() {
   const { user } = useAuth();
@@ -40,7 +43,7 @@ export default function WalletSelection() {
   const verifyAndLink = async () => {
     setMsg(null);
     if (!valid) {
-      setMsg("Invalid Ethereum address format.");
+      setMsg("Invalid Ethereum address format (0x + 40 hex chars required).");
       return;
     }
     try {
@@ -52,32 +55,32 @@ export default function WalletSelection() {
       }
       if (!connected) throw new Error("MetaMask not connected.");
 
-      // 2) 入力アドレスと接続中アカウントの一致チェック
+      // 2) 入力アドレスと接続アカウント一致チェック
       if (connected.toLowerCase() !== inputAddress.toLowerCase()) {
         throw new Error("Entered address does not match your connected MetaMask account.");
       }
 
-      // 3) Nonce 取得（Edge Function）
-      const getRes = await fetch("/functions/v1/verify_wallet", {
+      // 3) Nonce取得（Edge Function GET）
+      const { data: sess } = await supabase.auth.getSession();
+      const token = sess.session?.access_token || "";
+      const getRes = await fetch(FUNCTIONS_BASE, {
         method: "GET",
-        headers: { Authorization: `Bearer ${(await supabase.auth.getSession()).data.session?.access_token ?? ""}` },
+        headers: { Authorization: `Bearer ${token}` },
       });
       const getJson = await getRes.json();
       if (!getRes.ok || !getJson?.nonce) {
         throw new Error(getJson?.error || "Failed to get nonce.");
       }
 
-      const nonce: string = getJson.nonce;
+      // 4) 署名
+      const signature = await signMessageAsync({ message: getJson.nonce });
 
-      // 4) 署名（EIP-191）
-      const signature = await signMessageAsync({ message: nonce });
-
-      // 5) 検証 & 保存（Edge Function）
-      const postRes = await fetch("/functions/v1/verify_wallet", {
+      // 5) 検証&保存（Edge Function POST）
+      const postRes = await fetch(FUNCTIONS_BASE, {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          Authorization: `Bearer ${(await supabase.auth.getSession()).data.session?.access_token ?? ""}`,
+          Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({ address: inputAddress, signature }),
       });
@@ -100,7 +103,7 @@ export default function WalletSelection() {
     try {
       if (!user) throw new Error("Not signed in.");
       if (!valid) throw new Error("Invalid Ethereum address format.");
-      // ★注意：本人性検証なし（推奨フローは verifyAndLink）
+      // （注意）手動保存は本人検証なし。推奨は verifyAndLink の署名フロー。
       const { error } = await supabase.from("profiles").update({ primary_wallet: inputAddress }).eq("user_id", user.id);
       if (error) throw error;
       setPhase("linked");
@@ -116,13 +119,13 @@ export default function WalletSelection() {
 
       <div className="border rounded-lg p-4 space-y-3">
         <div className="text-sm text-muted-foreground">
-          Link your Ethereum wallet. We verify ownership by matching your MetaMask account and signature.
+          Link your Ethereum wallet. We verify ownership by matching your MetaMask account and a signed nonce.
         </div>
 
         <div className="grid grid-cols-2 gap-4 text-sm">
           <div>
             <div className="font-semibold">MetaMask</div>
-            <div>{isConnected ? "Connected" : "Disconnected"}</div>
+            <div>{isConnected ? "Connected" : (connecting ? "Connecting..." : "Disconnected")}</div>
           </div>
           <div>
             <div className="font-semibold">Account</div>
@@ -174,7 +177,7 @@ export default function WalletSelection() {
             </div>
 
             <div className="text-xs text-muted-foreground">
-              Tip: This verifies you control the entered address by matching your MetaMask account and a signed nonce.
+              Tip: We verify you control the entered address by matching your MetaMask account and a signed nonce.
             </div>
 
             <hr className="my-2" />
