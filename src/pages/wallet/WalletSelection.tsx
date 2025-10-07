@@ -7,19 +7,20 @@
 
 import { useState, useMemo } from "react";
 import { useAccount, useBalance, useConnect, useDisconnect, useSignMessage } from "wagmi";
-import { InjectedConnector } from "wagmi/connectors/injected";
+// ★ wagmi v2 ではコネクタは関数スタイルで 'wagmi/connectors' から
+import { injected } from "wagmi/connectors";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 
 const isEthAddress = (v: string) => /^0x[a-fA-F0-9]{40}$/.test(v || "");
 
-// ★ Edge Function のフルURL（相対ではなくフル）にするのが重要！
+// ★ Edge Function はフルURLで呼ぶ（相対パスにしない）
 const FUNCTIONS_BASE = `${(import.meta.env.VITE_SUPABASE_URL || "").replace(/\/+$/, "")}/functions/v1/verify_wallet`;
 
 export default function WalletSelection() {
   const { user } = useAuth();
   const { address: connected, isConnected } = useAccount();
-  const { connect, isPending: connecting } = useConnect({ connector: new InjectedConnector() });
+  const { connect, isPending: connecting } = useConnect();
   const { disconnect } = useDisconnect();
   const { data: balance } = useBalance({ address: connected, query: { enabled: !!connected } });
   const { signMessageAsync } = useSignMessage();
@@ -40,8 +41,6 @@ export default function WalletSelection() {
     setMsg(null);
   };
 
-console.log("FUNCTIONS_BASE:", FUNCTIONS_BASE);
-  
   const verifyAndLink = async () => {
     setMsg(null);
     if (!valid) {
@@ -51,9 +50,9 @@ console.log("FUNCTIONS_BASE:", FUNCTIONS_BASE);
     try {
       setBusy(true);
 
-      // 1) MetaMask 接続
+      // 1) MetaMask 接続（wagmi v2: injected() を渡す）
       if (!isConnected) {
-        await connect();
+        await connect({ connector: injected() });
       }
       if (!connected) throw new Error("MetaMask not connected.");
 
@@ -173,7 +172,7 @@ console.log("FUNCTIONS_BASE:", FUNCTIONS_BASE);
                 {busy ? "Verifying..." : "Verify & Link with MetaMask"}
               </button>
 
-              <button className="px-4 py-2 rounded border" onClick={() => disconnect()} disabled={!isConnected}>
+            <button className="px-4 py-2 rounded border" onClick={() => disconnect()} disabled={!isConnected}>
                 Disconnect MetaMask
               </button>
             </div>
