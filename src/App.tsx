@@ -17,10 +17,15 @@ import WalletSelection from '@/pages/wallet/WalletSelection'
 import WithdrawalRequest from '@/pages/withdrawal/WithdrawalRequest'
 import AccountingTaxScreen1 from '@/pages/accounting/AccountingTaxScreen1'
 import Pricing from '@/pages/Pricing'
-import TransferScreen3 from '@/pages/transfer/TransferScreen3'
 
 // Billing（請求書作成）
 import Billing from '@/pages/Billing'
+
+// Transfer
+import Transfer from '@/pages/transfer/Transfer'
+import TransferNew from '@/pages/transfer/TransferNew'
+import TransferExisting from '@/pages/transfer/TransferExisting'
+import TransferFromInvoice from '@/pages/transfer/TransferFromInvoice'
 
 // Guard & Dev tools
 import { AuthGuard } from '@/components/AuthGuard'
@@ -53,7 +58,12 @@ export default function App() {
               {/* Optional features */}
               <Route path="/pricing" element={<AuthGuard><Pricing /></AuthGuard>} />
               <Route path="/accounting" element={<AuthGuard><AccountingTaxScreen1 /></AuthGuard>} />
-              <Route path="/transfer" element={<AuthGuard><TransferScreen3 /></AuthGuard>} />
+
+              {/* Transfer */}
+              <Route path="/transfer" element={<AuthGuard><Transfer /></AuthGuard>} />
+              <Route path="/transfer/new" element={<AuthGuard><TransferNew /></AuthGuard>} />
+              <Route path="/transfer/existing" element={<AuthGuard><TransferExisting /></AuthGuard>} />
+              <Route path="/transfer/invoice" element={<AuthGuard><TransferFromInvoice /></AuthGuard>} />
 
               {/* Fallback */}
               <Route path="*" element={<Navigate to="/" replace />} />
