@@ -1,94 +1,47 @@
 // src/pages/Pricing.tsx
-import Navigation from "@/components/Navigation";
-import { Card, CardHeader, CardTitle, CardContent, CardDescription } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { Badge } from "@/components/ui/badge";
-import { Check } from "lucide-react";
-
-type Plan = {
-  name: string;
-  price: string;
-  usage: string;
-  highlight?: boolean;
-};
-
-const personal: Plan[] = [
-  { name: "Free",     price: "$0 / mo",  usage: "Pay-as-you-go $8 / operation" },
-  { name: "Standard", price: "$30 / mo", usage: "Pay-as-you-go $5 / operation", highlight: true },
-  { name: "Pro",      price: "$80 / mo", usage: "Pay-as-you-go $3 / operation" },
-];
-
-const corporate: Plan[] = [
-  { name: "Basic",    price: "$100 / mo", usage: "Pay-as-you-go $15 / operation" },
-  { name: "Standard", price: "$250 / mo", usage: "Pay-as-you-go $10 / operation", highlight: true },
-  { name: "Pro",      price: "$500 / mo", usage: "Pay-as-you-go $8 / operation" },
-];
-
 export default function Pricing() {
-  return (
-    <div className="min-h-screen bg-background">
-      <div className="container mx-auto p-6">
-        <Navigation />
-        <div className="max-w-4xl mx-auto mt-8">
-          <h1 className="text-3xl font-bold">Pricing</h1>
-          <p className="text-muted-foreground mt-1">
-            Operations include Transfer / Invoice / Payment / Exchange trade. 1-month free trial available (including usage).
-          </p>
+  const plansCompany = [
+    { name: "Company $100", price: 100, usage: "$15 / per action" },
+    { name: "Company $250", price: 250, usage: "$10 / per action" },
+    { name: "Company $500", price: 500, usage: "$8 / per action" },
+  ];
+  const plansPersonal = [
+    { name: "Personal $0", price: 0, usage: "$8 / per action" },
+    { name: "Personal $30", price: 30, usage: "$5 / per action" },
+    { name: "Personal $80", price: 80, usage: "$3 / per action" },
+  ];
 
-          <Tabs defaultValue="personal" className="mt-6">
-            <TabsList className="grid grid-cols-2 w-full">
-              <TabsTrigger value="personal">Personal</TabsTrigger>
-              <TabsTrigger value="corporate">Corporate</TabsTrigger>
-            </TabsList>
+  const Bullets = () => (
+    <ul className="text-sm text-muted-foreground space-y-1">
+      <li>Charged actions: Transfers / Invoices / Payments / Exchange trades</li>
+      <li>Free 1 month trial (usage also free)</li>
+    </ul>
+  );
 
-            <TabsContent value="personal" className="mt-4">
-              <div className="grid md:grid-cols-3 gap-4">
-                {personal.map(p => (
-                  <Card key={p.name} className={p.highlight ? "border-primary" : ""}>
-                    <CardHeader>
-                      <CardTitle className="flex items-center gap-2">
-                        {p.name} {p.highlight && <Badge>Popular</Badge>}
-                      </CardTitle>
-                      <CardDescription>{p.usage}</CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="text-2xl font-semibold">{p.price}</div>
-                      <ul className="mt-2 text-sm text-muted-foreground space-y-1">
-                        <li className="flex items-center gap-2"><Check className="h-4 w-4" /> Transfer / Invoice / Payment / Exchange</li>
-                        {p.name === "Free" && <li className="flex items-center gap-2"><Check className="h-4 w-4" /> 1-month free trial (including usage)</li>}
-                      </ul>
-                      <Button disabled className="w-full mt-4">Select plan (coming soon)</Button>
-                    </CardContent>
-                  </Card>
-                ))}
-              </div>
-            </TabsContent>
-
-            <TabsContent value="corporate" className="mt-4">
-              <div className="grid md:grid-cols-3 gap-4">
-                {corporate.map(p => (
-                  <Card key={p.name} className={p.highlight ? "border-primary" : ""}>
-                    <CardHeader>
-                      <CardTitle className="flex items-center gap-2">
-                        {p.name} {p.highlight && <Badge>Recommended</Badge>}
-                      </CardTitle>
-                      <CardDescription>{p.usage}</CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="text-2xl font-semibold">{p.price}</div>
-                      <ul className="mt-2 text-sm text-muted-foreground space-y-1">
-                        <li className="flex items-center gap-2"><Check className="h-4 w-4" /> Transfer / Invoice / Payment / Exchange</li>
-                      </ul>
-                      <Button disabled className="w-full mt-4">Select plan (coming soon)</Button>
-                    </CardContent>
-                  </Card>
-                ))}
-              </div>
-            </TabsContent>
-          </Tabs>
-        </div>
+  const Card = ({ title, items }: { title: string; items: { name: string; price: number; usage: string }[] }) => (
+    <div className="rounded-2xl border p-5 space-y-3">
+      <h2 className="text-xl font-semibold">{title}</h2>
+      <Bullets />
+      <div className="grid md:grid-cols-3 gap-3 pt-3">
+        {items.map((p) => (
+          <div key={p.name} className="rounded-xl border p-4 space-y-2">
+            <div className="font-semibold">{p.name}</div>
+            <div className="text-2xl font-bold">${p.price}</div>
+            <div className="text-sm text-muted-foreground">{p.usage}</div>
+            <button className="w-full mt-2 px-3 py-2 rounded bg-primary text-primary-foreground opacity-50 cursor-not-allowed" disabled>
+              Coming soon
+            </button>
+          </div>
+        ))}
       </div>
+    </div>
+  );
+
+  return (
+    <div className="mx-auto max-w-5xl p-6 space-y-6">
+      <h1 className="text-2xl font-bold">Pricing</h1>
+      <Card title="Company" items={plansCompany} />
+      <Card title="Personal" items={plansPersonal} />
     </div>
   );
 }
