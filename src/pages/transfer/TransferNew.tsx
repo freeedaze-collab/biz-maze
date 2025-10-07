@@ -1,8 +1,9 @@
-// TransferNew.tsx
+// src/pages/transfer/TransferNew.tsx
 // 目的: 送金フォーム（宛先/金額を入力 → Edge Functionで事前検証 → MetaMaskで送金実行）
+// 追加: ?to=0x...&amount=0.01 のクエリ文字列を初期値として読込
 // wagmi の connector は使わず、既存の接続状態(useAccount)前提で安全実装
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAccount } from "wagmi";
 import { supabase } from "@/integrations/supabase/client";
 
@@ -31,6 +32,19 @@ export default function TransferNew() {
   const [msg, setMsg] = useState<string | null>(null);
   const [txHash, setTxHash] = useState<string | null>(null);
 
+  // ★ 追加: クエリから初期値を読み込む
+  useEffect(() => {
+    try {
+      const url = new URL(window.location.href);
+      const qTo = url.searchParams.get("to") || "";
+      const qAmt = url.searchParams.get("amount") || "";
+      if (qTo && isEthAddress(qTo)) setTo(qTo);
+      if (qAmt && isPositiveNumber(qAmt)) setAmountEth(qAmt);
+    } catch {
+      // 何もしない（安全に無視）
+    }
+  }, []);
+
   const validTo = useMemo(() => isEthAddress(to), [to]);
   const validAmt = useMemo(() => isPositiveNumber(amountEth), [amountEth]);
 
@@ -57,7 +71,7 @@ export default function TransferNew() {
         headers: { "content-type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ from: connected, to, amountEth }),
       });
-      const json = await res.json();
+      const json = await res.json().catch(() => ({}));
       if (!res.ok || !json?.ok) {
         throw new Error(json?.error || "Preflight check failed.");
       }
