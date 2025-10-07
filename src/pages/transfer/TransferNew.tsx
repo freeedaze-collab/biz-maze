@@ -1,167 +1,186 @@
-import { useEffect, useState } from "react";
-import { useAuth } from "@/hooks/useAuth";
-import { supabase } from "@/integrations/supabase/client";
+// TransferNew.tsx
+// 目的: 送金フォーム（宛先/金額を入力 → Edge Functionで事前検証 → MetaMaskで送金実行）
+// wagmi の connector は使わず、既存の接続状態(useAccount)前提で安全実装
+
+import { useMemo, useState } from "react";
 import { useAccount } from "wagmi";
-import { useEthSend } from "@/lib/eth/send";
-import { useNavigate } from "react-router-dom";
+import { supabase } from "@/integrations/supabase/client";
+
+const isEthAddress = (v: string) => /^0x[a-fA-F0-9]{40}$/.test(v || "");
+const isPositiveNumber = (s: string) => /^(\d+)(\.\d{1,18})?$/.test(s || ""); // 小数18桁まで
+
+function ethToHexWei(eth: string) {
+  const [w, f = ""] = eth.split(".");
+  const WEI = 10n ** 18n;
+  const whole = BigInt(w || "0") * WEI;
+  const frac = BigInt((f + "0".repeat(18)).slice(0, 18));
+  const total = whole + frac;
+  return "0x" + total.toString(16);
+}
+
+// Edge Function フルURL
+const PREFLIGHT_URL = `${(import.meta.env.VITE_SUPABASE_URL || "").replace(/\/+$/, "")}/functions/v1/preflight_transfer`;
 
 export default function TransferNew() {
-  const { user } = useAuth();
-  const { isConnected } = useAccount();
-  const navigate = useNavigate();
+  const { address: connected, isConnected } = useAccount();
 
-  const [recipientName, setRecipientName] = useState("");
-  const [walletAddress, setWalletAddress] = useState("");
-  const [amount, setAmount] = useState("");
-  const [confirming, setConfirming] = useState(false);
-  const [saving, setSaving] = useState(false);
+  const [to, setTo] = useState("");
+  const [amountEth, setAmountEth] = useState("");
+  const [review, setReview] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [txHash, setTxHash] = useState<string | null>(null);
 
-  const { sendEth, txHash, isPending, error, receipt } = useEthSend();
+  const validTo = useMemo(() => isEthAddress(to), [to]);
+  const validAmt = useMemo(() => isPositiveNumber(amountEth), [amountEth]);
 
-  useEffect(() => {
-    // 送金後にDBへ記録
-    const saveAfterHash = async () => {
-      if (!user || !txHash) return;
-      setSaving(true);
-      try {
-        // client を保存（任意：名前があれば）＆ wallet を記録
-        let clientId: string | null = null;
-        if (recipientName) {
-          const { data, error } = await supabase
-            .from("clients")
-            .insert({ user_id: user.id, name: recipientName, wallet: walletAddress })
-            .select("id")
-            .single();
-          if (!error && data) clientId = data.id;
-        }
-
-        await supabase.from("transfers").insert({
-          user_id: user.id,
-          client_id: clientId,
-          wallet_address: walletAddress,
-          amount: Number(amount),
-          currency: "ETH",
-          tx_hash: txHash,
-          status: "submitted",
-        });
-      } finally {
-        setSaving(false);
-      }
-    };
-    saveAfterHash();
-  }, [txHash, user, walletAddress, amount, recipientName]);
-
-  // 成功でステータス更新
-  useEffect(() => {
-    const markSuccess = async () => {
-      if (!user || !txHash) return;
-      if (receipt.isSuccess) {
-        await supabase
-          .from("transfers")
-          .update({ status: "success" })
-          .eq("user_id", user.id)
-          .eq("tx_hash", txHash);
-      } else if (receipt.isError) {
-        await supabase
-          .from("transfers")
-          .update({ status: "failed" })
-          .eq("user_id", user.id)
-          .eq("tx_hash", txHash);
-      }
-    };
-    markSuccess();
-  }, [receipt.status, receipt.isSuccess, receipt.isError, txHash, user]);
-
-  const onConfirm = () => setConfirming(true);
-
-  const onSend = () => {
-    if (!isConnected) {
-      alert("Please connect MetaMask on Wallet page first.");
+  const handleReview = async () => {
+    setMsg(null);
+    setTxHash(null);
+    if (!isConnected || !connected) {
+      setMsg("Please connect MetaMask first.");
       return;
     }
-    if (!walletAddress || !amount) {
-      alert("Wallet address and amount are required.");
+    if (!validTo || !validAmt) {
+      setMsg("Please enter a valid recipient and amount.");
       return;
     }
-    sendEth(walletAddress, amount);
+
+    try {
+      setBusy(true);
+      const { data: sess } = await supabase.auth.getSession();
+      const token = sess.session?.access_token || "";
+
+      // 送金前のサーバ側チェック
+      const res = await fetch(PREFLIGHT_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ from: connected, to, amountEth }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json?.ok) {
+        throw new Error(json?.error || "Preflight check failed.");
+      }
+
+      setReview(true);
+    } catch (e: any) {
+      setMsg(e?.message || String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleSend = async () => {
+    setMsg(null);
+    setTxHash(null);
+    if (!(window as any).ethereum) {
+      setMsg("Ethereum provider not found. Please install MetaMask.");
+      return;
+    }
+    try {
+      setBusy(true);
+      const value = ethToHexWei(amountEth);
+      // MetaMask で送金
+      const hash: string = await (window as any).ethereum.request({
+        method: "eth_sendTransaction",
+        params: [{ from: connected, to, value }],
+      });
+      setTxHash(hash);
+      setMsg("Transaction submitted.");
+
+      // （任意）DB記録：transactionsテーブルがある想定
+      const { error } = await supabase.from("transactions").insert({
+        user_id: (await supabase.auth.getUser()).data.user?.id,
+        to_address: to,
+        from_address: connected,
+        amount_eth: amountEth,
+        tx_hash: hash,
+        status: "submitted",
+      });
+      if (error) {
+        // 記録失敗は致命ではないのでメッセだけ
+        console.warn("Insert transactions failed:", error);
+      }
+    } catch (e: any) {
+      setMsg(e?.message || String(e));
+    } finally {
+      setBusy(false);
+      setReview(false);
+    }
   };
 
   return (
     <div className="p-6 max-w-xl mx-auto">
-      <h1 className="text-2xl font-bold mb-6">New recipient</h1>
+      <h1 className="text-2xl font-bold mb-4">Transfer (ETH)</h1>
 
-      {!confirming ? (
-        <div className="space-y-4">
-          <div>
-            <label className="block font-semibold mb-1">Recipient name (optional)</label>
-            <input
-              className="border rounded w-full p-2"
-              value={recipientName}
-              onChange={(e) => setRecipientName(e.target.value)}
-              placeholder="(optional)"
-            />
-          </div>
-
-          <div>
-            <label className="block font-semibold mb-1">Wallet address (ETH)</label>
-            <input
-              className="border rounded w-full p-2 font-mono"
-              value={walletAddress}
-              onChange={(e) => setWalletAddress(e.target.value)}
-              placeholder="0x..."
-            />
-          </div>
-
-          <div>
-            <label className="block font-semibold mb-1">Amount (ETH)</label>
-            <input
-              className="border rounded w-full p-2"
-              type="number"
-              inputMode="decimal"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-              placeholder="0.01"
-            />
-          </div>
-
-          <div className="flex gap-2">
-            <button className="bg-primary text-primary-foreground px-4 py-2 rounded" onClick={onConfirm}>
-              Review
-            </button>
-            <button className="px-4 py-2 rounded border" onClick={() => navigate("/transfer")}>
-              Cancel
-            </button>
-          </div>
+      <div className="border rounded-lg p-4 space-y-4">
+        <div className="text-sm">
+          From (connected): <span className="font-mono">{isConnected ? connected : "(not connected)"}</span>
         </div>
-      ) : (
-        <div className="space-y-4 border rounded p-4">
-          <div className="text-sm text-muted-foreground">Confirm transfer</div>
-          <div className="text-sm">
-            <div><span className="font-semibold">To:</span> <span className="font-mono">{walletAddress || "-"}</span></div>
-            <div><span className="font-semibold">Amount:</span> {amount} ETH</div>
-            {!!recipientName && <div><span className="font-semibold">Save as client:</span> {recipientName}</div>}
-          </div>
-          <div className="flex gap-2">
-            <button className="bg-primary text-primary-foreground px-4 py-2 rounded" onClick={onSend} disabled={isPending || saving}>
-              {isPending ? "Sending..." : "Send with MetaMask"}
-            </button>
-            <button className="px-4 py-2 rounded border" onClick={() => setConfirming(false)}>
-              Back
-            </button>
-          </div>
 
-          {error && <div className="text-destructive text-sm">Error: {String(error.message || error)}</div>}
-          {txHash && (
-            <div className="text-sm">
-              <div className="text-muted-foreground">Tx submitted</div>
-              <div className="font-mono break-all">{txHash}</div>
+        <div>
+          <label className="block text-sm font-semibold mb-1">Recipient (0x...)</label>
+          <input
+            className={`w-full border rounded px-2 py-1 font-mono ${to && !validTo ? "border-red-500" : ""}`}
+            placeholder="0x..."
+            value={to}
+            onChange={(e) => setTo(e.target.value.trim())}
+          />
+          {!validTo && to && <div className="text-xs text-red-600 mt-1">Invalid Ethereum address.</div>}
+        </div>
+
+        <div>
+          <label className="block text-sm font-semibold mb-1">Amount (ETH)</label>
+          <input
+            className={`w-full border rounded px-2 py-1 ${amountEth && !validAmt ? "border-red-500" : ""}`}
+            placeholder="0.01"
+            inputMode="decimal"
+            value={amountEth}
+            onChange={(e) => setAmountEth(e.target.value.trim())}
+          />
+          {!validAmt && amountEth && <div className="text-xs text-red-600 mt-1">Invalid amount (max 18 decimals).</div>}
+        </div>
+
+        {!review ? (
+          <button
+            className="bg-primary text-primary-foreground px-4 py-2 rounded disabled:opacity-50"
+            onClick={handleReview}
+            disabled={busy || !validTo || !validAmt}
+          >
+            {busy ? "Checking..." : "Review"}
+          </button>
+        ) : (
+          <div className="space-y-3">
+            <div className="text-sm bg-muted p-2 rounded">
+              <div>Recipient: <span className="font-mono">{to}</span></div>
+              <div>Amount: {amountEth} ETH</div>
             </div>
-          )}
-          {receipt?.isSuccess && (
-            <div className="text-green-600 text-sm">Success! You can go back to Dashboard or Transfer.</div>
-          )}
-        </div>
-      )}
+            <div className="flex gap-2">
+              <button
+                className="bg-green-600 text-white px-4 py-2 rounded disabled:opacity-50"
+                onClick={handleSend}
+                disabled={busy}
+              >
+                {busy ? "Sending..." : "Send with MetaMask"}
+              </button>
+              <button className="px-4 py-2 rounded border" onClick={() => setReview(false)} disabled={busy}>
+                Back
+              </button>
+            </div>
+          </div>
+        )}
+
+        {txHash && (
+          <div className="text-sm">
+            Tx Hash:{" "}
+            <a className="text-blue-600 underline" href={`https://etherscan.io/tx/${txHash}`} target="_blank" rel="noreferrer">
+              {txHash}
+            </a>
+          </div>
+        )}
+
+        {msg && <div className="text-sm">{msg}</div>}
+      </div>
     </div>
   );
 }
