@@ -1,75 +1,89 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
-import { useAccount, useSendTransaction, useWaitForTransactionReceipt } from "wagmi";
-import { parseEther, type Address } from "viem";
-
-const isEthAddress = (v: string) => /^0x[a-fA-F0-9]{40}$/.test(v || "");
+import { useAccount } from "wagmi";
+import { useEthSend } from "@/lib/eth/send";
+import { useNavigate } from "react-router-dom";
 
 export default function TransferNew() {
   const { user } = useAuth();
-  const { address: from, isConnected } = useAccount();
+  const { isConnected } = useAccount();
+  const navigate = useNavigate();
 
-  const [to, setTo] = useState("");
+  const [recipientName, setRecipientName] = useState("");
+  const [walletAddress, setWalletAddress] = useState("");
   const [amount, setAmount] = useState("");
   const [confirming, setConfirming] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
-  const validAddr = useMemo(() => isEthAddress(to), [to]);
-  const validAmt = useMemo(() => Number(amount) > 0, [amount]);
-
-  const { data: hash, isPending, error, sendTransaction } = useSendTransaction();
-  const receipt = useWaitForTransactionReceipt({ hash });
+  const { sendEth, txHash, isPending, error, receipt } = useEthSend();
 
   useEffect(() => {
-    const update = async () => {
-      if (!user || !hash) return;
-      await supabase.from("transfers").insert({
-        user_id: user.id,
-        wallet_address: to,
-        amount: Number(amount),
-        currency: "ETH",
-        tx_hash: hash,
-        status: "submitted",
-      });
-    };
-    update();
-  }, [hash, user?.id]);
+    // 送金後にDBへ記録
+    const saveAfterHash = async () => {
+      if (!user || !txHash) return;
+      setSaving(true);
+      try {
+        // client を保存（任意：名前があれば）＆ wallet を記録
+        let clientId: string | null = null;
+        if (recipientName) {
+          const { data, error } = await supabase
+            .from("clients")
+            .insert({ user_id: user.id, name: recipientName, wallet: walletAddress })
+            .select("id")
+            .single();
+          if (!error && data) clientId = data.id;
+        }
 
-  useEffect(() => {
-    const mark = async () => {
-      if (!user || !hash) return;
-      if (receipt.isSuccess) {
-        await supabase.from("transfers").update({ status: "success" }).eq("user_id", user.id).eq("tx_hash", hash);
-      } else if (receipt.isError) {
-        await supabase.from("transfers").update({ status: "failed" }).eq("user_id", user.id).eq("tx_hash", hash);
+        await supabase.from("transfers").insert({
+          user_id: user.id,
+          client_id: clientId,
+          wallet_address: walletAddress,
+          amount: Number(amount),
+          currency: "ETH",
+          tx_hash: txHash,
+          status: "submitted",
+        });
+      } finally {
+        setSaving(false);
       }
     };
-    mark();
-  }, [receipt.status, receipt.isSuccess, receipt.isError, hash, user?.id]);
+    saveAfterHash();
+  }, [txHash, user, walletAddress, amount, recipientName]);
 
-  const precheckServer = async (addr: string) => {
-    // Edge Function 側で署名検証は不要（送金時は宛先のみチェック）
-    // 必要に応じて別の関数にしてもOK。ここでは verify_wallet を簡易再利用するなら GETのみでなく専用の関数を作るのが綺麗。
-    // 例：/functions/v1/validate_address を別途用意し、フォーマットやブラックリスト等を確認。
-    // ここでは最小限：有効フォーマットはクライアントで保証済みなのでそのままOKとする。
-    return true;
-  };
+  // 成功でステータス更新
+  useEffect(() => {
+    const markSuccess = async () => {
+      if (!user || !txHash) return;
+      if (receipt.isSuccess) {
+        await supabase
+          .from("transfers")
+          .update({ status: "success" })
+          .eq("user_id", user.id)
+          .eq("tx_hash", txHash);
+      } else if (receipt.isError) {
+        await supabase
+          .from("transfers")
+          .update({ status: "failed" })
+          .eq("user_id", user.id)
+          .eq("tx_hash", txHash);
+      }
+    };
+    markSuccess();
+  }, [receipt.status, receipt.isSuccess, receipt.isError, txHash, user]);
 
-  const onSend = async () => {
-    setMsg(null);
-    try {
-      if (!isConnected) throw new Error("Please connect MetaMask first.");
-      if (!validAddr) throw new Error("Invalid destination address.");
-      if (!validAmt) throw new Error("Amount must be greater than 0.");
+  const onConfirm = () => setConfirming(true);
 
-      const ok = await precheckServer(to);
-      if (!ok) throw new Error("Server validation rejected this address.");
-
-      sendTransaction({ to: to as Address, value: parseEther(amount) });
-    } catch (e: any) {
-      setMsg(e?.message || String(e));
+  const onSend = () => {
+    if (!isConnected) {
+      alert("Please connect MetaMask on Wallet page first.");
+      return;
     }
+    if (!walletAddress || !amount) {
+      alert("Wallet address and amount are required.");
+      return;
+    }
+    sendEth(walletAddress, amount);
   };
 
   return (
@@ -79,40 +93,42 @@ export default function TransferNew() {
       {!confirming ? (
         <div className="space-y-4">
           <div>
-            <label className="block font-semibold mb-1">Destination (ETH address)</label>
+            <label className="block font-semibold mb-1">Recipient name (optional)</label>
             <input
-              value={to}
-              onChange={(e) => setTo(e.target.value.trim())}
-              placeholder="0x..."
-              className={`w-full border rounded px-2 py-1 font-mono ${to && !validAddr ? "border-red-500" : ""}`}
+              className="border rounded w-full p-2"
+              value={recipientName}
+              onChange={(e) => setRecipientName(e.target.value)}
+              placeholder="(optional)"
             />
-            {!validAddr && to && (
-              <div className="text-xs text-red-600 mt-1">Invalid address (0x + 40 hex chars required)</div>
-            )}
+          </div>
+
+          <div>
+            <label className="block font-semibold mb-1">Wallet address (ETH)</label>
+            <input
+              className="border rounded w-full p-2 font-mono"
+              value={walletAddress}
+              onChange={(e) => setWalletAddress(e.target.value)}
+              placeholder="0x..."
+            />
           </div>
 
           <div>
             <label className="block font-semibold mb-1">Amount (ETH)</label>
             <input
+              className="border rounded w-full p-2"
               type="number"
               inputMode="decimal"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
               placeholder="0.01"
-              className={`w-full border rounded px-2 py-1 ${amount && !validAmt ? "border-red-500" : ""}`}
             />
-            {!validAmt && amount && <div className="text-xs text-red-600 mt-1">Enter a positive number.</div>}
           </div>
 
           <div className="flex gap-2">
-            <button
-              className="bg-primary text-primary-foreground px-4 py-2 rounded disabled:opacity-50"
-              onClick={() => setConfirming(true)}
-              disabled={!validAddr || !validAmt}
-            >
+            <button className="bg-primary text-primary-foreground px-4 py-2 rounded" onClick={onConfirm}>
               Review
             </button>
-            <button className="px-4 py-2 rounded border" onClick={() => history.back()}>
+            <button className="px-4 py-2 rounded border" onClick={() => navigate("/transfer")}>
               Cancel
             </button>
           </div>
@@ -121,16 +137,12 @@ export default function TransferNew() {
         <div className="space-y-4 border rounded p-4">
           <div className="text-sm text-muted-foreground">Confirm transfer</div>
           <div className="text-sm">
-            <div><span className="font-semibold">From:</span> <span className="font-mono">{from || "-"}</span></div>
-            <div><span className="font-semibold">To:</span> <span className="font-mono">{to}</span></div>
+            <div><span className="font-semibold">To:</span> <span className="font-mono">{walletAddress || "-"}</span></div>
             <div><span className="font-semibold">Amount:</span> {amount} ETH</div>
+            {!!recipientName && <div><span className="font-semibold">Save as client:</span> {recipientName}</div>}
           </div>
           <div className="flex gap-2">
-            <button
-              className="bg-primary text-primary-foreground px-4 py-2 rounded disabled:opacity-50"
-              onClick={onSend}
-              disabled={isPending}
-            >
+            <button className="bg-primary text-primary-foreground px-4 py-2 rounded" onClick={onSend} disabled={isPending || saving}>
               {isPending ? "Sending..." : "Send with MetaMask"}
             </button>
             <button className="px-4 py-2 rounded border" onClick={() => setConfirming(false)}>
@@ -138,15 +150,16 @@ export default function TransferNew() {
             </button>
           </div>
 
-          {msg && <div className="text-sm text-destructive">{msg}</div>}
-          {error && <div className="text-sm text-destructive">{String(error.message || error)}</div>}
-          {hash && (
+          {error && <div className="text-destructive text-sm">Error: {String(error.message || error)}</div>}
+          {txHash && (
             <div className="text-sm">
               <div className="text-muted-foreground">Tx submitted</div>
-              <div className="font-mono break-all">{hash}</div>
+              <div className="font-mono break-all">{txHash}</div>
             </div>
           )}
-          {receipt?.isSuccess && <div className="text-green-600 text-sm">Success!</div>}
+          {receipt?.isSuccess && (
+            <div className="text-green-600 text-sm">Success! You can go back to Dashboard or Transfer.</div>
+          )}
         </div>
       )}
     </div>
