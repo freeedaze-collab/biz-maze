@@ -1,143 +1,126 @@
-import { Link } from "react-router-dom";
-import Navigation from "@/components/Navigation";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Wallet, Shield, Zap, Globe } from "lucide-react";
+// src/pages/wallet/WalletSelection.tsx
+import { useEffect, useMemo, useState } from "react";
+import { useAccount, useBalance, useConnect, useDisconnect } from "wagmi";
+import { injected } from "wagmi/connectors";
+import { useNavigate, Link } from "react-router-dom";
+import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/useAuth";
 
-const WalletSelection = () => {
-  const wallets = [
-    {
-      id: "metamask",
-      name: "MetaMask",
-      description: "The most popular Ethereum wallet for DeFi",
-      icon: "🦊",
-      features: ["Browser Extension", "Mobile App", "Hardware Wallet Support"],
-      isPopular: true,
-    },
-    {
-      id: "bitpay",
-      name: "BitPay",
-      description: "Secure wallet for Bitcoin and other cryptocurrencies",
-      icon: "₿",
-      features: ["Multi-Currency", "Prepaid Cards", "Business Solutions"],
-      isPopular: false,
-    },
-    {
-      id: "coinbase",
-      name: "Coinbase Wallet",
-      description: "Self-custody wallet from Coinbase",
-      icon: "🔵",
-      features: ["DApp Browser", "NFT Support", "Cross-Chain"],
-      isPopular: false,
-    },
-  ];
+export default function WalletSelection() {
+  const navigate = useNavigate();
+  const { user } = useAuth();
+
+  const { address, isConnected, chainId } = useAccount();
+  const { connect, isPending: isConnPending, error: connError } = useConnect({ connector: injected() });
+  const { disconnect } = useDisconnect();
+  const { data: balance } = useBalance({ address, query: { enabled: !!address } });
+
+  const [saving, setSaving] = useState(false);
+  const short = useMemo(() => (address ? `${address.slice(0, 6)}...${address.slice(-4)}` : "-"), [address]);
+
+  useEffect(() => {
+    // アカウント接続/切断の状態をコンソールで可視化（動作確認用）
+    // 本番で邪魔なら削除OK
+    // eslint-disable-next-line no-console
+    console.log("[Wallet] connected:", isConnected, "address:", address, "chainId:", chainId);
+  }, [isConnected, address, chainId]);
+
+  const saveWalletToProfile = async () => {
+    if (!user || !address) return;
+    setSaving(true);
+    try {
+      // 例：profiles に primary_wallet を保存（profiles テーブルがある前提）
+      const { error } = await supabase
+        .from("profiles")
+        .update({ primary_wallet: address })
+        .eq("user_id", user.id);
+
+      if (error) throw error;
+      alert("Saved wallet to your profile.");
+    } catch (e: any) {
+      alert("Failed to save: " + (e?.message || e));
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
-    <div className="min-h-screen bg-background">
-      <div className="container mx-auto p-6">
-        <div className="mb-8">
-          <h1 className="text-4xl font-bold text-card-foreground mb-2">
-            Wallet Selection
-          </h1>
-          <p className="text-muted-foreground text-lg">
-            Choose a wallet to connect to your account
-          </p>
+    <div className="p-6 max-w-xl mx-auto">
+      <h1 className="text-2xl font-bold mb-4">Wallet</h1>
+
+      <div className="border rounded-lg p-4 space-y-3">
+        <div className="text-sm text-muted-foreground">
+          Connect your Ethereum wallet (MetaMask) and then proceed to Transfer.
         </div>
 
-        <Navigation />
-
-        <div className="max-w-4xl mx-auto space-y-6">
-          {/* Security Notice */}
-          <Card className="border-primary/20 bg-primary/5">
-            <CardContent className="pt-6">
-              <div className="flex items-start gap-3">
-                <Shield className="h-5 w-5 text-primary mt-0.5" />
-                <div className="text-sm">
-                  <p className="font-medium text-primary mb-1">Secure Connection</p>
-                  <p className="text-muted-foreground">
-                    We use industry-standard encryption to protect your wallet connection. 
-                    Your private keys remain secure in your wallet.
-                  </p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Wallet Options */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {wallets.map((wallet) => (
-              <Card key={wallet.id} className="relative hover:shadow-lg transition-shadow">
-                {wallet.isPopular && (
-                  <div className="absolute -top-2 -right-2 bg-primary text-primary-foreground text-xs px-2 py-1 rounded-full">
-                    Popular
-                  </div>
-                )}
-                
-                <CardHeader className="text-center">
-                  <div className="text-4xl mb-2">{wallet.icon}</div>
-                  <CardTitle className="flex items-center justify-center gap-2">
-                    <Wallet className="h-5 w-5" />
-                    {wallet.name}
-                  </CardTitle>
-                  <CardDescription>{wallet.description}</CardDescription>
-                </CardHeader>
-
-                <CardContent>
-                  <div className="space-y-4">
-                    <div>
-                      <h4 className="font-medium mb-2 text-sm">Features:</h4>
-                      <ul className="text-xs space-y-1">
-                        {wallet.features.map((feature, index) => (
-                          <li key={index} className="flex items-center gap-2 text-muted-foreground">
-                            <div className="w-1 h-1 bg-primary rounded-full"></div>
-                            {feature}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-
-                    <Link to={`/wallet/${wallet.id}/connect`} className="block">
-                      <Button className="w-full" variant={wallet.isPopular ? "default" : "outline"}>
-                        Select {wallet.name}
-                      </Button>
-                    </Link>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-sm font-semibold">Status</div>
+            <div className="text-sm">{isConnected ? "Connected" : "Disconnected"}</div>
           </div>
-
-          {/* Help Section */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Globe className="h-5 w-5" />
-                Need Help?
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-                <div>
-                  <h4 className="font-medium mb-2">What is a wallet?</h4>
-                  <p className="text-muted-foreground">
-                    A cryptocurrency wallet is a digital tool that allows you to store, 
-                    send, and receive cryptocurrencies securely.
-                  </p>
-                </div>
-                <div>
-                  <h4 className="font-medium mb-2">Is it safe?</h4>
-                  <p className="text-muted-foreground">
-                    Yes! We only request connection permissions. Your private keys 
-                    and funds remain secure in your chosen wallet.
-                  </p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+          <div className="flex gap-2">
+            {!isConnected ? (
+              <button
+                className="bg-primary text-primary-foreground px-4 py-2 rounded"
+                onClick={() => connect()}
+                disabled={isConnPending}
+              >
+                {isConnPending ? "Connecting..." : "Connect MetaMask"}
+              </button>
+            ) : (
+              <button className="px-4 py-2 rounded border" onClick={() => disconnect()}>
+                Disconnect
+              </button>
+            )}
+          </div>
         </div>
+
+        <div className="grid grid-cols-2 gap-4 text-sm">
+          <div>
+            <div className="font-semibold">Address</div>
+            <div className="font-mono break-all">{address || "-"}</div>
+          </div>
+          <div>
+            <div className="font-semibold">Short</div>
+            <div>{short}</div>
+          </div>
+          <div>
+            <div className="font-semibold">Network</div>
+            <div>{chainId ? `Chain ID: ${chainId}` : "-"}</div>
+          </div>
+          <div>
+            <div className="font-semibold">Balance</div>
+            <div>
+              {balance ? `${balance.formatted} ${balance.symbol}` : "-"}
+            </div>
+          </div>
+        </div>
+
+        {connError && (
+          <div className="text-destructive text-sm">
+            {String(connError.message || connError)}
+          </div>
+        )}
+
+        <div className="flex gap-2">
+          <button
+            className="px-4 py-2 rounded border"
+            onClick={saveWalletToProfile}
+            disabled={!isConnected || !address || saving}
+          >
+            {saving ? "Saving..." : "Save to Profile"}
+          </button>
+
+          <Link to="/transfer" className="bg-secondary text-secondary-foreground px-4 py-2 rounded">
+            Go to Transfer
+          </Link>
+        </div>
+      </div>
+
+      <div className="mt-6 text-sm text-muted-foreground">
+        Tip: If nothing happens when you click “Connect MetaMask”, make sure MetaMask is installed and this site is
+        allowed to connect in the extension popup.
       </div>
     </div>
   );
-};
-
-export default WalletSelection;
+}
