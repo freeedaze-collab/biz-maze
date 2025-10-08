@@ -1,9 +1,8 @@
 // src/pages/wallet/WalletSelection.tsx
-// 修正点：
-// 1) eth_requestAccounts で実署名アカウント(signer)を取得
-// 2) signer と入力アドレスの一致を事前にチェック（不一致なら明確な案内で中断）
-// 3) personal_sign の第2引数は signer を渡す（入力アドレスではない）
-// 4) ステップ案内UIと詳細メッセージは維持
+// 目的: 3点(入力アドレス/署名アドレス/サーバ復元アドレス)のズレを即発見できるよう詳細ログ＆UIデバッグ表示を追加
+// - 「Use connected account」ボタンで MetaMask の現在アカウントを入力欄へ自動セット
+// - 署名前に signer と入力値の一致を「画面に」明示
+// - サーバ応答エラー時は詳細ヒント表示
 
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
@@ -26,6 +25,7 @@ declare global {
 }
 
 const isEthAddress = (v: string) => /^0x[a-fA-F0-9]{40}$/.test(v || "");
+const toL = (v: string) => (v || "").trim().toLowerCase();
 
 export default function WalletSelection() {
   const { user, session } = useAuth();
@@ -38,7 +38,9 @@ export default function WalletSelection() {
   const [rows, setRows] = useState<WalletRow[]>([]);
   const [loadingList, setLoadingList] = useState(false);
 
-  const [step, setStep] = useState<0 | 1 | 2 | 3 | 4>(0); // 0:待機, 1:ノンス, 2:署名, 3:検証, 4:完了
+  const [step, setStep] = useState<0 | 1 | 2 | 3 | 4>(0);
+  const [debugOpen, setDebugOpen] = useState(false);
+  const [debug, setDebug] = useState<any>({});
 
   const FUNCTIONS_BASE = useMemo(() => {
     const url = (import.meta.env.VITE_SUPABASE_URL as string) || "";
@@ -76,6 +78,27 @@ export default function WalletSelection() {
     setPhase("input");
     setMsg(null);
     setStep(0);
+    setDebug({});
+  };
+
+  const fillFromMetaMask = async () => {
+    setMsg(null);
+    if (!window.ethereum) {
+      setMsg("MetaMask not found. Please install MetaMask.");
+      return;
+    }
+    try {
+      const accounts: string[] = await window.ethereum.request({ method: "eth_requestAccounts" });
+      const signer = toL(accounts?.[0] || "");
+      if (!isEthAddress(signer)) {
+        setMsg("No valid MetaMask account selected.");
+        return;
+      }
+      setInputAddress(signer);
+      setDebug((d: any) => ({ ...d, signer }));
+    } catch (e: any) {
+      setMsg(e?.message || String(e));
+    }
   };
 
   const verifyAndLink = async () => {
@@ -98,33 +121,27 @@ export default function WalletSelection() {
     try {
       setBusy(true);
 
-      // A) 接続/アカウント取得
-      //    ※ ここで “署名に使う実アカウント” を確定させる
+      // A) 実署名アカウントを取得
       const accounts: string[] = await window.ethereum
-        .request({ method: "eth_requestAccounts" })
-        .catch((e: any) => {
-          throw new Error(
-            "MetaMask account access was denied.\nPlease unlock MetaMask and allow account access."
-          );
-        });
+        .request({ method: "eth_requestAccounts" });
+      const signer = toL(accounts?.[0] || "");
+      if (!isEthAddress(signer)) throw new Error("No valid MetaMask account selected.");
 
-      const signer = (accounts?.[0] || "").toLowerCase();
-      if (!isEthAddress(signer)) {
-        throw new Error("No valid MetaMask account selected.");
-      }
+      const inputL = toL(inputAddress);
+      const equal = signer === inputL;
 
-      // B) 入力アドレスとの一致チェック
-      if (signer !== inputAddress.toLowerCase()) {
-        // ここで中断し、ユーザーに明確な操作案内を出す
+      setDebug((d: any) => ({ ...d, signer, inputL, equal }));
+
+      if (!equal) {
         setMsg(
           [
             "The address you entered does not match the selected account in MetaMask.",
-            `Entered: ${inputAddress}`,
+            `Entered: ${inputL}`,
             `MetaMask: ${signer}`,
             "",
             "Please either:",
             "  • Switch the selected account in MetaMask to the entered address, or",
-            "  • Replace the input with the currently selected MetaMask address.",
+            "  • Click 'Use connected account' to auto-fill the current MetaMask address.",
           ].join("\n")
         );
         return;
@@ -148,13 +165,15 @@ export default function WalletSelection() {
         if (!j1?.nonce) throw new Error("Nonce not returned from server.");
         nonce = j1.nonce as string;
       }
+      setDebug((d: any) => ({ ...d, nonce }));
 
-      // 2) MetaMask で署名（※第2引数は signer＝実アカウント）
+      // 2) MetaMask で署名（署名者は signer）
       setStep(2);
       const signature: string = await window.ethereum.request({
         method: "personal_sign",
         params: [nonce, signer],
       });
+      setDebug((d: any) => ({ ...d, sigLen: signature.length }));
 
       // 3) 検証＆保存
       setStep(3);
@@ -169,11 +188,15 @@ export default function WalletSelection() {
         throw new Error(`Failed to reach server (POST verify). ${e?.message || e}`);
       });
 
+      const txt = await r2.text().catch(() => "");
+      let j2: any = {};
+      try { j2 = JSON.parse(txt); } catch { /* ignore */ }
+
+      setDebug((d: any) => ({ ...d, postStatus: r2.status, postBody: txt.slice(0, 300) }));
+
       if (!r2.ok) {
-        const detail = await r2.text().catch(() => "");
-        throw new Error(`Server responded ${r2.status} on POST verify. ${detail}`);
+        throw new Error(`Server responded ${r2.status} on POST verify. ${txt}`);
       }
-      const j2 = await r2.json().catch(() => ({}));
       if (!j2?.ok) throw new Error(j2?.error || "Verification failed.");
 
       setStep(4);
@@ -182,14 +205,10 @@ export default function WalletSelection() {
       await loadWallets();
     } catch (e: any) {
       const m = String(e?.message || e);
-      if (m.includes("Failed to reach server")) {
-        setMsg(
-          m +
-            "\n\nHints:\n- Function deployed? Verify JWT ON?\n- Secrets (SUPABASE_URL / SERVICE_ROLE) set?\n- CORS allowed?\n- URL correct? (see console)"
-        );
-      } else {
-        setMsg(m);
-      }
+      setMsg(m.includes("Failed to reach server")
+        ? m + "\n\nHints:\n- Function deployed? Verify JWT ON?\n- Secrets set?\n- CORS allowed?\n- URL correct? (see debug panel)"
+        : m
+      );
     } finally {
       setBusy(false);
     }
@@ -214,21 +233,30 @@ export default function WalletSelection() {
         ) : (
           <div className="space-y-3">
             {/* 入力欄 */}
-            <div>
-              <label className="block text-sm font-semibold mb-1">Wallet address (EVM)</label>
-              <input
-                className={`w-full border rounded px-2 py-1 font-mono ${
-                  inputAddress && !isEthAddress(inputAddress) ? "border-red-500" : ""
-                }`}
-                placeholder="0x..."
-                value={inputAddress}
-                onChange={(e) => setInputAddress(e.target.value.trim())}
-              />
-              {inputAddress && !isEthAddress(inputAddress) && (
-                <div className="text-xs text-red-600 mt-1">
-                  Invalid address format (must be 0x + 40 hex chars).
-                </div>
-              )}
+            <div className="flex gap-2 items-end">
+              <div className="flex-1">
+                <label className="block text-sm font-semibold mb-1">Wallet address (EVM)</label>
+                <input
+                  className={`w-full border rounded px-2 py-1 font-mono ${
+                    inputAddress && !isEthAddress(inputAddress) ? "border-red-500" : ""
+                  }`}
+                  placeholder="0x..."
+                  value={inputAddress}
+                  onChange={(e) => setInputAddress(e.target.value.trim())}
+                />
+                {inputAddress && !isEthAddress(inputAddress) && (
+                  <div className="text-xs text-red-600 mt-1">
+                    Invalid address format (must be 0x + 40 hex chars).
+                  </div>
+                )}
+              </div>
+              <button
+                className="px-3 py-2 border rounded"
+                onClick={fillFromMetaMask}
+                title="Use MetaMask's currently selected account"
+              >
+                Use connected account
+              </button>
             </div>
 
             {/* ステップ表示 */}
@@ -259,24 +287,32 @@ export default function WalletSelection() {
               </button>
               <button
                 className="px-4 py-2 rounded border"
-                onClick={() => {
-                  setPhase("idle");
-                  setInputAddress("");
-                  setMsg(null);
-                  setStep(0);
-                }}
+                onClick={() => { setPhase("idle"); setInputAddress(""); setMsg(null); setStep(0); setDebug({}); }}
                 disabled={busy}
               >
                 Cancel
               </button>
-            </div>
-
-            <div className="text-xs text-muted-foreground">
-              Tip: If MetaMask doesn’t pop up, unlock it and ensure pop-ups are allowed.  
-              The selected MetaMask account must match the address you entered above.
+              <button
+                className="ml-auto text-xs underline"
+                onClick={() => setDebugOpen((v) => !v)}
+              >
+                {debugOpen ? "Hide debug" : "Show debug"}
+              </button>
             </div>
 
             {msg && <div className="text-sm whitespace-pre-wrap">{msg}</div>}
+
+            {debugOpen && (
+              <pre className="text-xs bg-muted/50 p-2 rounded overflow-auto max-h-56">
+{JSON.stringify({
+  FUNCTIONS_BASE,
+  inputAddress,
+  debug,
+  hasSession: !!session?.access_token,
+  tokenPreview: session?.access_token?.slice(0, 12) + "...",
+}, null, 2)}
+              </pre>
+            )}
           </div>
         )}
       </div>
