@@ -1,5 +1,9 @@
 // src/pages/wallet/WalletSelection.tsx
-// 追加: ステップ案内UI、詳細ログ、CORS由来の失敗を含めた分かりやすいエラーメッセージ
+// 修正点：
+// 1) eth_requestAccounts で実署名アカウント(signer)を取得
+// 2) signer と入力アドレスの一致を事前にチェック（不一致なら明確な案内で中断）
+// 3) personal_sign の第2引数は signer を渡す（入力アドレスではない）
+// 4) ステップ案内UIと詳細メッセージは維持
 
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
@@ -39,7 +43,6 @@ export default function WalletSelection() {
   const FUNCTIONS_BASE = useMemo(() => {
     const url = (import.meta.env.VITE_SUPABASE_URL as string) || "";
     const base = url.replace(/\/+$/, "") + "/functions/v1";
-    // デバッグ表示
     if (import.meta.env.DEV) {
       console.log("[WalletSelection] SUPABASE_URL:", url);
       console.log("[WalletSelection] FUNCTIONS_BASE:", base);
@@ -95,11 +98,36 @@ export default function WalletSelection() {
     try {
       setBusy(true);
 
-      // (Optional) アカウントアクセス要求（初回接続時）
-      try {
-        await window.ethereum.request({ method: "eth_requestAccounts" });
-      } catch {
-        // ユーザーが拒否した場合などは署名時にまた失敗するので、ここでは致命的エラーにしない
+      // A) 接続/アカウント取得
+      //    ※ ここで “署名に使う実アカウント” を確定させる
+      const accounts: string[] = await window.ethereum
+        .request({ method: "eth_requestAccounts" })
+        .catch((e: any) => {
+          throw new Error(
+            "MetaMask account access was denied.\nPlease unlock MetaMask and allow account access."
+          );
+        });
+
+      const signer = (accounts?.[0] || "").toLowerCase();
+      if (!isEthAddress(signer)) {
+        throw new Error("No valid MetaMask account selected.");
+      }
+
+      // B) 入力アドレスとの一致チェック
+      if (signer !== inputAddress.toLowerCase()) {
+        // ここで中断し、ユーザーに明確な操作案内を出す
+        setMsg(
+          [
+            "The address you entered does not match the selected account in MetaMask.",
+            `Entered: ${inputAddress}`,
+            `MetaMask: ${signer}`,
+            "",
+            "Please either:",
+            "  • Switch the selected account in MetaMask to the entered address, or",
+            "  • Replace the input with the currently selected MetaMask address.",
+          ].join("\n")
+        );
+        return;
       }
 
       // 1) Nonce 取得
@@ -112,23 +140,20 @@ export default function WalletSelection() {
       });
 
       let nonce = "";
-      if (r1) {
-        if (!r1.ok) {
-          const detail = await r1.text().catch(() => "");
-          throw new Error(`Server responded ${r1.status} on GET nonce. ${detail}`);
-        }
+      if (!r1.ok) {
+        const detail = await r1.text().catch(() => "");
+        throw new Error(`Server responded ${r1.status} on GET nonce. ${detail}`);
+      } else {
         const j1 = await r1.json().catch(() => ({}));
-        if (!j1?.nonce) {
-          throw new Error("Nonce not returned from server.");
-        }
+        if (!j1?.nonce) throw new Error("Nonce not returned from server.");
         nonce = j1.nonce as string;
       }
 
-      // 2) MetaMask で署名
+      // 2) MetaMask で署名（※第2引数は signer＝実アカウント）
       setStep(2);
       const signature: string = await window.ethereum.request({
         method: "personal_sign",
-        params: [nonce, inputAddress],
+        params: [nonce, signer],
       });
 
       // 3) 検証＆保存
@@ -156,10 +181,12 @@ export default function WalletSelection() {
       setInputAddress("");
       await loadWallets();
     } catch (e: any) {
-      // CORSやネットワーク由来の可能性を含めて文言をわかりやすく
       const m = String(e?.message || e);
       if (m.includes("Failed to reach server")) {
-        setMsg(m + "\n\nHints:\n- Function deployed? Verify JWT ON?\n- Secrets (SUPABASE_URL / SERVICE_ROLE) set?\n- CORS allowed?\n- URL correct? (see console)");
+        setMsg(
+          m +
+            "\n\nHints:\n- Function deployed? Verify JWT ON?\n- Secrets (SUPABASE_URL / SERVICE_ROLE) set?\n- CORS allowed?\n- URL correct? (see console)"
+        );
       } else {
         setMsg(m);
       }
@@ -190,7 +217,9 @@ export default function WalletSelection() {
             <div>
               <label className="block text-sm font-semibold mb-1">Wallet address (EVM)</label>
               <input
-                className={`w-full border rounded px-2 py-1 font-mono ${inputAddress && !isEthAddress(inputAddress) ? "border-red-500" : ""}`}
+                className={`w-full border rounded px-2 py-1 font-mono ${
+                  inputAddress && !isEthAddress(inputAddress) ? "border-red-500" : ""
+                }`}
                 placeholder="0x..."
                 value={inputAddress}
                 onChange={(e) => setInputAddress(e.target.value.trim())}
@@ -206,9 +235,15 @@ export default function WalletSelection() {
             <div className="text-sm">
               <div className="mb-1 font-semibold">What will happen:</div>
               <ol className="list-decimal ml-5 space-y-1">
-                <li className={step >= 1 ? "font-semibold" : ""}>Request a one-time code (nonce) from the server</li>
-                <li className={step >= 2 ? "font-semibold" : ""}>MetaMask opens to sign the nonce with your address</li>
-                <li className={step >= 3 ? "font-semibold" : ""}>We verify the signature and save your wallet</li>
+                <li className={step >= 1 ? "font-semibold" : ""}>
+                  Request a one-time code (nonce) from the server
+                </li>
+                <li className={step >= 2 ? "font-semibold" : ""}>
+                  MetaMask opens to sign the nonce with your selected account
+                </li>
+                <li className={step >= 3 ? "font-semibold" : ""}>
+                  We verify the signature and save your wallet
+                </li>
                 <li className={step >= 4 ? "font-semibold" : ""}>Done! The wallet appears in your list</li>
               </ol>
             </div>
@@ -224,7 +259,12 @@ export default function WalletSelection() {
               </button>
               <button
                 className="px-4 py-2 rounded border"
-                onClick={() => { setPhase("idle"); setInputAddress(""); setMsg(null); setStep(0); }}
+                onClick={() => {
+                  setPhase("idle");
+                  setInputAddress("");
+                  setMsg(null);
+                  setStep(0);
+                }}
                 disabled={busy}
               >
                 Cancel
@@ -232,12 +272,11 @@ export default function WalletSelection() {
             </div>
 
             <div className="text-xs text-muted-foreground">
-              Tip: MetaMask will pop up a signature window. If it doesn’t, check your browser’s pop-up block or MetaMask is unlocked.
+              Tip: If MetaMask doesn’t pop up, unlock it and ensure pop-ups are allowed.  
+              The selected MetaMask account must match the address you entered above.
             </div>
 
-            {msg && (
-              <div className="text-sm whitespace-pre-wrap">{msg}</div>
-            )}
+            {msg && <div className="text-sm whitespace-pre-wrap">{msg}</div>}
           </div>
         )}
       </div>
@@ -275,12 +314,8 @@ export default function WalletSelection() {
                 rows.map((w) => (
                   <tr key={w.id} className="border-t">
                     <td className="px-3 py-2 font-mono break-all">{w.address}</td>
-                    <td className="px-3 py-2">
-                      {w.verified ? "Verified ✅" : "Pending ⌛"}
-                    </td>
-                    <td className="px-3 py-2">
-                      {new Date(w.created_at).toLocaleString()}
-                    </td>
+                    <td className="px-3 py-2">{w.verified ? "Verified ✅" : "Pending ⌛"}</td>
+                    <td className="px-3 py-2">{new Date(w.created_at).toLocaleString()}</td>
                   </tr>
                 ))
               )}
