@@ -1,7 +1,6 @@
 // src/pages/Billing.tsx
 import { useState, useEffect } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import jsPDF from "jspdf";
 
 interface Company {
   name: string;
@@ -53,118 +52,154 @@ export default function Billing() {
 
   const [msg, setMsg] = useState<string | null>(null);
   const [pendingClientSave, setPendingClientSave] = useState<Client | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  // 初回ロードで候補と請求書を取得
+  // ---- safe select with logging ----
+  async function safeSelect<T = any>(table: string, cols = "*") {
+    try {
+      const { data, error } = await supabase.from(table).select(cols);
+      if (error) {
+        setMsg(`Failed to load ${table}: ${error.message}`);
+        return [] as T[];
+      }
+      return (data || []) as T[];
+    } catch (e: any) {
+      setMsg(`Failed to load ${table}: ${e?.message || String(e)}`);
+      return [] as T[];
+    }
+  }
+
   useEffect(() => {
-    const loadData = async () => {
-      const { data: companyData } = await supabase.from("companies").select("*");
-      if (companyData) setCompanies(companyData);
-
-      const { data: clientData } = await supabase.from("clients").select("*");
-      if (clientData) setClients(clientData);
-
-      const { data: invoiceData } = await supabase.from("invoices").select("*").order("created_at", { ascending: false });
-      if (invoiceData) setInvoices(invoiceData);
-    };
-    loadData();
+    (async () => {
+      setLoading(true);
+      const [companyData, clientData, invoiceData] = await Promise.all([
+        safeSelect<Company>("companies"),
+        safeSelect<Client>("clients"),
+        safeSelect<Invoice>("invoices"),
+      ]);
+      setCompanies(companyData);
+      setClients(clientData);
+      setInvoices(
+        [...invoiceData].sort((a, b) =>
+          (b.created_at || "").localeCompare(a.created_at || "")
+        )
+      );
+      setLoading(false);
+    })();
   }, []);
 
-  // 会社保存
+  // save company
   const saveCompany = async () => {
-    const { error } = await supabase.from("companies").insert([companyForm]);
-    if (error) {
-      setMsg("Failed to save company: " + error.message);
-    } else {
-      setMsg("Company saved successfully");
+    setMsg(null);
+    try {
+      const { error } = await supabase.from("companies").insert([companyForm]);
+      if (error) throw error;
       setCompanies([...companies, companyForm]);
       setCompanyForm({ name: "", address: "", tax_id: "" });
+      setMsg("Company saved successfully");
+    } catch (e: any) {
+      setMsg("Failed to save company: " + (e?.message || String(e)));
     }
   };
 
-  // クライアント保存
+  // save client
   const saveClient = async (client: Client) => {
-    const { error } = await supabase.from("clients").insert([client]);
-    if (error) {
-      setMsg("Failed to save client: " + error.message);
-    } else {
-      setMsg("Client saved successfully");
+    setMsg(null);
+    try {
+      const { error } = await supabase.from("clients").insert([client]);
+      if (error) throw error;
       setClients([...clients, client]);
+      setMsg("Client saved successfully");
+    } catch (e: any) {
+      setMsg("Failed to save client: " + (e?.message || String(e)));
     }
   };
 
-  // 請求書作成
+  // create invoice
   const createInvoice = async () => {
     setMsg(null);
     try {
       if (!companyForm.name || !clientForm.name || !item || !amount) {
         throw new Error("Missing required fields.");
       }
-      const { data, error } = await supabase.from("invoices").insert([
-        {
-          company_name: companyForm.name,
-          company_address: companyForm.address,
-          client_name: clientForm.name,
-          client_address: clientForm.address,
-          client_email: clientForm.email,
-          item,
-          amount,
-          currency,
-        },
-      ]).select();
+      const { data, error } = await supabase
+        .from("invoices")
+        .insert([
+          {
+            company_name: companyForm.name,
+            company_address: companyForm.address,
+            client_name: clientForm.name,
+            client_address: clientForm.address,
+            client_email: clientForm.email,
+            item,
+            amount,
+            currency,
+          },
+        ])
+        .select();
 
       if (error) throw error;
+      if (data && data[0]) setInvoices([data[0] as Invoice, ...invoices]);
       setMsg("Invoice created successfully.");
-      if (data) setInvoices([data[0], ...invoices]);
 
-      // 新規クライアントだった場合 → 確認表示
+      // ask save client if new
       const exists = clients.find(
         (cl) =>
           cl.name.toLowerCase() === clientForm.name.toLowerCase() &&
           cl.address.toLowerCase() === clientForm.address.toLowerCase()
       );
-      if (!exists) {
-        setPendingClientSave(clientForm);
-      }
+      if (!exists) setPendingClientSave(clientForm);
 
-      // 入力リセット
       setItem("");
       setAmount(0);
       setCurrency("USD");
     } catch (e: any) {
-      setMsg("Failed to create invoice: " + e.message);
+      setMsg("Failed to create invoice: " + (e?.message || String(e)));
     }
   };
 
-  // PDF 出力
-  const downloadPDF = (inv: Invoice) => {
-    const doc = new jsPDF();
-    doc.setFontSize(16);
-    doc.text("Invoice", 20, 20);
+  // download PDF (dynamic import to avoid build-time crash)
+  const downloadPDF = async (inv: Invoice) => {
+    try {
+      const mod = await import("jspdf").catch((e) => {
+        throw new Error(
+          `jspdf is not installed. Run: npm i jspdf\n\nOriginal: ${e?.message || e}`
+        );
+      });
+      const jsPDF = mod.default;
+      const doc = new jsPDF();
+      doc.setFontSize(16);
+      doc.text("Invoice", 20, 20);
 
-    doc.setFontSize(12);
-    doc.text(`Date: ${new Date(inv.created_at || "").toLocaleDateString()}`, 20, 30);
+      doc.setFontSize(12);
+      doc.text(`Date: ${new Date(inv.created_at || "").toLocaleDateString()}`, 20, 30);
 
-    doc.text("From:", 20, 45);
-    doc.text(inv.company_name, 20, 52);
-    doc.text(inv.company_address, 20, 58);
+      doc.text("From:", 20, 45);
+      doc.text(inv.company_name || "-", 20, 52);
+      doc.text(inv.company_address || "-", 20, 58);
 
-    doc.text("To:", 20, 75);
-    doc.text(inv.client_name, 20, 82);
-    doc.text(inv.client_address, 20, 88);
-    if (inv.client_email) doc.text(inv.client_email, 20, 94);
+      doc.text("To:", 20, 75);
+      doc.text(inv.client_name || "-", 20, 82);
+      doc.text(inv.client_address || "-", 20, 88);
+      if (inv.client_email) doc.text(inv.client_email, 20, 94);
 
-    doc.text("Details:", 20, 115);
-    doc.text(`${inv.item}`, 20, 122);
-    doc.text(`${inv.amount} ${inv.currency}`, 20, 128);
+      doc.text("Details:", 20, 115);
+      doc.text(`${inv.item || "-"}`, 20, 122);
+      doc.text(`${inv.amount} ${inv.currency}`, 20, 128);
 
-    doc.save(`invoice_${inv.id}.pdf`);
+      doc.save(`invoice_${inv.id}.pdf`);
+    } catch (e: any) {
+      setMsg("PDF export failed: " + (e?.message || String(e)));
+    }
   };
+
+  if (loading) return <div className="p-6">Loading...</div>;
 
   return (
     <div className="p-6 max-w-4xl mx-auto space-y-6">
       <h1 className="text-2xl font-bold">Billing / Invoice</h1>
 
-      {/* Company Section */}
+      {/* Company */}
       <div className="border rounded-lg p-4 space-y-3">
         <h2 className="font-semibold">Your Company</h2>
         <select
@@ -201,15 +236,12 @@ export default function Billing() {
           value={companyForm.tax_id}
           onChange={(e) => setCompanyForm({ ...companyForm, tax_id: e.target.value })}
         />
-        <button
-          className="bg-primary text-white px-4 py-2 rounded"
-          onClick={saveCompany}
-        >
+        <button className="bg-primary text-white px-4 py-2 rounded" onClick={saveCompany}>
           Save Company
         </button>
       </div>
 
-      {/* Client Section */}
+      {/* Client */}
       <div className="border rounded-lg p-4 space-y-3">
         <h2 className="font-semibold">Your Client</h2>
         <select
@@ -272,17 +304,14 @@ export default function Billing() {
           <option value="USD">USD</option>
           <option value="ETH">ETH</option>
         </select>
-        <button
-          className="bg-green-600 text-white px-4 py-2 rounded"
-          onClick={createInvoice}
-        >
+        <button className="bg-green-600 text-white px-4 py-2 rounded" onClick={createInvoice}>
           Create Invoice
         </button>
       </div>
 
-      {msg && <div className="text-sm text-blue-600">{msg}</div>}
+      {msg && <div className="text-sm text-blue-600 whitespace-pre-wrap">{msg}</div>}
 
-      {/* 新規クライアント保存確認 */}
+      {/* ask save new client */}
       {pendingClientSave && (
         <div className="border rounded-lg p-4 bg-yellow-50 mt-4 space-y-3">
           <div className="font-semibold">Save this new client for future use?</div>
@@ -299,10 +328,7 @@ export default function Billing() {
             >
               Yes, Save
             </button>
-            <button
-              className="border px-3 py-1 rounded"
-              onClick={() => setPendingClientSave(null)}
-            >
+            <button className="border px-3 py-1 rounded" onClick={() => setPendingClientSave(null)}>
               No, Skip
             </button>
           </div>
