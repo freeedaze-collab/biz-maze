@@ -1,69 +1,120 @@
-// 安全版：wagmi の connector を import しない（既存の接続ボタンUIに依存）
-// ユーザーが他の場所で MetaMask 接続済みであれば、この画面で検証・保存だけ行う
-
-import { useMemo, useState } from "react";
-import { useAccount, useBalance, useSignMessage } from "wagmi";
+// src/pages/wallet/WalletSelection.tsx
+// 仕様：
+// - 「Link Wallet」を押す → 入力欄表示
+// - アドレスを入力 → Verify & Link（MetaMask署名→Edge Functionで検証→DB保存）
+// - 保存済みウォレットの一覧（Verified / Pending はUIで表現。失敗は一覧に出さない）
+// - MetaMask未接続でも署名時に自動的に接続要求が出ます
+import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 
+type WalletRow = {
+  id: string;
+  user_id: string;
+  address: string;
+  verified: boolean;
+  created_at: string;
+};
+
+declare global {
+  interface Window {
+    ethereum?: any;
+  }
+}
+
 const isEthAddress = (v: string) => /^0x[a-fA-F0-9]{40}$/.test(v || "");
 
-// Edge Functions をフルURLで叩く
-const FUNCTIONS_BASE = `${(import.meta.env.VITE_SUPABASE_URL || "").replace(/\/+$/, "")}/functions/v1/verify_wallet`;
-
 export default function WalletSelection() {
-  const { user } = useAuth();
-  const { address: connected, isConnected } = useAccount();
-  const { data: balance } = useBalance({ address: connected, query: { enabled: !!connected } });
-  const { signMessageAsync } = useSignMessage();
+  const { user, session } = useAuth();
 
-  const [phase, setPhase] = useState<"idle"|"input"|"verifying"|"linked">("idle");
+  const [phase, setPhase] = useState<"idle"|"input">("idle");
   const [inputAddress, setInputAddress] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
-  const valid = useMemo(() => isEthAddress(inputAddress), [inputAddress]);
-  const short = useMemo(
-    () => (connected ? `${connected.slice(0,6)}...${connected.slice(-4)}` : "-"),
-    [connected]
-  );
+  const [rows, setRows] = useState<WalletRow[]>([]);
+  const [loadingList, setLoadingList] = useState(false);
 
-  const start = () => { setPhase("input"); setMsg(null); };
+  const FUNCTIONS_BASE = useMemo(() => {
+    const url = (import.meta.env.VITE_SUPABASE_URL as string) || "";
+    return url.replace(/\/+$/, "") + "/functions/v1";
+  }, []);
+
+  const loadWallets = async () => {
+    if (!user) return;
+    setLoadingList(true);
+    setMsg(null);
+    try {
+      const { data, error } = await supabase
+        .from("wallets")
+        .select("*")
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      setRows((data || []) as WalletRow[]);
+    } catch (e: any) {
+      setMsg(e?.message || String(e));
+    } finally {
+      setLoadingList(false);
+    }
+  };
+
+  useEffect(() => {
+    if (user) loadWallets();
+  }, [user]);
+
+  const startLinking = () => {
+    setPhase("input");
+    setMsg(null);
+  };
 
   const verifyAndLink = async () => {
     setMsg(null);
-    if (!valid) { setMsg("Invalid Ethereum address format."); return; }
-    if (!isConnected || !connected) {
-      setMsg("Please connect MetaMask first (use the existing Connect button in the app).");
+    if (!session?.access_token) {
+      setMsg("Not signed in.");
       return;
     }
-    if (connected.toLowerCase() !== inputAddress.toLowerCase()) {
-      setMsg("Entered address does not match your connected MetaMask account.");
+    if (!isEthAddress(inputAddress)) {
+      setMsg("Invalid address (0x + 40 hex).");
+      return;
+    }
+    if (!window.ethereum) {
+      setMsg("MetaMask not found. Please install MetaMask.");
       return;
     }
     try {
       setBusy(true);
-      // Nonce 取得
-      const { data: sess } = await supabase.auth.getSession();
-      const token = sess.session?.access_token || "";
-      const getRes = await fetch(FUNCTIONS_BASE, { method: "GET", headers: { Authorization: `Bearer ${token}` } });
-      const getJson = await getRes.json();
-      if (!getRes.ok || !getJson?.nonce) throw new Error(getJson?.error || "Failed to get nonce.");
 
-      // 署名
-      const signature = await signMessageAsync({ message: getJson.nonce });
+      // 1) ノンス取得（GET）
+      const r1 = await fetch(`${FUNCTIONS_BASE}/verify_wallet`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+      const j1 = await r1.json();
+      if (!r1.ok || !j1?.nonce) throw new Error(j1?.error || "Failed to get nonce");
+      const nonce: string = j1.nonce;
 
-      // 検証 & 保存
-      const postRes = await fetch(FUNCTIONS_BASE, {
+      // 2) MetaMask で署名（personal_sign）
+      // MetaMask は [message, address] の順で渡す
+      const signature: string = await window.ethereum.request({
+        method: "personal_sign",
+        params: [nonce, inputAddress],
+      });
+
+      // 3) 署名検証 & 保存（POST）
+      const r2 = await fetch(`${FUNCTIONS_BASE}/verify_wallet`, {
         method: "POST",
-        headers: { "content-type": "application/json", Authorization: `Bearer ${token}` },
+        headers: {
+          "content-type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
         body: JSON.stringify({ address: inputAddress, signature }),
       });
-      const postJson = await postRes.json();
-      if (!postRes.ok || !postJson?.ok) throw new Error(postJson?.error || "Verification failed.");
+      const j2 = await r2.json().catch(() => ({}));
+      if (!r2.ok || !j2?.ok) throw new Error(j2?.error || `Verification failed (${r2.status})`);
 
-      setPhase("linked");
-      setMsg("Wallet linked successfully.");
+      setMsg("Wallet verified & linked.");
+      setInputAddress("");
+      await loadWallets();
     } catch (e: any) {
       setMsg(e?.message || String(e));
     } finally {
@@ -71,74 +122,105 @@ export default function WalletSelection() {
     }
   };
 
-  const manualSave = async () => {
-    setMsg(null);
-    try {
-      if (!user) throw new Error("Not signed in.");
-      if (!valid) throw new Error("Invalid Ethereum address format.");
-      const { error } = await supabase.from("profiles").update({ primary_wallet: inputAddress }).eq("user_id", user.id);
-      if (error) throw error;
-      setPhase("linked");
-      setMsg("Saved manually (ownership not verified).");
-    } catch (e: any) {
-      setMsg(e?.message || String(e));
-    }
-  };
-
   return (
-    <div className="p-6 max-w-xl mx-auto">
+    <div className="p-6 max-w-3xl mx-auto">
       <h1 className="text-2xl font-bold mb-4">Wallet Creation / Linking</h1>
 
       <div className="border rounded-lg p-4 space-y-3">
-        <div className="grid grid-cols-2 gap-4 text-sm">
-          <div><div className="font-semibold">MetaMask</div><div>{isConnected ? "Connected" : "Disconnected"}</div></div>
-          <div><div className="font-semibold">Account</div><div className="font-mono break-all">{connected || "-"}</div></div>
-          <div><div className="font-semibold">Short</div><div>{short}</div></div>
-          <div><div className="font-semibold">Balance</div><div>{balance ? `${balance.formatted} ${balance.symbol}` : "-"}</div></div>
+        <div className="text-sm text-muted-foreground">
+          Add your EVM wallet. We verify ownership by signing a one-time nonce in MetaMask.
         </div>
 
-        {phase === "idle" && (
-          <button className="bg-primary text-primary-foreground px-4 py-2 rounded" onClick={start}>
+        {phase === "idle" ? (
+          <button
+            className="bg-primary text-primary-foreground px-4 py-2 rounded"
+            onClick={startLinking}
+          >
             Link Wallet
           </button>
-        )}
-
-        {phase !== "idle" && (
+        ) : (
           <div className="space-y-3">
             <div>
-              <label className="block text-sm font-semibold mb-1">Your wallet address</label>
+              <label className="block text-sm font-semibold mb-1">Wallet address</label>
               <input
-                className={`w-full border rounded px-2 py-1 font-mono ${inputAddress && !valid ? "border-red-500" : ""}`}
+                className={`w-full border rounded px-2 py-1 font-mono ${inputAddress && !isEthAddress(inputAddress) ? "border-red-500" : ""}`}
                 placeholder="0x..."
                 value={inputAddress}
                 onChange={(e) => setInputAddress(e.target.value.trim())}
               />
-              {!valid && inputAddress && <div className="text-xs text-red-600 mt-1">Invalid address.</div>}
+              {inputAddress && !isEthAddress(inputAddress) && (
+                <div className="text-xs text-red-600 mt-1">
+                  Invalid address format (must be 0x + 40 hex chars).
+                </div>
+              )}
             </div>
 
             <div className="flex gap-2">
               <button
                 className="bg-green-600 text-white px-4 py-2 rounded disabled:opacity-50"
                 onClick={verifyAndLink}
-                disabled={!valid || busy}
+                disabled={!isEthAddress(inputAddress) || busy}
               >
-                {busy ? "Verifying..." : "Verify & Link"}
+                {busy ? "Verifying..." : "Verify & Link with MetaMask"}
               </button>
-
-              <button className="px-4 py-2 rounded border disabled:opacity-50" onClick={manualSave} disabled={!valid || busy}>
-                Save manually
+              <button
+                className="px-4 py-2 rounded border"
+                onClick={() => { setPhase("idle"); setInputAddress(""); setMsg(null); }}
+                disabled={busy}
+              >
+                Cancel
               </button>
             </div>
-
-            {!isConnected && (
-              <div className="text-xs text-muted-foreground">
-                Please connect MetaMask using the existing Connect button in the app, then try again.
-              </div>
-            )}
-
-            {msg && <div className="text-sm">{msg}</div>}
           </div>
         )}
+
+        {msg && <div className="text-sm">{msg}</div>}
+      </div>
+
+      <div className="mt-6">
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-lg font-semibold">Your wallets</h2>
+          <button
+            className="px-3 py-1 border rounded disabled:opacity-50"
+            onClick={loadWallets}
+            disabled={loadingList}
+          >
+            {loadingList ? "Loading..." : "Reload"}
+          </button>
+        </div>
+
+        <div className="border rounded-lg overflow-hidden">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/50">
+              <tr>
+                <th className="text-left px-3 py-2">Address</th>
+                <th className="text-left px-3 py-2">Status</th>
+                <th className="text-left px-3 py-2">Added</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.length === 0 ? (
+                <tr>
+                  <td className="px-3 py-3 text-muted-foreground" colSpan={3}>
+                    No wallets yet. Add one above.
+                  </td>
+                </tr>
+              ) : (
+                rows.map((w) => (
+                  <tr key={w.id} className="border-t">
+                    <td className="px-3 py-2 font-mono break-all">{w.address}</td>
+                    <td className="px-3 py-2">
+                      {w.verified ? "Verified ✅" : "Pending ⌛"}
+                    </td>
+                    <td className="px-3 py-2">
+                      {new Date(w.created_at).toLocaleString()}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );
