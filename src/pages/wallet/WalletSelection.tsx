@@ -1,123 +1,293 @@
-// supabase/functions/verify_wallet/index.ts
-// Verify JWT: ON
-// Secrets: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
-// 追加: CORSヘッダ対応（OPTIONS/プリフライトもOK）
+// src/pages/wallet/WalletSelection.tsx
+// 追加: ステップ案内UI、詳細ログ、CORS由来の失敗を含めた分かりやすいエラーメッセージ
 
-import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { verifyMessage } from "https://esm.sh/ethers@6.13.4";
+import { useEffect, useMemo, useState } from "react";
+import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/useAuth";
 
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+type WalletRow = {
+  id: string;
+  user_id: string;
+  address: string;
+  verified: boolean;
+  created_at: string;
+};
 
-// 必要に応じて本番ドメインへ限定してください（例: https://your.app）
-const ALLOW_ORIGIN = "*";
-
-function withCors(resp: Response) {
-  const headers = new Headers(resp.headers);
-  headers.set("Access-Control-Allow-Origin", ALLOW_ORIGIN);
-  headers.set("Access-Control-Allow-Headers", "authorization, content-type");
-  headers.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  headers.set("Vary", "Origin");
-  return new Response(resp.body, { status: resp.status, headers });
-}
-function json(body: unknown, status = 200) {
-  return withCors(new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json" },
-  }));
-}
-function bad(msg: string, status = 400) {
-  return json({ error: msg }, status);
-}
-
-function randomNonce(): string {
-  const arr = new Uint8Array(16);
-  crypto.getRandomValues(arr);
-  return Array.from(arr).map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-serve(async (req) => {
-  try {
-    // プリフライト対応
-    if (req.method === "OPTIONS") {
-      return withCors(new Response(null, { status: 204 }));
-    }
-
-    const auth = req.headers.get("authorization") || "";
-    const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
-    if (!token) return bad("Missing Bearer token", 401);
-
-    const svc = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { persistSession: false } });
-    const { data: userRes, error: ue } = await svc.auth.getUser(token);
-    if (ue || !userRes?.user) return bad("Not authenticated", 401);
-    const user = userRes.user;
-
-    if (req.method === "GET") {
-      // ノンス発行（10分有効）
-      const nonce = randomNonce();
-      const expires = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-
-      const { error } = await svc.from("wallet_nonces").upsert({
-        user_id: user.id,
-        nonce,
-        expires_at: expires,
-      });
-      if (error) return bad(error.message, 500);
-
-      return json({ nonce, hint: "Sign this nonce in MetaMask to verify ownership." });
-    }
-
-    if (req.method === "POST") {
-      const body = await req.json().catch(() => null) as { address?: string; signature?: string } | null;
-      const address = (body?.address || "").toLowerCase();
-      const signature = body?.signature || "";
-      if (!/^0x[a-fA-F0-9]{40}$/.test(address)) return bad("Invalid address", 422);
-      if (!signature) return bad("Missing signature", 422);
-
-      const { data: n, error: ne } = await svc
-        .from("wallet_nonces")
-        .select("*")
-        .eq("user_id", user.id)
-        .single();
-      if (ne || !n) return bad("Nonce not found", 400);
-      if (new Date(n.expires_at).getTime() < Date.now()) return bad("Nonce expired", 400);
-
-      // 署名から復元したアドレスと入力アドレスの一致検証
-      let recovered: string;
-      try {
-        recovered = verifyMessage(n.nonce, signature).toLowerCase();
-      } catch {
-        return bad("Invalid signature", 400);
-      }
-      if (recovered !== address) return bad("Signature does not match the address", 400);
-
-      // wallets に upsert（verified=true）
-      const { error: we } = await svc.from("wallets").upsert(
-        { user_id: user.id, address, verified: true },
-        { onConflict: "user_id, address" },
-      );
-      if (we) return bad(we.message, 500);
-
-      // profiles.primary_wallet が空ならコピー
-      const { data: prof } = await svc
-        .from("profiles")
-        .select("primary_wallet")
-        .eq("user_id", user.id)
-        .single();
-      if (!prof?.primary_wallet) {
-        await svc.from("profiles")
-          .update({ primary_wallet: address })
-          .eq("user_id", user.id);
-      }
-
-      await svc.from("wallet_nonces").delete().eq("user_id", user.id);
-
-      return json({ ok: true });
-    }
-
-    return bad("Method not allowed", 405);
-  } catch (e) {
-    return bad((e as Error).message || String(e), 500);
+declare global {
+  interface Window {
+    ethereum?: {
+      request: (args: { method: string; params?: any[] }) => Promise<any>;
+    };
   }
-});
+}
+
+const isEthAddress = (v: string) => /^0x[a-fA-F0-9]{40}$/.test(v || "");
+
+export default function WalletSelection() {
+  const { user, session } = useAuth();
+
+  const [phase, setPhase] = useState<"idle" | "input">("idle");
+  const [inputAddress, setInputAddress] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const [rows, setRows] = useState<WalletRow[]>([]);
+  const [loadingList, setLoadingList] = useState(false);
+
+  const [step, setStep] = useState<0 | 1 | 2 | 3 | 4>(0); // 0:待機, 1:ノンス, 2:署名, 3:検証, 4:完了
+
+  const FUNCTIONS_BASE = useMemo(() => {
+    const url = (import.meta.env.VITE_SUPABASE_URL as string) || "";
+    const base = url.replace(/\/+$/, "") + "/functions/v1";
+    // デバッグ表示
+    if (import.meta.env.DEV) {
+      console.log("[WalletSelection] SUPABASE_URL:", url);
+      console.log("[WalletSelection] FUNCTIONS_BASE:", base);
+    }
+    return base;
+  }, []);
+
+  const loadWallets = async () => {
+    if (!user) return;
+    setLoadingList(true);
+    setMsg(null);
+    try {
+      const { data, error } = await supabase
+        .from("wallets")
+        .select("*")
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      setRows((data || []) as WalletRow[]);
+    } catch (e: any) {
+      setMsg(e?.message || String(e));
+    } finally {
+      setLoadingList(false);
+    }
+  };
+
+  useEffect(() => {
+    if (user) loadWallets();
+  }, [user]);
+
+  const startLinking = () => {
+    setPhase("input");
+    setMsg(null);
+    setStep(0);
+  };
+
+  const verifyAndLink = async () => {
+    setMsg(null);
+    setStep(0);
+
+    if (!session?.access_token) {
+      setMsg("Not signed in.");
+      return;
+    }
+    if (!isEthAddress(inputAddress)) {
+      setMsg("Invalid address (must be 0x + 40 hex).");
+      return;
+    }
+    if (!window.ethereum) {
+      setMsg("MetaMask not found. Please install MetaMask and try again.");
+      return;
+    }
+
+    try {
+      setBusy(true);
+
+      // (Optional) アカウントアクセス要求（初回接続時）
+      try {
+        await window.ethereum.request({ method: "eth_requestAccounts" });
+      } catch {
+        // ユーザーが拒否した場合などは署名時にまた失敗するので、ここでは致命的エラーにしない
+      }
+
+      // 1) Nonce 取得
+      setStep(1);
+      const r1 = await fetch(`${FUNCTIONS_BASE}/verify_wallet`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      }).catch((e) => {
+        throw new Error(`Failed to reach server (GET nonce). ${e?.message || e}`);
+      });
+
+      let nonce = "";
+      if (r1) {
+        if (!r1.ok) {
+          const detail = await r1.text().catch(() => "");
+          throw new Error(`Server responded ${r1.status} on GET nonce. ${detail}`);
+        }
+        const j1 = await r1.json().catch(() => ({}));
+        if (!j1?.nonce) {
+          throw new Error("Nonce not returned from server.");
+        }
+        nonce = j1.nonce as string;
+      }
+
+      // 2) MetaMask で署名
+      setStep(2);
+      const signature: string = await window.ethereum.request({
+        method: "personal_sign",
+        params: [nonce, inputAddress],
+      });
+
+      // 3) 検証＆保存
+      setStep(3);
+      const r2 = await fetch(`${FUNCTIONS_BASE}/verify_wallet`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ address: inputAddress, signature }),
+      }).catch((e) => {
+        throw new Error(`Failed to reach server (POST verify). ${e?.message || e}`);
+      });
+
+      if (!r2.ok) {
+        const detail = await r2.text().catch(() => "");
+        throw new Error(`Server responded ${r2.status} on POST verify. ${detail}`);
+      }
+      const j2 = await r2.json().catch(() => ({}));
+      if (!j2?.ok) throw new Error(j2?.error || "Verification failed.");
+
+      setStep(4);
+      setMsg("Wallet verified & linked.");
+      setInputAddress("");
+      await loadWallets();
+    } catch (e: any) {
+      // CORSやネットワーク由来の可能性を含めて文言をわかりやすく
+      const m = String(e?.message || e);
+      if (m.includes("Failed to reach server")) {
+        setMsg(m + "\n\nHints:\n- Function deployed? Verify JWT ON?\n- Secrets (SUPABASE_URL / SERVICE_ROLE) set?\n- CORS allowed?\n- URL correct? (see console)");
+      } else {
+        setMsg(m);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="p-6 max-w-3xl mx-auto">
+      <h1 className="text-2xl font-bold mb-4">Wallet Creation / Linking</h1>
+
+      <div className="border rounded-lg p-4 space-y-3">
+        <div className="text-sm text-muted-foreground">
+          We’ll verify you own the wallet by asking MetaMask to sign a one-time code (nonce), then we validate it on the server.
+        </div>
+
+        {phase === "idle" ? (
+          <button
+            className="bg-primary text-primary-foreground px-4 py-2 rounded"
+            onClick={startLinking}
+          >
+            Link Wallet
+          </button>
+        ) : (
+          <div className="space-y-3">
+            {/* 入力欄 */}
+            <div>
+              <label className="block text-sm font-semibold mb-1">Wallet address (EVM)</label>
+              <input
+                className={`w-full border rounded px-2 py-1 font-mono ${inputAddress && !isEthAddress(inputAddress) ? "border-red-500" : ""}`}
+                placeholder="0x..."
+                value={inputAddress}
+                onChange={(e) => setInputAddress(e.target.value.trim())}
+              />
+              {inputAddress && !isEthAddress(inputAddress) && (
+                <div className="text-xs text-red-600 mt-1">
+                  Invalid address format (must be 0x + 40 hex chars).
+                </div>
+              )}
+            </div>
+
+            {/* ステップ表示 */}
+            <div className="text-sm">
+              <div className="mb-1 font-semibold">What will happen:</div>
+              <ol className="list-decimal ml-5 space-y-1">
+                <li className={step >= 1 ? "font-semibold" : ""}>Request a one-time code (nonce) from the server</li>
+                <li className={step >= 2 ? "font-semibold" : ""}>MetaMask opens to sign the nonce with your address</li>
+                <li className={step >= 3 ? "font-semibold" : ""}>We verify the signature and save your wallet</li>
+                <li className={step >= 4 ? "font-semibold" : ""}>Done! The wallet appears in your list</li>
+              </ol>
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                className="bg-green-600 text-white px-4 py-2 rounded disabled:opacity-50"
+                onClick={verifyAndLink}
+                disabled={!isEthAddress(inputAddress) || busy}
+                title={!isEthAddress(inputAddress) ? "Enter a valid 0x-address first" : ""}
+              >
+                {busy ? "Verifying..." : "Verify & Link with MetaMask"}
+              </button>
+              <button
+                className="px-4 py-2 rounded border"
+                onClick={() => { setPhase("idle"); setInputAddress(""); setMsg(null); setStep(0); }}
+                disabled={busy}
+              >
+                Cancel
+              </button>
+            </div>
+
+            <div className="text-xs text-muted-foreground">
+              Tip: MetaMask will pop up a signature window. If it doesn’t, check your browser’s pop-up block or MetaMask is unlocked.
+            </div>
+
+            {msg && (
+              <div className="text-sm whitespace-pre-wrap">{msg}</div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* 一覧 */}
+      <div className="mt-6">
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-lg font-semibold">Your wallets</h2>
+          <button
+            className="px-3 py-1 border rounded disabled:opacity-50"
+            onClick={loadWallets}
+            disabled={loadingList}
+          >
+            {loadingList ? "Loading..." : "Reload"}
+          </button>
+        </div>
+
+        <div className="border rounded-lg overflow-hidden">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/50">
+              <tr>
+                <th className="text-left px-3 py-2">Address</th>
+                <th className="text-left px-3 py-2">Status</th>
+                <th className="text-left px-3 py-2">Added</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.length === 0 ? (
+                <tr>
+                  <td className="px-3 py-3 text-muted-foreground" colSpan={3}>
+                    No wallets yet. Add one above.
+                  </td>
+                </tr>
+              ) : (
+                rows.map((w) => (
+                  <tr key={w.id} className="border-t">
+                    <td className="px-3 py-2 font-mono break-all">{w.address}</td>
+                    <td className="px-3 py-2">
+                      {w.verified ? "Verified ✅" : "Pending ⌛"}
+                    </td>
+                    <td className="px-3 py-2">
+                      {new Date(w.created_at).toLocaleString()}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
