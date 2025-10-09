@@ -8,7 +8,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 
 const FN_URL =
-  (import.meta.env.VITE_FUNCTION_VERIFY_WALLET as string | undefined) ??
+  (import.meta.env.VITE_FUNCTION_VERIFY_WALLET_SIGNATURE as string | undefined) ??
   `${(import.meta.env.VITE_SUPABASE_URL || "").replace(/\/+$/, "")}/functions/v1/verify-wallet-signature`;
 
 const domain = { name: "BizMaze", version: "1" } as const;
