@@ -1,141 +1,121 @@
 // supabase/functions/verify-wallet-signature/index.ts
-// 要件:
-//  - GET: 検証用 nonce を返す（ステートレス。保存はしない）
-//  - POST: { address, signature, nonce } を受け取り、署名者(recovered)とaddressが一致するか検証
-//  - 一致すれば public.wallets に upsert (verified=true)
-//  - Authorization: Bearer <access_token> 必須（user_id の特定に使用）
+// サーバ側：クライアントが sign した “同一プレーン文字列” を verifyMessage で検証
+// GET  : 署名用 nonce を返す
+// POST : { address, nonce, signature } を検証し、OKなら wallets に upsert
 
-import 'dotenv/config'
-import { serve } from 'https://deno.land/std@0.224.0/http/server.ts'
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.3'
-import { getAddress, verifyMessage } from 'https://esm.sh/viem@2.21.15'
+import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.46.1";
+import { verifyMessage } from "https://esm.sh/viem@2.21.15";
 
-function json(body: any, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      'content-type': 'application/json; charset=utf-8',
-      'cache-control': 'no-store',
-    },
-  })
+type JwtUser = { sub: string };
+
+function corsHeaders(req: Request) {
+  const origin = req.headers.get("origin") ?? "*";
+  return {
+    "Access-Control-Allow-Origin": origin,
+    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    "Access-Control-Allow-Headers": "authorization, content-type",
+  };
 }
 
-function bad(body: any, status = 400) {
-  return json(body, status)
-}
-
-function requireEnv(name: string): string {
-  const v = Deno.env.get(name)
-  if (!v) throw new Error(`Missing env: ${name}`)
-  return v
-}
-
-function normalizeAddress(addr: string) {
-  // 0x…40hex をチェックし checksum 化
-  const lower = (addr || '').trim().toLowerCase()
-  if (!/^0x[a-f0-9]{40}$/.test(lower)) throw new Error('Invalid address format')
-  return getAddress(lower) // checksum
-}
-
-function buildMessage(nonce: string) {
-  // フロントと完全一致が必要
-  // ※必要なら文面を変更せず、ここを単一のソースオブトゥルースとします
-  return `BizMaze wallet verification\nnonce=${nonce}`
-}
-
-async function getUserId(req: Request, supabaseUrl: string, anonKey: string) {
-  const auth = req.headers.get('authorization') || req.headers.get('Authorization') || ''
-  const m = auth.match(/^Bearer\s+(.+)$/i)
-  if (!m) return null
-
-  const supabase = createClient(supabaseUrl, anonKey, { global: { headers: { Authorization: auth }}})
-  const { data: { user } } = await supabase.auth.getUser()
-  return user?.id ?? null
-}
-
-function newNonce() {
-  const a = crypto.getRandomValues(new Uint8Array(16))
-  return [...a].map(b => b.toString(16).padStart(2, '0')).join('')
+function makeMessage(nonce: string) {
+  // ★ クライアントと完全一致させる
+  return `Link wallet by signing this nonce: ${nonce}`;
 }
 
 serve(async (req) => {
-  try {
-    const url = new URL(req.url)
-    const method = req.method.toUpperCase()
-    const supabaseUrl = requireEnv('SUPABASE_URL')
-    const anonKey = requireEnv('SUPABASE_ANON_KEY')
-
-    // GET: nonce を返す
-    if (method === 'GET') {
-      const nonce = newNonce()
-      return json({ nonce })
-    }
-
-    // POST: 検証
-    if (method === 'POST') {
-      const uid = await getUserId(req, supabaseUrl, anonKey)
-      if (!uid) return bad({ error: 'Unauthorized' }, 401)
-
-      let body: any
-      try {
-        body = await req.json()
-      } catch {
-        return bad({ error: 'Invalid JSON' })
-      }
-
-      // フィールド名のゆらぎ両対応
-      const address = body.address ?? body.wallet ?? ''
-      const signature = body.signature ?? body.sig ?? ''
-      const nonce = body.nonce ?? body.n ?? ''
-
-      if (!signature || !nonce) return bad({ error: 'Missing signature or nonce' })
-
-      // 署名メッセージを固定（フロントと一致必須）
-      const message = buildMessage(nonce)
-
-      let recovered: `0x${string}`
-      try {
-        recovered = await verifyMessage({
-          message,
-          signature,
-          address: undefined, // address比較は自前で行う
-        }).then((ok) => {
-          // viem@2 の verifyMessage は boolean を返す実装もあるため recover を自前で
-          // recover は verifyMessage ではなく recoverMessageAddress を使うパターンもある
-          // ここでは recover を別APIで行う:
-          return '' as any
-        })
-      } catch {
-        // viem の boolean verify を使う代替: recoverMessageAddress
-      }
-
-      // recoverMessageAddress で復元
-      const { recoverMessageAddress } = await import('https://esm.sh/viem@2.21.15/actions')
-      const recoveredAddr = await recoverMessageAddress({ message, signature })
-      const inputAddr = normalizeAddress(address)
-
-      const equal = getAddress(recoveredAddr) === inputAddr
-      if (!equal) {
-        return bad({
-          error: 'Signature does not match the address',
-          dbg: { input: inputAddr, recovered: getAddress(recoveredAddr) }
-        })
-      }
-
-      // DB 反映
-      const supabase = createClient(supabaseUrl, anonKey, { global: { headers: { Authorization: req.headers.get('Authorization')! }}})
-      // wallets: id serial / user_id uuid / address text unique(user_id,address) / verified boolean / created_at
-      const { error } = await supabase
-        .from('wallets')
-        .upsert({ user_id: uid, address: inputAddr, verified: true }, { onConflict: 'user_id,address' })
-
-      if (error) return bad({ error: error.message }, 500)
-
-      return json({ ok: true })
-    }
-
-    return bad({ error: 'Method Not Allowed' }, 405)
-  } catch (e: any) {
-    return bad({ error: String(e?.message || e) }, 500)
+  // CORS preflight
+  if (req.method === "OPTIONS") {
+    return new Response(null, { headers: corsHeaders(req) });
   }
-})
+
+  const headers = corsHeaders(req);
+
+  // 認証チェック
+  const auth = req.headers.get("authorization") || "";
+  const jwt = auth.startsWith("Bearer ") ? auth.slice(7) : null;
+  if (!jwt) {
+    return new Response(JSON.stringify({ error: "missing bearer token" }), {
+      status: 401,
+      headers: { ...headers, "content-type": "application/json" },
+    });
+  }
+
+  const supabase = createClient(
+    Deno.env.get("SUPABASE_URL")!,
+    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+  );
+
+  // ユーザIDを取得
+  const { data: userData, error: userErr } = await supabase.auth.getUser(jwt);
+  if (userErr || !userData?.user) {
+    return new Response(JSON.stringify({ error: "invalid token" }), {
+      status: 401,
+      headers: { ...headers, "content-type": "application/json" },
+    });
+  }
+  const userId = (userData.user as unknown as JwtUser).sub;
+
+  if (req.method === "GET") {
+    // 署名用 nonce を返すだけ（DB保存はせず、クライアントがそのままPOSTに同梱）
+    const nonce = crypto.randomUUID().replace(/-/g, "").slice(0, 32);
+    return new Response(JSON.stringify({ nonce }), {
+      status: 200,
+      headers: { ...headers, "content-type": "application/json" },
+    });
+  }
+
+  if (req.method === "POST") {
+    const body = await req.json().catch(() => ({}));
+    const address: string = body.address ?? "";
+    const signature: string = body.signature ?? "";
+    const nonce: string = body.nonce ?? "";
+
+    if (!address || !signature || !nonce) {
+      return new Response(JSON.stringify({ error: "Missing address/signature/nonce" }), {
+        status: 400,
+        headers: { ...headers, "content-type": "application/json" },
+      });
+    }
+
+    // メッセージをクライアントと“完全同一”に組み立て
+    const message = makeMessage(nonce);
+
+    // 署名検証
+    const ok = await verifyMessage({
+      address: address as `0x${string}`,
+      message,
+      signature: signature as `0x${string}`,
+    }).catch(() => false);
+
+    if (!ok) {
+      // デバッグ用に recovered を返さない（セキュリティ上は不要情報）
+      return new Response(JSON.stringify({ error: "Signature does not match the address" }), {
+        status: 400,
+        headers: { ...headers, "content-type": "application/json" },
+      });
+    }
+
+    // DB へ upsert（wallets：user_id + address のユニーク）
+    const { error: upErr } = await supabase
+      .from("wallets")
+      .upsert(
+        { user_id: userId, address: address.toLowerCase(), verified: true },
+        { onConflict: "user_id,address" },
+      );
+
+    if (upErr) {
+      return new Response(JSON.stringify({ error: upErr.message }), {
+        status: 500,
+        headers: { ...headers, "content-type": "application/json" },
+      });
+    }
+
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { ...headers, "content-type": "application/json" },
+    });
+  }
+
+  return new Response("Not Found", { status: 404, headers });
+});
