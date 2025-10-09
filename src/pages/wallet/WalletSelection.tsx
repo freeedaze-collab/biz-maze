@@ -1,146 +1,114 @@
-// src/pages/wallet/WalletSelection.tsx
-import { useMemo, useState } from "react";
-import { useAuth } from "@/hooks/useAuth";
-import { supabase } from "@/integrations/supabase/client";
+// supabase/functions/verify_wallet/index.ts
+import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { ethers } from "https://esm.sh/ethers@6.13.4";
 
-declare global {
-  interface Window {
-    ethereum?: { request: (args: { method: string; params?: any[] }) => Promise<any> };
-  }
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
+const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const ALLOW_ORIGIN = "*";
+
+function withCors(r: Response) {
+  const h = new Headers(r.headers);
+  h.set("Access-Control-Allow-Origin", ALLOW_ORIGIN);
+  h.set("Access-Control-Allow-Headers", "authorization, content-type");
+  h.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  return new Response(r.body, { status: r.status, headers: h });
 }
-const isAddr = (v: string) => /^0x[a-fA-F0-9]{40}$/.test(v || "");
-const toL = (v: string) => (v || "").trim().toLowerCase();
-
-export default function WalletSelection() {
-  const { session } = useAuth();
-  const [phase, setPhase] = useState<"idle"|"input">("idle");
-  const [inputAddress, setInputAddress] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<string|null>(null);
-  const [showDebug, setShowDebug] = useState(false);
-  const [debug, setDebug] = useState<any>({});
-
-  const FUNCTIONS_BASE = useMemo(() => {
-    const url = (import.meta.env.VITE_SUPABASE_URL as string) || "";
-    return url.replace(/\/+$/, "") + "/functions/v1";
-  }, []);
-
-  const start = () => { setPhase("input"); setMsg(null); setDebug({}); };
-
-  const useConnected = async () => {
-    setMsg(null);
-    if (!window.ethereum) return setMsg("MetaMask not found.");
-    const accs: string[] = await window.ethereum.request({ method: "eth_requestAccounts" });
-    const signer = toL(accs?.[0] || "");
-    if (!isAddr(signer)) return setMsg("No valid MetaMask account selected.");
-    setInputAddress(signer);
-    setDebug((d: any) => ({ ...d, signer }));
-  };
-
-  const verifyAndLink = async () => {
-    setMsg(null); setDebug({});
-    if (!session?.access_token) return setMsg("Not signed in.");
-    if (!isAddr(inputAddress)) return setMsg("Invalid address (0x + 40 hex).");
-    if (!window.ethereum) return setMsg("MetaMask not found.");
-
-    try {
-      setBusy(true);
-      const accs: string[] = await window.ethereum.request({ method: "eth_requestAccounts" });
-      const signer = toL(accs?.[0] || "");
-      const inputL = toL(inputAddress);
-      const equal = signer === inputL;
-      setDebug((d: any) => ({ ...d, signer, inputL, equal }));
-      if (!equal) {
-        setMsg(`Entered address ≠ MetaMask account.\nEntered: ${inputL}\nMetaMask: ${signer}`);
-        return;
-      }
-
-      // GET nonce
-      const r1 = await fetch(`${FUNCTIONS_BASE}/verify_wallet`, {
-        method: "GET",
-        headers: { Authorization: `Bearer ${session.access_token}` },
-      });
-      const j1 = await r1.json().catch(() => ({}));
-      if (!r1.ok || !j1?.nonce) throw new Error("Failed to get nonce");
-      setDebug((d: any) => ({ ...d, nonce: j1.nonce }));
-
-      // sign
-      const signature: string = await window.ethereum.request({
-        method: "personal_sign",
-        params: [j1.nonce, signer],
-      });
-      setDebug((d: any) => ({ ...d, sigLen: signature.length }));
-
-      // POST verify （← x-debug ヘッダをやめ、クエリ ?dbg=1 で）
-      const r2 = await fetch(`${FUNCTIONS_BASE}/verify_wallet?dbg=1`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          Authorization: `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify({ address: inputAddress, signature }),
-      });
-      const txt = await r2.text().catch(() => "");
-      let body: any = {};
-      try { body = JSON.parse(txt); } catch {}
-      setDebug((d: any) => ({ ...d, postStatus: r2.status, postBody: body }));
-
-      if (!r2.ok) throw new Error(body?.error || `Server ${r2.status}`);
-
-      setMsg("Wallet verified & linked.");
-      setInputAddress("");
-    } catch (e: any) {
-      setMsg(e?.message || String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="p-6 max-w-2xl mx-auto">
-      <h1 className="text-2xl font-bold mb-4">Wallet Creation / Linking</h1>
-
-      {phase === "idle" ? (
-        <button className="bg-primary text-primary-foreground px-4 py-2 rounded" onClick={start}>
-          Link Wallet
-        </button>
-      ) : (
-        <div className="space-y-3 border rounded p-4">
-          <div className="flex gap-2 items-end">
-            <div className="flex-1">
-              <label className="block text-sm font-semibold mb-1">Wallet address (EVM)</label>
-              <input
-                className={`w-full border rounded px-2 py-1 font-mono ${inputAddress && !isAddr(inputAddress) ? "border-red-500" : ""}`}
-                placeholder="0x..."
-                value={inputAddress}
-                onChange={(e) => setInputAddress(e.target.value.trim())}
-              />
-            </div>
-            <button className="px-3 py-2 border rounded" onClick={useConnected}>Use connected account</button>
-          </div>
-
-          <div className="flex gap-2">
-            <button className="bg-green-600 text-white px-4 py-2 rounded disabled:opacity-50"
-              onClick={verifyAndLink} disabled={!isAddr(inputAddress) || busy}>
-              {busy ? "Verifying..." : "Verify & Link with MetaMask"}
-            </button>
-            <button className="px-4 py-2 border rounded" onClick={() => { setPhase("idle"); setMsg(null); setDebug({}); setShowDebug(false); }} disabled={busy}>
-              Cancel
-            </button>
-            <button className="ml-auto text-xs underline" onClick={() => setShowDebug(v => !v)}>
-              {showDebug ? "Hide debug" : "Show debug"}
-            </button>
-          </div>
-
-          {msg && <div className="text-sm whitespace-pre-wrap">{msg}</div>}
-
-          {showDebug && (
-            <pre className="text-xs bg-muted/50 p-2 rounded overflow-auto max-h-64">
-{JSON.stringify({ FUNCTIONS_BASE, inputAddress, debug }, null, 2)}
-            </pre>
-          )}
-        </div>
-      )}
-    </div>
+function json(b: unknown, s = 200) {
+  return withCors(
+    new Response(JSON.stringify(b), {
+      status: s,
+      headers: { "content-type": "application/json" },
+    }),
   );
 }
+function bad(msg: string, s = 400, extra?: unknown) {
+  if (extra) console.log("[verify_wallet] bad:", msg, extra);
+  else console.log("[verify_wallet] bad:", msg);
+  return json({ error: msg }, s);
+}
+const toL = (v: string) => (v || "").trim().toLowerCase();
+const isAddr = (v: string) => /^0x[a-fA-F0-9]{40}$/.test(v || "");
+const nonce16 = () =>
+  Array.from(crypto.getRandomValues(new Uint8Array(16)))
+    .map(b => b.toString(16).padStart(2, "0"))
+    .join("");
+
+serve(async (req) => {
+  try {
+    if (req.method === "OPTIONS") return withCors(new Response(null, { status: 204 }));
+    const url = new URL(req.url);
+    const dbg = url.searchParams.get("dbg") === "1";
+
+    const auth = req.headers.get("authorization") || "";
+    const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+    if (!token) return bad("Missing Bearer token", 401);
+
+    const svc = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { persistSession: false } });
+    const { data: gu, error: gue } = await svc.auth.getUser(token);
+    if (gue || !gu?.user) return bad("Not authenticated", 401, { gue });
+    const user = gu.user;
+
+    if (req.method === "GET") {
+      const nonce = nonce16();
+      const expires = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+      const { error } = await svc.from("wallet_nonces").upsert({
+        user_id: user.id,
+        nonce,
+        expires_at: expires,
+      });
+      if (error) return bad("Failed to store nonce", 500, { error });
+      if (dbg) console.log("[GET] nonce issued:", nonce);
+      return json({ nonce });
+    }
+
+    if (req.method === "POST") {
+      const b = await req.json().catch(() => null) as { address?: string; signature?: string } | null;
+      const address = toL(b?.address || "");
+      const sig = (b?.signature || "").trim();
+      if (!isAddr(address)) return bad("Invalid address", 422);
+      if (!sig) return bad("Missing signature", 422);
+
+      const { data: n, error: ne } = await svc
+        .from("wallet_nonces")
+        .select("*")
+        .eq("user_id", user.id)
+        .single();
+      if (ne || !n) return bad("Nonce not found", 400, { ne });
+      if (new Date(n.expires_at).getTime() < Date.now()) return bad("Nonce expired", 400);
+
+      let recovered = "";
+      try {
+        // ✅ ethers.verifyMessage(message, signature)
+        //    message は MetaMask が署名した nonce と完全一致させる必要がある
+        recovered = toL(ethers.verifyMessage(n.nonce, sig));
+      } catch (e) {
+        return bad("Invalid signature", 400, { e: String(e) });
+      }
+
+      const match = recovered === address;
+      if (dbg) console.log("[POST verify]", { input: address, recovered, match });
+
+      if (!match) {
+        return json(
+          { error: "Signature does not match the address", dbg: { input: address, recovered } },
+          400,
+        );
+      }
+
+      const { error: upErr } = await svc.from("wallets").upsert(
+        { user_id: user.id, address, verified: true },
+        { onConflict: "user_id,address" },
+      );
+      if (upErr) return bad("Failed to upsert wallet", 500, { upErr });
+
+      await svc.from("wallet_nonces").delete().eq("user_id", user.id);
+      return json({ ok: true });
+    }
+
+    return bad("Method not allowed", 405);
+  } catch (e) {
+    console.error("[verify_wallet] fatal:", e);
+    return bad((e as Error).message || String(e), 500);
+  }
+});
