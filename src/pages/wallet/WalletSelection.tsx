@@ -1,16 +1,14 @@
 // src/pages/wallet/WalletSelection.tsx
-// 目的：Docker不要で原因を確定させるため、POST時に x-debug: 1 を付与し、サーバから dbg を受け取って画面に出す。
-// ※ 本番は x-debug を外してください。
-import { useEffect, useMemo, useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import { useMemo, useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
+import { supabase } from "@/integrations/supabase/client";
 
 declare global {
   interface Window {
     ethereum?: { request: (args: { method: string; params?: any[] }) => Promise<any> };
   }
 }
-const isEthAddress = (v: string) => /^0x[a-fA-F0-9]{40}$/.test(v || "");
+const isAddr = (v: string) => /^0x[a-fA-F0-9]{40}$/.test(v || "");
 const toL = (v: string) => (v || "").trim().toLowerCase();
 
 export default function WalletSelection() {
@@ -18,9 +16,9 @@ export default function WalletSelection() {
   const [phase, setPhase] = useState<"idle"|"input">("idle");
   const [inputAddress, setInputAddress] = useState("");
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
-  const [debug, setDebug] = useState<any>({});
+  const [msg, setMsg] = useState<string|null>(null);
   const [showDebug, setShowDebug] = useState(false);
+  const [debug, setDebug] = useState<any>({});
 
   const FUNCTIONS_BASE = useMemo(() => {
     const url = (import.meta.env.VITE_SUPABASE_URL as string) || "";
@@ -29,79 +27,65 @@ export default function WalletSelection() {
 
   const start = () => { setPhase("input"); setMsg(null); setDebug({}); };
 
-  const fillFromMetaMask = async () => {
+  const useConnected = async () => {
     setMsg(null);
     if (!window.ethereum) return setMsg("MetaMask not found.");
-    try {
-      const accs: string[] = await window.ethereum.request({ method: "eth_requestAccounts" });
-      const signer = toL(accs?.[0] || "");
-      if (!isEthAddress(signer)) return setMsg("No valid MetaMask account selected.");
-      setInputAddress(signer);
-      setDebug((d: any) => ({ ...d, signer }));
-    } catch (e: any) {
-      setMsg(e?.message || String(e));
-    }
+    const accs: string[] = await window.ethereum.request({ method: "eth_requestAccounts" });
+    const signer = toL(accs?.[0] || "");
+    if (!isAddr(signer)) return setMsg("No valid MetaMask account selected.");
+    setInputAddress(signer);
+    setDebug((d: any) => ({ ...d, signer }));
   };
 
   const verifyAndLink = async () => {
-    setMsg(null);
-    setDebug({});
+    setMsg(null); setDebug({});
     if (!session?.access_token) return setMsg("Not signed in.");
-    if (!isEthAddress(inputAddress)) return setMsg("Invalid address (0x + 40 hex).");
+    if (!isAddr(inputAddress)) return setMsg("Invalid address (0x + 40 hex).");
     if (!window.ethereum) return setMsg("MetaMask not found.");
 
     try {
       setBusy(true);
-
-      // 実署名アカウント
       const accs: string[] = await window.ethereum.request({ method: "eth_requestAccounts" });
       const signer = toL(accs?.[0] || "");
       const inputL = toL(inputAddress);
-      setDebug((d: any) => ({ ...d, signer, inputL, equal: signer === inputL }));
-      if (signer !== inputL) {
-        setMsg([
-          "Entered address ≠ MetaMask selected account.",
-          `Entered: ${inputL}`,
-          `MetaMask: ${signer}`,
-        ].join("\n"));
+      const equal = signer === inputL;
+      setDebug((d: any) => ({ ...d, signer, inputL, equal }));
+      if (!equal) {
+        setMsg(`Entered address ≠ MetaMask account.\nEntered: ${inputL}\nMetaMask: ${signer}`);
         return;
       }
 
-      // Nonce
+      // GET nonce
       const r1 = await fetch(`${FUNCTIONS_BASE}/verify_wallet`, {
         method: "GET",
         headers: { Authorization: `Bearer ${session.access_token}` },
       });
-      const j1 = await r1.json();
+      const j1 = await r1.json().catch(() => ({}));
       if (!r1.ok || !j1?.nonce) throw new Error("Failed to get nonce");
       setDebug((d: any) => ({ ...d, nonce: j1.nonce }));
 
-      // 署名
+      // sign
       const signature: string = await window.ethereum.request({
         method: "personal_sign",
         params: [j1.nonce, signer],
       });
       setDebug((d: any) => ({ ...d, sigLen: signature.length }));
 
-      // 検証 (x-debug:1 でサーバが recovered/input を返す)
-      const r2 = await fetch(`${FUNCTIONS_BASE}/verify_wallet`, {
+      // POST verify （← x-debug ヘッダをやめ、クエリ ?dbg=1 で）
+      const r2 = await fetch(`${FUNCTIONS_BASE}/verify_wallet?dbg=1`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
           Authorization: `Bearer ${session.access_token}`,
-          "x-debug": "1",
         },
         body: JSON.stringify({ address: inputAddress, signature }),
       });
-      const txt = await r2.text();
+      const txt = await r2.text().catch(() => "");
       let body: any = {};
       try { body = JSON.parse(txt); } catch {}
       setDebug((d: any) => ({ ...d, postStatus: r2.status, postBody: body }));
 
-      if (!r2.ok) {
-        // ここで body.dbg.input / body.dbg.recovered を目視できます
-        throw new Error(body?.error || `Server ${r2.status}`);
-      }
+      if (!r2.ok) throw new Error(body?.error || `Server ${r2.status}`);
 
       setMsg("Wallet verified & linked.");
       setInputAddress("");
@@ -126,29 +110,24 @@ export default function WalletSelection() {
             <div className="flex-1">
               <label className="block text-sm font-semibold mb-1">Wallet address (EVM)</label>
               <input
-                className={`w-full border rounded px-2 py-1 font-mono ${inputAddress && !isEthAddress(inputAddress) ? "border-red-500" : ""}`}
+                className={`w-full border rounded px-2 py-1 font-mono ${inputAddress && !isAddr(inputAddress) ? "border-red-500" : ""}`}
                 placeholder="0x..."
                 value={inputAddress}
                 onChange={(e) => setInputAddress(e.target.value.trim())}
               />
             </div>
-            <button className="px-3 py-2 border rounded" onClick={fillFromMetaMask}>
-              Use connected account
-            </button>
+            <button className="px-3 py-2 border rounded" onClick={useConnected}>Use connected account</button>
           </div>
 
           <div className="flex gap-2">
-            <button
-              className="bg-green-600 text-white px-4 py-2 rounded disabled:opacity-50"
-              onClick={verifyAndLink}
-              disabled={!isEthAddress(inputAddress) || busy}
-            >
+            <button className="bg-green-600 text-white px-4 py-2 rounded disabled:opacity-50"
+              onClick={verifyAndLink} disabled={!isAddr(inputAddress) || busy}>
               {busy ? "Verifying..." : "Verify & Link with MetaMask"}
             </button>
-            <button className="px-4 py-2 border rounded" onClick={() => { setPhase("idle"); setMsg(null); setDebug({}); }}>
+            <button className="px-4 py-2 border rounded" onClick={() => { setPhase("idle"); setMsg(null); setDebug({}); setShowDebug(false); }} disabled={busy}>
               Cancel
             </button>
-            <button className="ml-auto text-xs underline" onClick={() => setShowDebug((v) => !v)}>
+            <button className="ml-auto text-xs underline" onClick={() => setShowDebug(v => !v)}>
               {showDebug ? "Hide debug" : "Show debug"}
             </button>
           </div>
@@ -157,11 +136,7 @@ export default function WalletSelection() {
 
           {showDebug && (
             <pre className="text-xs bg-muted/50 p-2 rounded overflow-auto max-h-64">
-{JSON.stringify({
-  FUNCTIONS_BASE,
-  inputAddress,
-  debug,
-}, null, 2)}
+{JSON.stringify({ FUNCTIONS_BASE, inputAddress, debug }, null, 2)}
             </pre>
           )}
         </div>
