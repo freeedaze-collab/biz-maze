@@ -1,39 +1,29 @@
 // src/pages/wallet/WalletSelection.tsx
-// 署名方式を EIP-712 Typed Data に変更。サーバと同一 domain/types/primaryType を使用して検証。
-
-import { useMemo, useState } from "react";
-import { useAccount, useBalance, useConnect, useDisconnect, useSignTypedData } from "wagmi";
-import { InjectedConnector } from "wagmi/connectors/injected";
+// 依存を最小化：wagmi のコネクタは使わず window.ethereum を直接叩く安全版
+import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 
-const FN_URL =
-  (import.meta.env.VITE_FUNCTION_VERIFY_WALLET_SIGNATURE as string | undefined) ??
-  `${(import.meta.env.VITE_SUPABASE_URL || "").replace(/\/+$/, "")}/functions/v1/verify-wallet-signature`;
-
-const domain = { name: "BizMaze", version: "1" } as const;
-const types = {
-  WalletLink: [
-    { name: "wallet", type: "address" as const },
-    { name: "nonce",  type: "string"  as const },
-  ],
-} as const;
+type EthProvider = {
+  request: (args: { method: string; params?: any[] }) => Promise<any>;
+  isMetaMask?: boolean;
+};
 
 const isEthAddress = (v: string) => /^0x[a-fA-F0-9]{40}$/.test(v || "");
+// ※ verify_wallet まで含めたフルURLにしておく
+const FUNCTIONS_URL = `${(import.meta.env.VITE_SUPABASE_URL || "").replace(/\/+$/, "")}/functions/v1/verify_wallet`;
 
 export default function WalletSelection() {
   const { user } = useAuth();
-  const { address: connected, isConnected } = useAccount();
-  const { connect, isPending } = useConnect({ connector: new InjectedConnector() });
-  const { disconnect } = useDisconnect();
-  const { data: balance } = useBalance({ address: connected, query: { enabled: !!connected } });
-  const { signTypedDataAsync } = useSignTypedData();
-
-  const [phase, setPhase] = useState<"idle"|"input"|"linking"|"done">("idle");
+  const [connected, setConnected] = useState<string | null>(null);
   const [inputAddress, setInputAddress] = useState("");
-  const [nonce, setNonce] = useState<string | null>(null);
+  const [phase, setPhase] = useState<"idle" | "input" | "signing" | "linked">("idle");
+  const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [debug, setDebug] = useState<any | null>(null);
+
+  // GETで取得した nonce を保持（POST に同梱する）
+  const [nonce, setNonce] = useState<string>("");
 
   const valid = useMemo(() => isEthAddress(inputAddress), [inputAddress]);
   const short = useMemo(
@@ -41,71 +31,123 @@ export default function WalletSelection() {
     [connected]
   );
 
-  const start = () => {
-    setPhase("input");
+  useEffect(() => {
+    (async () => {
+      try {
+        const eth = (window as any).ethereum as EthProvider | undefined;
+        if (!eth) return;
+        const accts = await eth.request({ method: "eth_accounts" });
+        if (accts?.[0]) setConnected(accts[0]);
+      } catch {/* noop */}
+    })();
+  }, []);
+
+  const connectMetaMask = async () => {
     setMsg(null);
     setDebug(null);
-  };
-
-  const useConnected = () => {
-    if (connected) setInputAddress(connected);
+    try {
+      const eth = (window as any).ethereum as EthProvider | undefined;
+      if (!eth || !eth.request) throw new Error("MetaMask not detected. Please install/unlock MetaMask.");
+      const accounts = await eth.request({ method: "eth_requestAccounts" });
+      if (!accounts?.[0]) throw new Error("No account returned from MetaMask.");
+      setConnected(accounts[0]);
+      setInputAddress(accounts[0]);
+      setPhase("input");
+      setMsg("Connected to MetaMask.");
+    } catch (e: any) {
+      setMsg(e?.message || String(e));
+    }
   };
 
   const verifyAndLink = async () => {
     setMsg(null);
     setDebug(null);
-
+    if (!valid) {
+      setMsg("Invalid Ethereum address format (0x + 40 hex).");
+      return;
+    }
     try {
-      if (!valid) throw new Error("Invalid address.");
-      if (!isConnected) await connect();
-      if (!connected) throw new Error("MetaMask not connected.");
-      if (connected.toLowerCase() !== inputAddress.toLowerCase()) {
-        throw new Error("Entered address does not match connected account.");
+      setBusy(true);
+
+      const eth = (window as any).ethereum as EthProvider | undefined;
+      if (!eth || !eth.request) throw new Error("MetaMask not detected.");
+
+      // Supabase セッション取得（Edge Functions への認可に使用）
+      const { data: sess } = await supabase.auth.getSession();
+      const token = sess.session?.access_token || "";
+      if (!token) throw new Error("Not signed in.");
+
+      // 1) Nonce を GET（必ずここで受け取った値を POST に同梱する）
+      const getRes = await fetch(FUNCTIONS_URL, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const getJson = await getRes.json();
+      if (!getRes.ok || !getJson?.nonce) {
+        throw new Error(getJson?.error || "Failed to get nonce.");
       }
+      const gotNonce: string = getJson.nonce;
+      setNonce(gotNonce);
 
-      setPhase("linking");
-
-      // 1) Nonce 取得
-      const { data: s } = await supabase.auth.getSession();
-      const token = s.session?.access_token ?? "";
-      const r = await fetch(FN_URL, { method: "GET", headers: { Authorization: `Bearer ${token}` } });
-      const j = await r.json();
-      if (!r.ok || !j?.nonce) throw new Error(j?.error || "Failed to get nonce");
-      const n: string = j.nonce;
-      setNonce(n);
-
-      // 2) EIP-712 署名
-      const signature = await signTypedDataAsync({
-        domain,
-        types,
-        primaryType: "WalletLink",
-        message: { wallet: inputAddress as `0x${string}`, nonce: n },
+      // 2) MetaMask で署名（personal_sign は [message, address] の順）
+      const signature: string = await eth.request({
+        method: "personal_sign",
+        params: [gotNonce, inputAddress],
       });
 
-      // 3) 検証 POST
-      const post = await fetch(FN_URL, {
+      // 3) 検証 & 保存（POST: signature と nonce を両方送る）
+      const postRes = await fetch(FUNCTIONS_URL, {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
-        body: JSON.stringify({ address: inputAddress, nonce: n, signature }),
+        headers: {
+          "content-type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          address: inputAddress,
+          signature,
+          nonce: gotNonce, // ←★ これが必須（今回のエラー原因）
+        }),
       });
-      const body = await post.json();
+      const postBody = await postRes.json().catch(() => ({}));
 
       setDebug({
-        FUNCTIONS_BASE: FN_URL,
+        FUNCTIONS_BASE: FUNCTIONS_URL,
         inputAddress,
-        nonce: n,
-        sigLen: signature.length,
-        postStatus: post.status,
-        postBody: body,
+        nonce: gotNonce,
+        sigLen: signature?.length ?? 0,
+        postStatus: postRes.status,
+        postBody,
       });
 
-      if (!post.ok || !body?.ok) throw new Error(body?.error || "Verification failed");
+      if (!postRes.ok || !postBody?.ok) {
+        throw new Error(postBody?.error || "Signature does not match the address");
+      }
 
+      setPhase("linked");
       setMsg("Wallet linked successfully.");
-      setPhase("done");
+      // 任意：profiles.primary_wallet にも反映
+      if (user) {
+        await supabase.from("profiles").update({ primary_wallet: inputAddress }).eq("user_id", user.id);
+      }
     } catch (e: any) {
       setMsg(e?.message || String(e));
-      setPhase("input");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const manualSave = async () => {
+    setMsg(null);
+    setDebug(null);
+    try {
+      if (!user) throw new Error("Not signed in.");
+      if (!valid) throw new Error("Invalid Ethereum address.");
+      const { error } = await supabase.from("profiles").update({ primary_wallet: inputAddress }).eq("user_id", user.id);
+      if (error) throw error;
+      setPhase("linked");
+      setMsg("Saved manually (ownership not verified).");
+    } catch (e: any) {
+      setMsg(e?.message || String(e));
     }
   };
 
@@ -114,74 +156,82 @@ export default function WalletSelection() {
       <h1 className="text-2xl font-bold mb-4">Wallet Creation / Linking</h1>
 
       <div className="border rounded-lg p-4 space-y-3">
-        <div className="grid grid-cols-2 gap-4 text-sm">
+        <div className="grid grid-cols-2 gap-3 text-sm">
           <div>
             <div className="font-semibold">MetaMask</div>
-            <div>{isConnected ? "Connected" : (isPending ? "Connecting..." : "Disconnected")}</div>
+            <div>{connected ? "Connected" : "Disconnected"}</div>
           </div>
           <div>
             <div className="font-semibold">Account</div>
-            <div className="font-mono break-all">{isConnected ? connected : "-"}</div>
+            <div className="font-mono break-all">{connected ?? "-"}</div>
           </div>
           <div>
             <div className="font-semibold">Short</div>
-            <div>{short}</div>
-          </div>
-          <div>
-            <div className="font-semibold">Balance</div>
-            <div>{balance ? `${balance.formatted} ${balance.symbol}` : "-"}</div>
+            <div>{connected ? short : "-"}</div>
           </div>
           <div>
             <div className="font-semibold">Nonce (last)</div>
-            <div className="font-mono break-all">{nonce ?? "-"}</div>
+            <div className="font-mono break-all text-xs">{nonce || "-"}</div>
           </div>
         </div>
 
-        {phase === "idle" && (
-          <button className="bg-primary text-primary-foreground px-4 py-2 rounded" onClick={start}>
-            Link Wallet
+        {!connected && (
+          <button className="bg-primary text-primary-foreground px-4 py-2 rounded" onClick={connectMetaMask}>
+            Connect MetaMask
           </button>
         )}
 
-        {phase !== "idle" && (
-          <div className="space-y-3">
-            <label className="block text-sm font-semibold">Wallet address (EVM)</label>
+        <div className="space-y-3">
+          <div>
+            <label className="block text-sm font-semibold mb-1">Wallet address (EVM)</label>
             <div className="flex gap-2">
               <input
-                className={`flex-1 border rounded px-2 py-1 font-mono ${inputAddress && !valid ? "border-red-500" : ""}`}
+                className={`w-full border rounded px-2 py-1 font-mono ${
+                  inputAddress && !valid ? "border-red-500" : ""
+                }`}
+                placeholder="0x..."
                 value={inputAddress}
                 onChange={(e) => setInputAddress(e.target.value.trim())}
-                placeholder="0x..."
               />
-              <button className="px-3 py-1 rounded border" onClick={useConnected} disabled={!connected}>
-                Use connected account
-              </button>
+              {connected && (
+                <button
+                  className="px-3 py-1 border rounded"
+                  onClick={() => setInputAddress(connected)}
+                  title="Use connected MetaMask account"
+                >
+                  Use connected
+                </button>
+              )}
             </div>
             {!valid && inputAddress && (
-              <div className="text-xs text-red-600">Invalid address format (0x + 40 hex).</div>
-            )}
-
-            <div className="flex gap-2">
-              <button
-                className="bg-green-600 text-white px-4 py-2 rounded disabled:opacity-50"
-                onClick={verifyAndLink}
-                disabled={!valid || phase === "linking"}
-              >
-                {phase === "linking" ? "Verifying…" : "Verify & Link with MetaMask"}
-              </button>
-              <button className="px-4 py-2 rounded border" onClick={() => disconnect()} disabled={!isConnected}>
-                Disconnect
-              </button>
-            </div>
-
-            {msg && <div className="text-sm">{msg}</div>}
-
-            {debug && (
-              <pre className="text-xs bg-muted p-2 rounded overflow-auto max-h-64">
-                {JSON.stringify(debug, null, 2)}
-              </pre>
+              <div className="text-xs text-red-600 mt-1">Invalid address format (0x + 40 hex).</div>
             )}
           </div>
+
+          <div className="flex gap-2">
+            <button
+              className="bg-green-600 text-white px-4 py-2 rounded disabled:opacity-50"
+              onClick={verifyAndLink}
+              disabled={!valid || busy}
+            >
+              {busy ? "Verifying..." : "Verify & Link with MetaMask"}
+            </button>
+            <button className="px-4 py-2 rounded border disabled:opacity-50" onClick={manualSave} disabled={!valid || busy}>
+              Save manually
+            </button>
+          </div>
+
+          <p className="text-xs text-muted-foreground">
+            Tip: After clicking “Verify & Link”, MetaMask will open a signature window. Sign to prove ownership.
+          </p>
+        </div>
+
+        {msg && <div className="text-sm">{msg}</div>}
+
+        {debug && (
+          <pre className="text-xs bg-muted p-2 rounded overflow-auto max-h-48">
+            {JSON.stringify(debug, null, 2)}
+          </pre>
         )}
       </div>
     </div>
