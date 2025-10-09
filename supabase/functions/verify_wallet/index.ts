@@ -1,111 +1,253 @@
-// supabase/functions/verify_wallet/index.ts
-import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { verifyMessage } from "npm:ethers@6.13.4";
+// src/pages/wallet/WalletSelection.tsx
+// 署名メッセージのズレをなくすため、Edge Function から返る signText をそのまま署名します。
+// さらにフロント側でも verifyMessage(signText, signature) を実行して recoveredLocal を表示し、原因切り分けを容易にします。
 
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+import { useMemo, useState } from "react";
+import { useAccount, useBalance, useConnect, useDisconnect, useSignMessage } from "wagmi";
+import { InjectedConnector } from "wagmi/connectors/injected";
+import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/useAuth";
+import { verifyMessage } from "ethers";
 
-// 本番は自ドメインに絞る
-const ALLOW_ORIGIN = "*";
+const isEthAddress = (v: string) => /^0x[a-fA-F0-9]{40}$/.test(v || "");
+const FUNCTIONS_BASE = `${(import.meta.env.VITE_SUPABASE_URL || "").replace(/\/+$/, "")}/functions/v1/verify_wallet`;
 
-const withCors = (r: Response) => {
-  const h = new Headers(r.headers);
-  h.set("Access-Control-Allow-Origin", ALLOW_ORIGIN);
-  h.set("Access-Control-Allow-Headers", "authorization, content-type");
-  h.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  return new Response(r.body, { status: r.status, headers: h });
-};
-const json = (b: unknown, s = 200) =>
-  withCors(new Response(JSON.stringify(b), { status: s, headers: { "content-type": "application/json" } }));
-const bad = (m: string, s = 400, extra?: unknown) => {
-  if (extra) console.log("[verify_wallet] bad:", m, extra);
-  else console.log("[verify_wallet] bad:", m);
-  return json({ error: m }, s);
-};
+type DebugBlock = Record<string, unknown>;
 
-const toL = (v: string) => (v || "").trim().toLowerCase();
-const isAddr = (v: string) => /^0x[a-fA-F0-9]{40}$/.test(v || "");
-const nonce16 = () => {
-  const a = new Uint8Array(16);
-  crypto.getRandomValues(a);
-  return Array.from(a).map(b => b.toString(16).padStart(2, "0")).join("");
-};
+export default function WalletSelection() {
+  const { user } = useAuth();
+  const { address: connected, isConnected } = useAccount();
+  const { connect, isPending: connecting } = useConnect({ connector: new InjectedConnector() });
+  const { disconnect } = useDisconnect();
+  const { data: balance } = useBalance({ address: connected, query: { enabled: !!connected } });
+  const { signMessageAsync } = useSignMessage();
 
-// サーバとフロントで完全一致させるためのテンプレート（ここを単一のソースに）
-const buildSignText = (nonce: string) =>
-  `BizMaze Wallet Linking\n\nPlease sign this message to prove ownership of your wallet.\n\nNonce: ${nonce}`;
+  const [phase, setPhase] = useState<"idle" | "input" | "verifying" | "linked">("idle");
+  const [inputAddress, setInputAddress] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [debug, setDebug] = useState<DebugBlock | null>(null);
+  const [showDbg, setShowDbg] = useState(false);
 
-serve(async (req) => {
-  try {
-    if (req.method === "OPTIONS") return withCors(new Response(null, { status: 204 }));
+  const valid = useMemo(() => isEthAddress(inputAddress), [inputAddress]);
+  const short = useMemo(
+    () => (connected ? `${connected.slice(0, 6)}...${connected.slice(-4)}` : "-"),
+    [connected]
+  );
 
-    const auth = req.headers.get("authorization") || "";
-    const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
-    if (!token) return bad("Missing Bearer token", 401);
+  const startLinking = () => {
+    setPhase("input");
+    setMsg(null);
+    setDebug(null);
+  };
 
-    const svc = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { persistSession: false } });
-    const { data: gu, error: gue } = await svc.auth.getUser(token);
-    if (gue || !gu?.user) return bad("Not authenticated", 401, { gue });
-    const user = gu.user;
+  // 入力欄を接続中アカウントで埋めるショートカット
+  const useConnected = () => {
+    if (connected) setInputAddress(connected);
+  };
 
-    if (req.method === "GET") {
-      const nonce = nonce16();
-      const expires = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-      const { error } = await svc.from("wallet_nonces").upsert({
-        user_id: user.id,
-        nonce,
-        expires_at: expires,
+  const verifyAndLink = async () => {
+    setMsg(null);
+    setDebug(null);
+
+    if (!valid) {
+      setMsg("Invalid Ethereum address format (0x + 40 hex chars).");
+      return;
+    }
+    try {
+      setBusy(true);
+
+      // 1) MetaMask 接続
+      if (!isConnected) await connect();
+      if (!connected) throw new Error("MetaMask not connected.");
+
+      // 2) 入力アドレスと接続アカウント一致チェック（ここが false なら必ず失敗する）
+      const eq = connected.toLowerCase() === inputAddress.toLowerCase();
+      if (!eq) {
+        throw new Error("Entered address does not match your connected MetaMask account.");
+      }
+
+      // 3) Edge Function GET: nonce と signText を取得（← これを必ず署名する）
+      const { data: sess } = await supabase.auth.getSession();
+      const token = sess.session?.access_token || "";
+      const getRes = await fetch(`${FUNCTIONS_BASE}?dbg=1`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` },
       });
-      if (error) return bad("Failed to store nonce", 500, { error });
+      const getJson = await getRes.json();
+      if (!getRes.ok || !getJson?.signText) {
+        throw new Error(getJson?.error || "Failed to get signText.");
+      }
 
-      // フロントはこの signText をそのまま署名する（ズレ防止）
-      const signText = buildSignText(nonce);
-      return json({ nonce, signText });
-    }
+      const signText: string = getJson.signText;
+      const nonce: string = getJson.nonce;
 
-    if (req.method === "POST") {
-      const body = await req.json().catch(() => null) as { address?: string; signature?: string } | null;
-      const address = toL(body?.address || "");
-      const signature = (body?.signature || "").trim();
-      if (!isAddr(address)) return bad("Invalid address", 422);
-      if (!signature) return bad("Missing signature", 422);
+      // 4) 署名（サーバから返された signText をそのまま使う）
+      //    ※ ここで改行・空白・トリミング等を一切行わないこと
+      const signature = await signMessageAsync({ message: signText });
 
-      const { data: n, error: ne } = await svc
-        .from("wallet_nonces")
-        .select("*")
-        .eq("user_id", user.id)
-        .single();
-      if (ne || !n) return bad("Nonce not found", 400, { ne });
-      if (new Date(n.expires_at).getTime() < Date.now()) return bad("Nonce expired", 400);
-
-      // サーバ側も同じテンプレでメッセージを再構成
-      const signText = buildSignText(n.nonce);
-
-      let recovered = "";
+      // 4.5) ローカルでも検証してみる（原因切り分けのため）
+      let recoveredLocal = "";
       try {
-        recovered = toL(verifyMessage(signText, signature));
+        recoveredLocal = verifyMessage(signText, signature).toLowerCase();
       } catch (e) {
-        return bad("Invalid signature", 400, { e: String(e) });
+        recoveredLocal = `(local verify error: ${String(e)})`;
       }
 
-      if (recovered !== address) {
-        return json({ error: "Signature does not match the address", dbg: { input: address, recovered } }, 400);
+      // 5) Edge Function POST: サーバ側でも同じ signText を再構成し検証
+      const postRes = await fetch(`${FUNCTIONS_BASE}?dbg=1`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ address: inputAddress, signature }),
+      });
+      const postBody = await postRes.json();
+
+      // デバッグ表示（画面に情報を出す）
+      setDebug({
+        FUNCTIONS_BASE,
+        inputAddress,
+        signer: connected?.toLowerCase(),
+        inputL: inputAddress.toLowerCase(),
+        equal: eq,
+        nonce,
+        sigLen: signature.length,
+        signTextPreview: signText.length > 120 ? signText.slice(0, 120) + " …" : signText,
+        recoveredLocal,
+        postStatus: postRes.status,
+        postBody,
+      });
+
+      if (!postRes.ok || !postBody?.ok) {
+        throw new Error(postBody?.error || "Server verification failed");
       }
 
-      const { error: upErr } = await svc.from("wallets").upsert(
-        { user_id: user.id, address, verified: true },
-        { onConflict: "user_id,address" },
-      );
-      if (upErr) return bad("Failed to upsert wallet", 500, { upErr });
-
-      await svc.from("wallet_nonces").delete().eq("user_id", user.id);
-      return json({ ok: true });
+      setPhase("linked");
+      setMsg("Wallet linked successfully.");
+    } catch (e: any) {
+      setMsg(e?.message || String(e));
+    } finally {
+      setBusy(false);
     }
+  };
 
-    return bad("Method not allowed", 405);
-  } catch (e) {
-    console.error("[verify_wallet] fatal:", e);
-    return bad((e as Error).message || String(e), 500);
-  }
-});
+  const manualSave = async () => {
+    setMsg(null);
+    try {
+      if (!user) throw new Error("Not signed in.");
+      if (!valid) throw new Error("Invalid Ethereum address format.");
+      const { error } = await supabase
+        .from("profiles")
+        .update({ primary_wallet: inputAddress })
+        .eq("user_id", user.id);
+      if (error) throw error;
+      setPhase("linked");
+      setMsg("Saved manually (ownership not verified).");
+    } catch (e: any) {
+      setMsg(e?.message || String(e));
+    }
+  };
+
+  return (
+    <div className="p-6 max-w-xl mx-auto space-y-4">
+      <h1 className="text-2xl font-bold">Wallet Creation / Linking</h1>
+
+      <div className="border rounded-lg p-4 space-y-3">
+        <div className="text-sm text-muted-foreground">
+          Link your Ethereum wallet. We verify ownership by matching your MetaMask account and a signed message from the server.
+        </div>
+
+        <div className="grid grid-cols-2 gap-4 text-sm">
+          <div>
+            <div className="font-semibold">MetaMask</div>
+            <div>{isConnected ? "Connected" : (connecting ? "Connecting..." : "Disconnected")}</div>
+          </div>
+          <div>
+            <div className="font-semibold">Account</div>
+            <div className="font-mono break-all">{isConnected ? connected : "-"}</div>
+          </div>
+          <div>
+            <div className="font-semibold">Short</div>
+            <div>{short}</div>
+          </div>
+          <div>
+            <div className="font-semibold">Balance</div>
+            <div>{balance ? `${balance.formatted} ${balance.symbol}` : "-"}</div>
+          </div>
+        </div>
+
+        {phase === "idle" && (
+          <button className="bg-primary text-primary-foreground px-4 py-2 rounded" onClick={startLinking}>
+            Link Wallet
+          </button>
+        )}
+
+        {phase !== "idle" && (
+          <div className="space-y-3">
+            <label className="block text-sm font-semibold">Wallet address (EVM)</label>
+            <div className="flex gap-2">
+              <input
+                className={`flex-1 border rounded px-2 py-1 font-mono ${inputAddress && !valid ? "border-red-500" : ""}`}
+                placeholder="0x..."
+                value={inputAddress}
+                onChange={(e) => setInputAddress(e.target.value.trim())}
+              />
+              <button className="px-3 py-1 rounded border" onClick={useConnected} disabled={!connected}>
+                Use connected account
+              </button>
+            </div>
+            {!valid && inputAddress && (
+              <div className="text-xs text-red-600">Invalid address format (0x + 40 hex chars).</div>
+            )}
+
+            <div className="flex gap-2">
+              <button
+                className="bg-green-600 text-white px-4 py-2 rounded disabled:opacity-50"
+                onClick={verifyAndLink}
+                disabled={!valid || busy}
+              >
+                {busy ? "Verifying..." : "Verify & Link with MetaMask"}
+              </button>
+              <button className="px-4 py-2 rounded border" onClick={() => disconnect()} disabled={!isConnected}>
+                Disconnect MetaMask
+              </button>
+              <button className="px-3 py-2 rounded border" onClick={() => setShowDbg(s => !s)}>
+                {showDbg ? "Hide debug" : "Show debug"}
+              </button>
+            </div>
+
+            <p className="text-xs text-muted-foreground">
+              Tip: A MetaMask signature window will appear. If not, ensure MetaMask is unlocked and pop-ups are allowed.
+            </p>
+
+            <hr className="my-2" />
+
+            <div className="space-y-2">
+              <div className="text-xs font-semibold">Fallback (not recommended)</div>
+              <button className="px-4 py-2 rounded border disabled:opacity-50" onClick={manualSave} disabled={!valid || busy}>
+                Save manually (without ownership verification)
+              </button>
+            </div>
+          </div>
+        )}
+
+        {msg && <div className="text-sm">{msg}</div>}
+        {showDbg && (
+          <pre className="text-xs bg-muted/40 p-2 rounded overflow-x-auto">
+            {JSON.stringify(
+              {
+                FUNCTIONS_BASE,
+                inputAddress,
+                debug,
+              },
+              null,
+              2
+            )}
+          </pre>
+        )}
+      </div>
+    </div>
+  );
+}
