@@ -2,7 +2,12 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+
+// ルータ：プレビュー/CDNで 404 を避けるための自動フォールバックは残す
 import { BrowserRouter, HashRouter } from "react-router-dom";
+
+// ★ AuthProvider を最上位に置く（これが無いと useAuth が落ちる）
+import { AuthProvider } from "@/hooks/useAuth";
 
 /**
  * プレビュー/CDNでも落ちないための自動フォールバック
@@ -21,8 +26,10 @@ const RouterComp = shouldUseHashRouter() ? HashRouter : BrowserRouter;
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <RouterComp>
-      <App />
-    </RouterComp>
+    <AuthProvider>
+      <RouterComp>
+        <App />
+      </RouterComp>
+    </AuthProvider>
   </React.StrictMode>
 );
