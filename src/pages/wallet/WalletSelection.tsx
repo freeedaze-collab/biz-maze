@@ -1,13 +1,13 @@
 // src/pages/wallet/WalletSelection.tsx
-// GET で受け取った nonce / signText を必ず保持し、POST に nonce を一緒に返す版。
-// さらに recoveredLocal / signTextPreview を必ず表示して切り分けを容易にします。
+// サーバから返る signText を "そのまま" 署名する版 + デバッグ情報を詳しく表示。
+// ★ デバッグ欄に signTextPreview / recoveredLocal が必ず出るようにしています。
 
 import { useMemo, useState } from "react";
 import { useAccount, useBalance, useConnect, useDisconnect, useSignMessage } from "wagmi";
 import { InjectedConnector } from "wagmi/connectors/injected";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
-import { verifyMessage } from "ethers";
+import { verifyMessage } from "ethers"; // ethers v6
 
 const isEthAddress = (v: string) => /^0x[a-fA-F0-9]{40}$/.test(v || "");
 const FUNCTIONS_BASE = `${(import.meta.env.VITE_SUPABASE_URL || "").replace(/\/+$/, "")}/functions/v1/verify_wallet`;
@@ -27,11 +27,7 @@ export default function WalletSelection() {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string|null>(null);
   const [debug, setDebug] = useState<Dbg|null>(null);
-  const [showDbg, setShowDbg] = useState(true);
-
-  // GETで取得したnonce/signTextを保持
-  const [nonce, setNonce] = useState<string>("");
-  const [signText, setSignText] = useState<string>("");
+  const [showDbg, setShowDbg] = useState(true); // 最初から表示にして確実に見えるように
 
   const valid = useMemo(() => isEthAddress(inputAddress), [inputAddress]);
   const short = useMemo(() => (connected ? `${connected.slice(0,6)}...${connected.slice(-4)}` : "-"), [connected]);
@@ -40,52 +36,57 @@ export default function WalletSelection() {
     setPhase("input");
     setMsg(null);
     setDebug(null);
-    setNonce("");
-    setSignText("");
   };
 
-  const useConnected = () => { if (connected) setInputAddress(connected); };
+  const useConnected = () => {
+    if (connected) setInputAddress(connected);
+  };
 
   const verifyAndLink = async () => {
     setMsg(null);
     setDebug(null);
+
     if (!valid) { setMsg("Invalid Ethereum address format (0x + 40 hex chars)."); return; }
 
     try {
       setBusy(true);
       if (!isConnected) await connect();
       if (!connected) throw new Error("MetaMask not connected.");
+
       const eq = connected.toLowerCase() === inputAddress.toLowerCase();
       if (!eq) throw new Error("Entered address does not match your connected MetaMask account.");
 
-      // 1) GET: nonce & signText を取得
+      // 1) GET: server-provided signText を取得
       const { data: sess } = await supabase.auth.getSession();
       const token = sess.session?.access_token || "";
       const getRes = await fetch(`${FUNCTIONS_BASE}?dbg=1`, {
         method: "GET",
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Bearer ${token}` }
       });
       const getJson = await getRes.json();
-      if (!getRes.ok || !getJson?.signText || !getJson?.nonce) throw new Error(getJson?.error || "Failed to get signText");
-      setNonce(getJson.nonce);
-      setSignText(getJson.signText);
+      if (!getRes.ok || !getJson?.signText) throw new Error(getJson?.error || "Failed to get signText");
+      const signText: string = String(getJson.signText);
+      const nonce: string = String(getJson.nonce || "");
 
       // 2) 署名（signText を一切加工しない）
-      const signature = await signMessageAsync({ message: getJson.signText });
+      const signature = await signMessageAsync({ message: signText });
 
-      // 2.5) ローカル検証
+      // 2.5) ローカル検証（必ずデバッグに出す）
       let recoveredLocal = "";
-      try { recoveredLocal = verifyMessage(getJson.signText, signature).toLowerCase(); }
-      catch (e) { recoveredLocal = `(local verify error: ${String(e)})`; }
+      try {
+        recoveredLocal = verifyMessage(signText, signature).toLowerCase();
+      } catch (e) {
+        recoveredLocal = `(local verify error: ${String(e)})`;
+      }
 
-      // 3) POST: 同じ nonce を返す
+      // 3) POST: サーバ側検証
       const postRes = await fetch(`${FUNCTIONS_BASE}?dbg=1`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          Authorization: `Bearer ${token}`,
+          Authorization: `Bearer ${token}`
         },
-        body: JSON.stringify({ address: inputAddress, signature, nonce: getJson.nonce }),
+        body: JSON.stringify({ address: inputAddress, signature })
       });
       const postBody = await postRes.json();
 
@@ -95,15 +96,17 @@ export default function WalletSelection() {
         signer: connected?.toLowerCase(),
         inputL: inputAddress.toLowerCase(),
         equal: eq,
-        nonce: getJson.nonce,
+        nonce,
         sigLen: signature.length,
-        signTextPreview: getJson.signText.length > 160 ? getJson.signText.slice(0,160) + " …" : getJson.signText,
+        // ここが必ず出る（プレビュー）
+        signTextPreview: signText.length > 160 ? signText.slice(0,160) + " …" : signText,
         recoveredLocal,
         postStatus: postRes.status,
-        postBody,
+        postBody
       });
 
       if (!postRes.ok || !postBody?.ok) throw new Error(postBody?.error || "Server verification failed");
+
       setPhase("linked");
       setMsg("Wallet linked successfully.");
     } catch (e:any) {
@@ -149,17 +152,19 @@ export default function WalletSelection() {
           <div className="space-y-3">
             <label className="block text-sm font-semibold">Wallet address (EVM)</label>
             <div className="flex gap-2">
-              <input className={`flex-1 border rounded px-2 py-1 font-mono ${inputAddress && !valid ? "border-red-500" : ""}`}
-                     placeholder="0x..." value={inputAddress}
-                     onChange={(e) => setInputAddress(e.target.value.trim())} />
+              <input
+                className={`flex-1 border rounded px-2 py-1 font-mono ${inputAddress && !valid ? "border-red-500" : ""}`}
+                placeholder="0x..."
+                value={inputAddress}
+                onChange={(e) => setInputAddress(e.target.value.trim())}
+              />
               <button className="px-3 py-1 rounded border" onClick={useConnected} disabled={!connected}>
                 Use connected account
               </button>
             </div>
 
             <div className="flex gap-2">
-              <button className="bg-green-600 text-white px-4 py-2 rounded disabled:opacity-50"
-                      onClick={verifyAndLink} disabled={!valid || busy}>
+              <button className="bg-green-600 text-white px-4 py-2 rounded disabled:opacity-50" onClick={verifyAndLink} disabled={!valid || busy}>
                 {busy ? "Verifying..." : "Verify & Link with MetaMask"}
               </button>
               <button className="px-4 py-2 rounded border" onClick={() => disconnect()} disabled={!isConnected}>
@@ -173,14 +178,21 @@ export default function WalletSelection() {
             <p className="text-xs text-muted-foreground">
               A MetaMask signature window will appear. If not, ensure MetaMask is unlocked and pop-ups are allowed.
             </p>
+
+            <hr className="my-2" />
+            <div className="space-y-2">
+              <div className="text-xs font-semibold">Fallback (not recommended)</div>
+              <button className="px-4 py-2 rounded border disabled:opacity-50" onClick={manualSave} disabled={!valid || busy}>
+                Save manually (without ownership verification)
+              </button>
+            </div>
           </div>
         )}
 
         {msg && <div className="text-sm">{msg}</div>}
-
         {showDbg && (
           <pre className="text-xs bg-muted/40 p-2 rounded overflow-x-auto">
-{JSON.stringify({ FUNCTIONS_BASE, inputAddress, nonce, signTextPreview: signText ? (signText.length>160?signText.slice(0,160)+" …":signText) : "", debug }, null, 2)}
+            {JSON.stringify({ FUNCTIONS_BASE, inputAddress, debug }, null, 2)}
           </pre>
         )}
       </div>
