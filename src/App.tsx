@@ -1,6 +1,6 @@
 // src/App.tsx
 import React from 'react'
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { Routes, Route, Navigate } from 'react-router-dom'
 
 // Public pages
 import Index from '@/pages/Index'
@@ -34,11 +34,10 @@ import DevAuthPanel from '@/components/DevAuthPanel' // ← 既存
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <div className="min-h-screen flex flex-col">
-        <main className="flex-1">
-          <ErrorBoundary>
-            <Routes>
+    <div className="min-h-screen flex flex-col">
+      <main className="flex-1">
+        <ErrorBoundary>
+          <Routes>
               {/* Public */}
               <Route path="/" element={<Index />} />
               <Route path="/auth/login" element={<Login />} />
@@ -67,13 +66,12 @@ export default function App() {
 
               {/* Fallback */}
               <Route path="*" element={<Navigate to="/" replace />} />
-            </Routes>
-          </ErrorBoundary>
-        </main>
+          </Routes>
+        </ErrorBoundary>
+      </main>
 
-        {/* DEV のときだけ小さなデバッグパネルを表示（本番では出ません） */}
-        {import.meta.env.DEV && <DevAuthPanel />}
-      </div>
-    </BrowserRouter>
+      {/* DEV のときだけ小さなデバッグパネルを表示（本番では出ません） */}
+      {import.meta.env.DEV && <DevAuthPanel />}
+    </div>
   )
 }

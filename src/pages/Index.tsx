@@ -17,10 +17,10 @@ export default function Index() {
           </p>
 
           <div className="flex flex-col sm:flex-row gap-3 justify-center">
-            <Button size="lg" onClick={() => nav("/#/auth/login")}>Get started</Button>
-            <Button size="lg" variant="secondary" onClick={() => nav("/#/auth/login")}>Sign In</Button>
-            <Button size="lg" variant="outline" onClick={() => nav("/#/auth/signup")}>Create your account</Button>
-            <Button size="lg" variant="ghost" onClick={() => nav("/#/pricing")}>Pricing</Button>
+            <Button size="lg" onClick={() => nav("/auth/login")}>Get started</Button>
+            <Button size="lg" variant="secondary" onClick={() => nav("/auth/login")}>Sign In</Button>
+            <Button size="lg" variant="outline" onClick={() => nav("/auth/signup")}>Create your account</Button>
+            <Button size="lg" variant="ghost" onClick={() => nav("/pricing")}>Pricing</Button>
           </div>
         </div>
       </div>
