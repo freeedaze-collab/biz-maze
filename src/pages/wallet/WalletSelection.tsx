@@ -1,11 +1,8 @@
 // src/pages/wallet/WalletSelection.tsx
-// 1) GET /verify-wallet-signature で nonce を取得
-// 2) その nonce と全く同じプレーン文字列を MetaMask で signMessage
-// 3) POST /verify-wallet-signature に {address, nonce, signature} を送る
-// 4) OK なら wallets に verified=true で保存
+// 署名方式を EIP-712 Typed Data に変更。サーバと同一 domain/types/primaryType を使用して検証。
 
 import { useMemo, useState } from "react";
-import { useAccount, useBalance, useConnect, useDisconnect, useSignMessage } from "wagmi";
+import { useAccount, useBalance, useConnect, useDisconnect, useSignTypedData } from "wagmi";
 import { InjectedConnector } from "wagmi/connectors/injected";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
@@ -14,10 +11,13 @@ const FN_URL =
   (import.meta.env.VITE_FUNCTION_VERIFY_WALLET as string | undefined) ??
   `${(import.meta.env.VITE_SUPABASE_URL || "").replace(/\/+$/, "")}/functions/v1/verify-wallet-signature`;
 
-function makeMessage(nonce: string) {
-  // ★ サーバ側 index.ts の makeMessage と完全一致させる
-  return `Link wallet by signing this nonce: ${nonce}`;
-}
+const domain = { name: "BizMaze", version: "1" } as const;
+const types = {
+  WalletLink: [
+    { name: "wallet", type: "address" as const },
+    { name: "nonce",  type: "string"  as const },
+  ],
+} as const;
 
 const isEthAddress = (v: string) => /^0x[a-fA-F0-9]{40}$/.test(v || "");
 
@@ -27,7 +27,7 @@ export default function WalletSelection() {
   const { connect, isPending } = useConnect({ connector: new InjectedConnector() });
   const { disconnect } = useDisconnect();
   const { data: balance } = useBalance({ address: connected, query: { enabled: !!connected } });
-  const { signMessageAsync } = useSignMessage();
+  const { signTypedDataAsync } = useSignTypedData();
 
   const [phase, setPhase] = useState<"idle"|"input"|"linking"|"done">("idle");
   const [inputAddress, setInputAddress] = useState("");
@@ -44,6 +44,7 @@ export default function WalletSelection() {
   const start = () => {
     setPhase("input");
     setMsg(null);
+    setDebug(null);
   };
 
   const useConnected = () => {
@@ -64,46 +65,41 @@ export default function WalletSelection() {
 
       setPhase("linking");
 
-      // 1) Nonce を取得（GET）
+      // 1) Nonce 取得
       const { data: s } = await supabase.auth.getSession();
       const token = s.session?.access_token ?? "";
-      const getRes = await fetch(FN_URL, { method: "GET", headers: { Authorization: `Bearer ${token}` } });
-      const getJson = await getRes.json();
-      if (!getRes.ok || !getJson?.nonce) throw new Error(getJson?.error || "Failed to get nonce");
-      const n = getJson.nonce as string;
+      const r = await fetch(FN_URL, { method: "GET", headers: { Authorization: `Bearer ${token}` } });
+      const j = await r.json();
+      if (!r.ok || !j?.nonce) throw new Error(j?.error || "Failed to get nonce");
+      const n: string = j.nonce;
       setNonce(n);
 
-      // 2) 完全一致のメッセージで署名
-      const message = makeMessage(n);
-      const signature = await signMessageAsync({ message });
+      // 2) EIP-712 署名
+      const signature = await signTypedDataAsync({
+        domain,
+        types,
+        primaryType: "WalletLink",
+        message: { wallet: inputAddress as `0x${string}`, nonce: n },
+      });
 
       // 3) 検証 POST
-      const postRes = await fetch(FN_URL, {
+      const post = await fetch(FN_URL, {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          address: inputAddress,
-          nonce: n,
-          signature,
-        }),
+        headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ address: inputAddress, nonce: n, signature }),
       });
-      const postJson = await postRes.json();
+      const body = await post.json();
 
       setDebug({
         FUNCTIONS_BASE: FN_URL,
         inputAddress,
         nonce: n,
         sigLen: signature.length,
-        postStatus: postRes.status,
-        postBody: postJson,
+        postStatus: post.status,
+        postBody: body,
       });
 
-      if (!postRes.ok || !postJson?.ok) {
-        throw new Error(postJson?.error || "Verification failed");
-      }
+      if (!post.ok || !body?.ok) throw new Error(body?.error || "Verification failed");
 
       setMsg("Wallet linked successfully.");
       setPhase("done");
