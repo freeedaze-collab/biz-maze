@@ -1,213 +1,193 @@
 // src/pages/wallet/WalletSelection.tsx
-import { useEffect, useMemo, useState } from 'react'
-import { useAccount, useBalance, useConnect, useDisconnect, useSignMessage } from 'wagmi'
-import { InjectedConnector } from 'wagmi/connectors/injected'
-import { supabase } from '@/integrations/supabase/client'
-import { useAuth } from '@/hooks/useAuth'
+// 1) GET /verify-wallet-signature で nonce を取得
+// 2) その nonce と全く同じプレーン文字列を MetaMask で signMessage
+// 3) POST /verify-wallet-signature に {address, nonce, signature} を送る
+// 4) OK なら wallets に verified=true で保存
 
-const isEth = (v: string) => /^0x[a-fA-F0-9]{40}$/.test(v || '')
+import { useMemo, useState } from "react";
+import { useAccount, useBalance, useConnect, useDisconnect, useSignMessage } from "wagmi";
+import { InjectedConnector } from "wagmi/connectors/injected";
+import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/useAuth";
 
-const API_BASE =
-  `${(import.meta.env.VITE_SUPABASE_URL || '').replace(/\/+$/, '')}/functions/v1/verify-wallet-signature`
+const FN_URL =
+  (import.meta.env.VITE_FUNCTION_VERIFY_WALLET as string | undefined) ??
+  `${(import.meta.env.VITE_SUPABASE_URL || "").replace(/\/+$/, "")}/functions/v1/verify-wallet-signature`;
 
-const buildMessage = (nonce: string) => `BizMaze wallet verification\nnonce=${nonce}`
+function makeMessage(nonce: string) {
+  // ★ サーバ側 index.ts の makeMessage と完全一致させる
+  return `Link wallet by signing this nonce: ${nonce}`;
+}
+
+const isEthAddress = (v: string) => /^0x[a-fA-F0-9]{40}$/.test(v || "");
 
 export default function WalletSelection() {
-  const { user } = useAuth()
-  const { address: connected, isConnected } = useAccount()
-  const { connect, isPending } = useConnect({ connector: new InjectedConnector() })
-  const { disconnect } = useDisconnect()
-  const { data: balance } = useBalance({ address: connected, query: { enabled: !!connected } })
-  const { signMessageAsync } = useSignMessage()
+  const { user } = useAuth();
+  const { address: connected, isConnected } = useAccount();
+  const { connect, isPending } = useConnect({ connector: new InjectedConnector() });
+  const { disconnect } = useDisconnect();
+  const { data: balance } = useBalance({ address: connected, query: { enabled: !!connected } });
+  const { signMessageAsync } = useSignMessage();
 
-  const [phase, setPhase] = useState<'idle' | 'input' | 'linked'>('idle')
-  const [input, setInput] = useState('')
-  const [nonce, setNonce] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [msg, setMsg] = useState<string | null>(null)
-  const [debug, setDebug] = useState<any>(null)
+  const [phase, setPhase] = useState<"idle"|"input"|"linking"|"done">("idle");
+  const [inputAddress, setInputAddress] = useState("");
+  const [nonce, setNonce] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [debug, setDebug] = useState<any | null>(null);
 
-  const valid = useMemo(() => isEth(input), [input])
-  const short = useMemo(() => (connected ? `${connected.slice(0, 6)}...${connected.slice(-4)}` : '-'), [connected])
+  const valid = useMemo(() => isEthAddress(inputAddress), [inputAddress]);
+  const short = useMemo(
+    () => (connected ? `${connected.slice(0, 6)}...${connected.slice(-4)}` : "-"),
+    [connected]
+  );
 
-  // 既存登録の一覧（簡易表示）
-  const [rows, setRows] = useState<Array<{ address: string; verified: boolean }>>([])
-  useEffect(() => {
-    (async () => {
-      if (!user) return
-      const { data } = await supabase.from('wallets').select('address, verified').eq('user_id', user.id).order('created_at', { ascending: false })
-      setRows(data || [])
-    })()
-  }, [user])
-
-  const start = async () => {
-    setMsg(null)
-    setPhase('input')
-    setDebug(null)
-    try {
-      const { data: sess } = await supabase.auth.getSession()
-      const token = sess.session?.access_token || ''
-      // GET nonce
-      const r = await fetch(API_BASE, { headers: { Authorization: `Bearer ${token}` } })
-      const j = await r.json()
-      if (!r.ok || !j?.nonce) throw new Error(j?.error || 'Failed to get nonce')
-      setNonce(j.nonce)
-    } catch (e: any) {
-      setMsg(e?.message || String(e))
-    }
-  }
-
-  const verify = async () => {
-    setMsg(null)
-    setDebug(null)
-    if (!valid) { setMsg('Invalid address'); return }
-    try {
-      setBusy(true)
-      // 1) MetaMask 接続
-      if (!isConnected) await connect()
-      if (!connected) throw new Error('MetaMask not connected')
-
-      // 2) 接続中アカウントと入力一致
-      if (connected.toLowerCase() !== input.toLowerCase()) {
-        throw new Error('Entered address does not match your connected MetaMask account.')
-      }
-      // 3) nonce が必要
-      if (!nonce) throw new Error('Nonce missing. Click "Link Wallet" again.')
-
-      // 4) 署名
-      const message = buildMessage(nonce)
-      const signature = await signMessageAsync({ message })
-
-      // 5) POST 検証
-      const { data: sess } = await supabase.auth.getSession()
-      const token = sess.session?.access_token || ''
-      const res = await fetch(API_BASE, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ address: input, signature, nonce }),
-      })
-      const json = await res.json().catch(() => ({}))
-      setDebug({
-        FUNCTIONS_BASE: API_BASE,
-        inputAddress: input,
-        nonce,
-        sigLen: signature?.length ?? 0,
-        postStatus: res.status,
-        postBody: json,
-      })
-      if (!res.ok) throw new Error(json?.error || 'Verification failed')
-
-      setMsg('Wallet linked successfully.')
-      setPhase('linked')
-
-      // 最新を反映
-      if (user) {
-        const { data } = await supabase.from('wallets').select('address, verified').eq('user_id', user.id).order('created_at', { ascending: false })
-        setRows(data || [])
-      }
-    } catch (e: any) {
-      setMsg(e?.message || String(e))
-    } finally {
-      setBusy(false)
-    }
-  }
+  const start = () => {
+    setPhase("input");
+    setMsg(null);
+  };
 
   const useConnected = () => {
-    if (connected) setInput(connected)
-  }
+    if (connected) setInputAddress(connected);
+  };
+
+  const verifyAndLink = async () => {
+    setMsg(null);
+    setDebug(null);
+
+    try {
+      if (!valid) throw new Error("Invalid address.");
+      if (!isConnected) await connect();
+      if (!connected) throw new Error("MetaMask not connected.");
+      if (connected.toLowerCase() !== inputAddress.toLowerCase()) {
+        throw new Error("Entered address does not match connected account.");
+      }
+
+      setPhase("linking");
+
+      // 1) Nonce を取得（GET）
+      const { data: s } = await supabase.auth.getSession();
+      const token = s.session?.access_token ?? "";
+      const getRes = await fetch(FN_URL, { method: "GET", headers: { Authorization: `Bearer ${token}` } });
+      const getJson = await getRes.json();
+      if (!getRes.ok || !getJson?.nonce) throw new Error(getJson?.error || "Failed to get nonce");
+      const n = getJson.nonce as string;
+      setNonce(n);
+
+      // 2) 完全一致のメッセージで署名
+      const message = makeMessage(n);
+      const signature = await signMessageAsync({ message });
+
+      // 3) 検証 POST
+      const postRes = await fetch(FN_URL, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          address: inputAddress,
+          nonce: n,
+          signature,
+        }),
+      });
+      const postJson = await postRes.json();
+
+      setDebug({
+        FUNCTIONS_BASE: FN_URL,
+        inputAddress,
+        nonce: n,
+        sigLen: signature.length,
+        postStatus: postRes.status,
+        postBody: postJson,
+      });
+
+      if (!postRes.ok || !postJson?.ok) {
+        throw new Error(postJson?.error || "Verification failed");
+      }
+
+      setMsg("Wallet linked successfully.");
+      setPhase("done");
+    } catch (e: any) {
+      setMsg(e?.message || String(e));
+      setPhase("input");
+    }
+  };
 
   return (
-    <div className="p-6 max-w-2xl mx-auto space-y-4">
-      <h1 className="text-3xl font-bold">Wallet Creation / Linking</h1>
+    <div className="p-6 max-w-xl mx-auto">
+      <h1 className="text-2xl font-bold mb-4">Wallet Creation / Linking</h1>
 
-      <div className="grid grid-cols-2 gap-4 text-sm">
-        <div>
-          <div className="font-semibold">MetaMask</div>
-          <div>{isConnected ? 'Connected' : (isPending ? 'Connecting…' : 'Disconnected')}</div>
-        </div>
-        <div>
-          <div className="font-semibold">Account</div>
-          <div className="font-mono break-all">{connected || '-'}</div>
-        </div>
-        <div>
-          <div className="font-semibold">Short</div>
-          <div>{short}</div>
-        </div>
-        <div>
-          <div className="font-semibold">Balance</div>
-          <div>{balance ? `${balance.formatted} ${balance.symbol}` : '-'}</div>
-        </div>
-        <div>
-          <div className="font-semibold">Nonce (last)</div>
-          <div className="font-mono">{nonce || '-'}</div>
-        </div>
-      </div>
-
-      {phase === 'idle' && (
-        <button className="bg-primary text-primary-foreground px-4 py-2 rounded" onClick={start}>
-          Link Wallet
-        </button>
-      )}
-
-      {phase !== 'idle' && (
-        <div className="space-y-3">
+      <div className="border rounded-lg p-4 space-y-3">
+        <div className="grid grid-cols-2 gap-4 text-sm">
           <div>
-            <label className="block text-sm font-semibold mb-1">Wallet address (EVM)</label>
+            <div className="font-semibold">MetaMask</div>
+            <div>{isConnected ? "Connected" : (isPending ? "Connecting..." : "Disconnected")}</div>
+          </div>
+          <div>
+            <div className="font-semibold">Account</div>
+            <div className="font-mono break-all">{isConnected ? connected : "-"}</div>
+          </div>
+          <div>
+            <div className="font-semibold">Short</div>
+            <div>{short}</div>
+          </div>
+          <div>
+            <div className="font-semibold">Balance</div>
+            <div>{balance ? `${balance.formatted} ${balance.symbol}` : "-"}</div>
+          </div>
+          <div>
+            <div className="font-semibold">Nonce (last)</div>
+            <div className="font-mono break-all">{nonce ?? "-"}</div>
+          </div>
+        </div>
+
+        {phase === "idle" && (
+          <button className="bg-primary text-primary-foreground px-4 py-2 rounded" onClick={start}>
+            Link Wallet
+          </button>
+        )}
+
+        {phase !== "idle" && (
+          <div className="space-y-3">
+            <label className="block text-sm font-semibold">Wallet address (EVM)</label>
             <div className="flex gap-2">
               <input
-                className={`flex-1 border rounded px-2 py-1 font-mono ${input && !valid ? 'border-red-500' : ''}`}
+                className={`flex-1 border rounded px-2 py-1 font-mono ${inputAddress && !valid ? "border-red-500" : ""}`}
+                value={inputAddress}
+                onChange={(e) => setInputAddress(e.target.value.trim())}
                 placeholder="0x..."
-                value={input}
-                onChange={(e) => setInput(e.target.value.trim())}
               />
-              <button className="px-3 py-1 border rounded" onClick={useConnected} disabled={!connected}>
+              <button className="px-3 py-1 rounded border" onClick={useConnected} disabled={!connected}>
                 Use connected account
               </button>
             </div>
-            {!valid && input && <div className="text-xs text-red-600 mt-1">Invalid address format.</div>}
-          </div>
+            {!valid && inputAddress && (
+              <div className="text-xs text-red-600">Invalid address format (0x + 40 hex).</div>
+            )}
 
-          <div className="flex gap-2">
-            <button
-              className="bg-green-600 text-white px-4 py-2 rounded disabled:opacity-50"
-              onClick={verify}
-              disabled={!valid || busy}
-            >
-              {busy ? 'Verifying…' : 'Verify & Link with MetaMask'}
-            </button>
-            <button className="px-4 py-2 rounded border" onClick={() => disconnect()} disabled={!isConnected}>
-              Disconnect MetaMask
-            </button>
-            <button className="px-4 py-2 rounded border" onClick={() => setDebug(null)}>
-              Hide debug
-            </button>
-          </div>
+            <div className="flex gap-2">
+              <button
+                className="bg-green-600 text-white px-4 py-2 rounded disabled:opacity-50"
+                onClick={verifyAndLink}
+                disabled={!valid || phase === "linking"}
+              >
+                {phase === "linking" ? "Verifying…" : "Verify & Link with MetaMask"}
+              </button>
+              <button className="px-4 py-2 rounded border" onClick={() => disconnect()} disabled={!isConnected}>
+                Disconnect
+              </button>
+            </div>
 
-          <div className="text-xs text-muted-foreground">
-            MetaMask が署名ウィンドウを開きます。表示されない場合はポップアップブロックとロック状態を確認してください。
-          </div>
-        </div>
-      )}
+            {msg && <div className="text-sm">{msg}</div>}
 
-      {msg && <div className="text-sm">{msg}</div>}
-      {debug && (
-        <pre className="text-xs bg-muted rounded p-3 overflow-auto max-h-64">{JSON.stringify(debug, null, 2)}</pre>
-      )}
-
-      <hr className="my-4" />
-      <h2 className="font-semibold">Linked wallets</h2>
-      <div className="text-sm border rounded">
-        <div className="grid grid-cols-2 font-semibold border-b px-3 py-2">
-          <div>Address</div><div>Status</div>
-        </div>
-        {rows.map((r, i) => (
-          <div key={i} className="grid grid-cols-2 px-3 py-2 border-b last:border-b-0">
-            <div className="font-mono break-all">{r.address}</div>
-            <div>{r.verified ? '✅ verified' : '⏳ pending'}</div>
+            {debug && (
+              <pre className="text-xs bg-muted p-2 rounded overflow-auto max-h-64">
+                {JSON.stringify(debug, null, 2)}
+              </pre>
+            )}
           </div>
-        ))}
-        {rows.length === 0 && <div className="px-3 py-2">No wallets yet.</div>}
+        )}
       </div>
     </div>
-  )
+  );
 }
