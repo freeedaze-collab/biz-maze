@@ -10,7 +10,8 @@ type EthProvider = {
 };
 
 const isEthAddress = (v: string) => /^0x[a-fA-F0-9]{40}$/.test(v || "");
-const FUNCTIONS_BASE = `${(import.meta.env.VITE_SUPABASE_URL || "").replace(/\/+$/, "")}/functions/v1/verify_wallet`;
+// ※ verify_wallet まで含めたフルURLにしておく
+const FUNCTIONS_URL = `${(import.meta.env.VITE_SUPABASE_URL || "").replace(/\/+$/, "")}/functions/v1/verify_wallet`;
 
 export default function WalletSelection() {
   const { user } = useAuth();
@@ -21,13 +22,15 @@ export default function WalletSelection() {
   const [msg, setMsg] = useState<string | null>(null);
   const [debug, setDebug] = useState<any | null>(null);
 
+  // GETで取得した nonce を保持（POST に同梱する）
+  const [nonce, setNonce] = useState<string>("");
+
   const valid = useMemo(() => isEthAddress(inputAddress), [inputAddress]);
   const short = useMemo(
     () => (connected ? `${connected.slice(0, 6)}...${connected.slice(-4)}` : "-"),
     [connected]
   );
 
-  // ページ入場時：接続中アカウントを拾える範囲で拾う
   useEffect(() => {
     (async () => {
       try {
@@ -35,9 +38,7 @@ export default function WalletSelection() {
         if (!eth) return;
         const accts = await eth.request({ method: "eth_accounts" });
         if (accts?.[0]) setConnected(accts[0]);
-      } catch {
-        /* noop */
-      }
+      } catch {/* noop */}
     })();
   }, []);
 
@@ -68,14 +69,16 @@ export default function WalletSelection() {
     try {
       setBusy(true);
 
-      // 1) MetaMaskから署名
       const eth = (window as any).ethereum as EthProvider | undefined;
       if (!eth || !eth.request) throw new Error("MetaMask not detected.");
+
+      // Supabase セッション取得（Edge Functions への認可に使用）
       const { data: sess } = await supabase.auth.getSession();
       const token = sess.session?.access_token || "";
+      if (!token) throw new Error("Not signed in.");
 
-      // 1-1) Nonce を GET（Edge Functions）
-      const getRes = await fetch(FUNCTIONS_BASE, {
+      // 1) Nonce を GET（必ずここで受け取った値を POST に同梱する）
+      const getRes = await fetch(FUNCTIONS_URL, {
         method: "GET",
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -83,29 +86,34 @@ export default function WalletSelection() {
       if (!getRes.ok || !getJson?.nonce) {
         throw new Error(getJson?.error || "Failed to get nonce.");
       }
-      const nonce: string = getJson.nonce;
+      const gotNonce: string = getJson.nonce;
+      setNonce(gotNonce);
 
-      // 1-2) personal_sign で署名
-      // MetaMask は [message, address] の順で期待する実装が多い（逆順だと検証不一致になります）
+      // 2) MetaMask で署名（personal_sign は [message, address] の順）
       const signature: string = await eth.request({
         method: "personal_sign",
-        params: [nonce, inputAddress],
+        params: [gotNonce, inputAddress],
       });
 
-      // 2) 検証 & 保存（Edge Functions POST）
-      const postRes = await fetch(FUNCTIONS_BASE, {
+      // 3) 検証 & 保存（POST: signature と nonce を両方送る）
+      const postRes = await fetch(FUNCTIONS_URL, {
         method: "POST",
         headers: {
           "content-type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ address: inputAddress, signature }),
+        body: JSON.stringify({
+          address: inputAddress,
+          signature,
+          nonce: gotNonce, // ←★ これが必須（今回のエラー原因）
+        }),
       });
       const postBody = await postRes.json().catch(() => ({}));
+
       setDebug({
-        FUNCTIONS_BASE,
+        FUNCTIONS_BASE: FUNCTIONS_URL,
         inputAddress,
-        nonce,
+        nonce: gotNonce,
         sigLen: signature?.length ?? 0,
         postStatus: postRes.status,
         postBody,
@@ -117,7 +125,7 @@ export default function WalletSelection() {
 
       setPhase("linked");
       setMsg("Wallet linked successfully.");
-      // 任意：profiles.primary_wallet にも反映したい場合
+      // 任意：profiles.primary_wallet にも反映
       if (user) {
         await supabase.from("profiles").update({ primary_wallet: inputAddress }).eq("user_id", user.id);
       }
@@ -148,7 +156,6 @@ export default function WalletSelection() {
       <h1 className="text-2xl font-bold mb-4">Wallet Creation / Linking</h1>
 
       <div className="border rounded-lg p-4 space-y-3">
-        {/* 状態表示 */}
         <div className="grid grid-cols-2 gap-3 text-sm">
           <div>
             <div className="font-semibold">MetaMask</div>
@@ -158,16 +165,22 @@ export default function WalletSelection() {
             <div className="font-semibold">Account</div>
             <div className="font-mono break-all">{connected ?? "-"}</div>
           </div>
+          <div>
+            <div className="font-semibold">Short</div>
+            <div>{connected ? short : "-"}</div>
+          </div>
+          <div>
+            <div className="font-semibold">Nonce (last)</div>
+            <div className="font-mono break-all text-xs">{nonce || "-"}</div>
+          </div>
         </div>
 
-        {/* 接続 */}
         {!connected && (
           <button className="bg-primary text-primary-foreground px-4 py-2 rounded" onClick={connectMetaMask}>
             Connect MetaMask
           </button>
         )}
 
-        {/* 入力＆検証 */}
         <div className="space-y-3">
           <div>
             <label className="block text-sm font-semibold mb-1">Wallet address (EVM)</label>
@@ -215,7 +228,6 @@ export default function WalletSelection() {
 
         {msg && <div className="text-sm">{msg}</div>}
 
-        {/* 開発時のデバッグ表示（必要な時だけDOM検査で確認） */}
         {debug && (
           <pre className="text-xs bg-muted p-2 rounded overflow-auto max-h-48">
             {JSON.stringify(debug, null, 2)}
