@@ -1,33 +1,27 @@
 // supabase/functions/verify_wallet/index.ts
-// フロントは変更不要（/verify_wallet?dbg=1 で呼ばれる想定）
-// 署名検証は MetaMask が署名した nonce を verifyMessage に渡すのが重要。
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-// Edge Runtime では npm スキーマが安定（esm.sh 由来のバンドル差分でプレビューが落ちるのを回避）
 import { verifyMessage } from "npm:ethers@6.13.4";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
-// 本番は自ドメインへ絞る（例: https://yourapp.example）
+// 本番は自ドメインに絞る
 const ALLOW_ORIGIN = "*";
 
-const withCors = (resp: Response) => {
-  const h = new Headers(resp.headers);
+const withCors = (r: Response) => {
+  const h = new Headers(r.headers);
   h.set("Access-Control-Allow-Origin", ALLOW_ORIGIN);
   h.set("Access-Control-Allow-Headers", "authorization, content-type");
   h.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  return new Response(resp.body, { status: resp.status, headers: h });
+  return new Response(r.body, { status: r.status, headers: h });
 };
-const json = (body: unknown, status = 200) =>
-  withCors(new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json" },
-  }));
-const bad = (msg: string, status = 400, extra?: unknown) => {
-  if (extra) console.log("[verify_wallet] bad:", msg, extra);
-  else console.log("[verify_wallet] bad:", msg);
-  return json({ error: msg }, status);
+const json = (b: unknown, s = 200) =>
+  withCors(new Response(JSON.stringify(b), { status: s, headers: { "content-type": "application/json" } }));
+const bad = (m: string, s = 400, extra?: unknown) => {
+  if (extra) console.log("[verify_wallet] bad:", m, extra);
+  else console.log("[verify_wallet] bad:", m);
+  return json({ error: m }, s);
 };
 
 const toL = (v: string) => (v || "").trim().toLowerCase();
@@ -38,14 +32,14 @@ const nonce16 = () => {
   return Array.from(a).map(b => b.toString(16).padStart(2, "0")).join("");
 };
 
+// サーバとフロントで完全一致させるためのテンプレート（ここを単一のソースに）
+const buildSignText = (nonce: string) =>
+  `BizMaze Wallet Linking\n\nPlease sign this message to prove ownership of your wallet.\n\nNonce: ${nonce}`;
+
 serve(async (req) => {
   try {
     if (req.method === "OPTIONS") return withCors(new Response(null, { status: 204 }));
 
-    const url = new URL(req.url);
-    const dbg = url.searchParams.get("dbg") === "1"; // デバッグはクエリで
-
-    // Verify JWT（ダッシュボードの「Verify JWT」ON 前提）
     const auth = req.headers.get("authorization") || "";
     const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
     if (!token) return bad("Missing Bearer token", 401);
@@ -64,8 +58,10 @@ serve(async (req) => {
         expires_at: expires,
       });
       if (error) return bad("Failed to store nonce", 500, { error });
-      if (dbg) console.log("[GET] nonce:", nonce);
-      return json({ nonce });
+
+      // フロントはこの signText をそのまま署名する（ズレ防止）
+      const signText = buildSignText(nonce);
+      return json({ nonce, signText });
     }
 
     if (req.method === "POST") {
@@ -83,22 +79,18 @@ serve(async (req) => {
       if (ne || !n) return bad("Nonce not found", 400, { ne });
       if (new Date(n.expires_at).getTime() < Date.now()) return bad("Nonce expired", 400);
 
-      // ★ ここが肝：MetaMask が署名したのは nonce（生文字列）
+      // サーバ側も同じテンプレでメッセージを再構成
+      const signText = buildSignText(n.nonce);
+
       let recovered = "";
       try {
-        recovered = toL(verifyMessage(n.nonce, signature));
+        recovered = toL(verifyMessage(signText, signature));
       } catch (e) {
         return bad("Invalid signature", 400, { e: String(e) });
       }
 
-      const match = recovered === address;
-      if (dbg) console.log("[POST verify]", { input: address, recovered, match });
-
-      if (!match) {
-        return json(
-          { error: "Signature does not match the address", dbg: { input: address, recovered } },
-          400,
-        );
+      if (recovered !== address) {
+        return json({ error: "Signature does not match the address", dbg: { input: address, recovered } }, 400);
       }
 
       const { error: upErr } = await svc.from("wallets").upsert(
