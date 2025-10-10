@@ -3,53 +3,53 @@ import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 
-type TaxSummary = {
-  ok?: boolean;
-  summary?: {
-    country: "US" | "JP";
-    entity_type: string;
-    income_usd: number;
-    expense_usd: number;
-    taxable_income_usd: number;
-    fx_used?: number;
-    taxable_income_jpy?: number;
-  };
-  error?: string;
-};
+type Json = any;
 
 export default function AccountingTaxScreen1() {
   const [busy, setBusy] = useState(false);
-  const [tax, setTax] = useState<TaxSummary | null>(null);
   const [log, setLog] = useState<string>("");
+  const [basic, setBasic] = useState<Json | null>(null);
+  const [us, setUs] = useState<Json | null>(null);
+  const [ifrs, setIfrs] = useState<Json | null>(null);
 
-  const runGenerate = async () => {
-    setBusy(true);
-    setLog("Generating journal entries...");
-    try {
-      const res = await fetch("/functions/v1/generate-journal-entries", { method: "POST" });
-      const json = await res.json();
-      setLog(`Generated: ${json.inserted ?? 0} entries`);
-    } catch (e: any) {
-      setLog(`Error: ${String(e)}`);
-    } finally {
-      setBusy(false);
-    }
+  const call = async (url: string, init?: RequestInit) => {
+    const res = await fetch(url, init);
+    try { return await res.json(); } catch { return { ok:false }; }
   };
 
-  const runTax = async () => {
-    setBusy(true);
-    setLog("Calculating taxable income...");
+  const genJE = async () => {
+    setBusy(true); setLog("Generating journal entries...");
     try {
-      // For JP we allow fx param; US simply ignores it server-side
-      const res = await fetch("/functions/v1/calculate-taxable-income?fx=150", { method: "GET" });
-      const json = (await res.json()) as TaxSummary;
-      setTax(json);
+      const r = await call("/functions/v1/generate-journal-entries", { method: "POST" });
+      setLog(`Generated: ${r?.inserted ?? 0}`);
+    } finally { setBusy(false); }
+  };
+
+  const calcBasic = async () => {
+    setBusy(true); setLog("Calculating (MVP)...");
+    try {
+      const r = await call("/functions/v1/calculate-taxable-income?fx=150");
+      setBasic(r);
       setLog("Done.");
-    } catch (e: any) {
-      setLog(`Error: ${String(e)}`);
-    } finally {
-      setBusy(false);
-    }
+    } finally { setBusy(false); }
+  };
+
+  const calcUs = async () => {
+    setBusy(true); setLog("Estimating US federal tax...");
+    try {
+      const r = await call("/functions/v1/calculate-us-tax");
+      setUs(r);
+      setLog("Done.");
+    } finally { setBusy(false); }
+  };
+
+  const genIFRS = async () => {
+    setBusy(true); setLog("Generating IFRS report (trial balance / P&L)...");
+    try {
+      const r = await call("/functions/v1/generate-ifrs-report");
+      setIfrs(r);
+      setLog("Done.");
+    } finally { setBusy(false); }
   };
 
   return (
@@ -58,40 +58,36 @@ export default function AccountingTaxScreen1() {
 
       <Card>
         <CardHeader><CardTitle>Automation</CardTitle></CardHeader>
-        <CardContent className="space-y-3">
+        <CardContent className="space-y-2">
           <div className="flex flex-wrap gap-2">
-            <Button onClick={runGenerate} disabled={busy}>Generate Journal Entries</Button>
-            <Button onClick={runTax} variant="outline" disabled={busy}>Calculate Taxable Income</Button>
+            <Button onClick={genJE} disabled={busy}>Generate Journal Entries</Button>
+            <Button onClick={calcBasic} variant="outline" disabled={busy}>Calculate (MVP)</Button>
+            <Button onClick={calcUs} variant="outline" disabled={busy}>Estimate US Tax</Button>
+            <Button onClick={genIFRS} variant="outline" disabled={busy}>Generate IFRS Report</Button>
           </div>
           <div className="text-sm text-muted-foreground">{log}</div>
         </CardContent>
       </Card>
 
       <Card>
-        <CardHeader><CardTitle>Result</CardTitle></CardHeader>
+        <CardHeader><CardTitle>MVP Summary</CardTitle></CardHeader>
         <CardContent>
-          {!tax?.ok ? (
-            <div className="text-sm text-muted-foreground">
-              No result yet. Click “Calculate Taxable Income”.
-            </div>
-          ) : (
-            <div className="text-sm">
-              <div><b>Country:</b> {tax.summary?.country}</div>
-              <div><b>Entity:</b> {tax.summary?.entity_type}</div>
-              <div><b>Income (USD):</b> {tax.summary?.income_usd}</div>
-              <div><b>Expense (USD):</b> {tax.summary?.expense_usd}</div>
-              <div><b>Taxable Income (USD):</b> {tax.summary?.taxable_income_usd}</div>
-              {tax.summary?.country === "JP" && (
-                <>
-                  <div><b>FX used:</b> {tax.summary?.fx_used}</div>
-                  <div><b>Taxable Income (JPY):</b> {tax.summary?.taxable_income_jpy}</div>
-                </>
-              )}
-              <div className="mt-2 text-xs text-muted-foreground">
-                * MVP estimation only — not tax advice.
-              </div>
-            </div>
-          )}
+          <pre className="text-xs overflow-auto">{JSON.stringify(basic, null, 2) || "—"}</pre>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle>US Federal Estimate</CardTitle></CardHeader>
+        <CardContent>
+          <pre className="text-xs overflow-auto">{JSON.stringify(us, null, 2) || "—"}</pre>
+          <div className="mt-2 text-xs text-muted-foreground">* Rough estimate only. Not tax advice.</div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle>IFRS (Trial Balance / P&L)</CardTitle></CardHeader>
+        <CardContent>
+          <pre className="text-xs overflow-auto">{JSON.stringify(ifrs, null, 2) || "—"}</pre>
         </CardContent>
       </Card>
     </div>
