@@ -1,13 +1,12 @@
 // src/pages/Profile.tsx
-import Navigation from "@/components/Navigation";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { useEffect, useState } from "react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
-import { useAuth } from "@/hooks/useAuth";
-import { useEffect, useState } from "react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/useAuth";
 
 type EntityType = "personal" | "corporate";
 
@@ -21,66 +20,92 @@ export default function Profile() {
   useEffect(() => {
     (async () => {
       if (!user) return;
-      const { data } = await supabase.from("profiles").select("*").eq("user_id", user.id).single();
-      if (data) {
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("display_name, country, entity_type")
+        .eq("id", user.id)
+        .maybeSingle();
+      if (!error && data) {
         setDisplayName(data.display_name ?? "");
         setCountry(data.country ?? "US");
-        setEntityType((data.entity_type as EntityType) ?? "personal");
+        setEntityType((data.entity_type ?? "personal") as EntityType);
       }
     })();
-  }, [user?.id]);
+  }, [user]);
 
-  const onSave = async () => {
+  const save = async () => {
     if (!user) return;
     setSaving(true);
-    await supabase
-      .from("profiles")
-      .upsert({
-        user_id: user.id,
-        display_name: displayName || user.email,
+    const { error } = await supabase.from("profiles").upsert(
+      {
+        id: user.id,
+        display_name: displayName,
         country,
         entity_type: entityType,
-        email: user.email,
-      })
-      .eq("user_id", user.id);
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "id" }
+    );
     setSaving(false);
+    if (error) {
+      alert("保存に失敗しました: " + error.message);
+    } else {
+      alert("保存しました");
+    }
   };
 
   return (
-    <div className="min-h-screen bg-background">
-      <div className="container mx-auto p-6">
-        <Navigation />
-        <div className="max-w-2xl mx-auto mt-8">
-          <Card>
-            <CardHeader>
-              <CardTitle>Profile</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="space-y-2">
-                <Label>Display name</Label>
-                <Input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="Your name or company" />
-              </div>
-              <div className="grid md:grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label>Country</Label>
-                  <Input value={country} onChange={(e) => setCountry(e.target.value)} placeholder="US / JP / ..." />
-                </div>
-                <div className="space-y-2">
-                  <Label>Type</Label>
-                  <Select value={entityType} onValueChange={(v) => setEntityType(v as EntityType)}>
-                    <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="personal">Personal</SelectItem>
-                      <SelectItem value="corporate">Corporate</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-              <Button onClick={onSave} disabled={saving}>{saving ? "Saving..." : "Save"}</Button>
-            </CardContent>
-          </Card>
-        </div>
-      </div>
+    <div className="mx-auto max-w-3xl p-6 space-y-6">
+      <h1 className="text-2xl font-bold">Profile</h1>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>基本情報</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <Label>表示名</Label>
+              <Input value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
+            </div>
+
+            <div>
+              <Label>国</Label>
+              <Select value={country} onValueChange={setCountry}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select country" />
+                </SelectTrigger>
+                <SelectContent>
+                  {["US", "JP", "PH", "GB", "DE", "SG"].map((c) => (
+                    <SelectItem key={c} value={c}>
+                      {c}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div>
+              <Label>区分</Label>
+              <Select value={entityType} onValueChange={(v) => setEntityType(v as EntityType)}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select entity type" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="personal">個人</SelectItem>
+                  <SelectItem value="corporate">法人</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          <div className="pt-2">
+            <Button onClick={save} disabled={saving}>
+              {saving ? "Saving..." : "保存"}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }
