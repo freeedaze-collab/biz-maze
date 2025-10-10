@@ -1,201 +1,113 @@
-import { useState } from "react";
-import { useParams, Link } from "react-router-dom";
+// src/pages/wallet/WalletSetup.tsx
+import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, CheckCircle, ExternalLink } from "lucide-react";
-import { WalletAddressInput } from "@/components/WalletAddressInput";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+import { Trash2 } from "lucide-react";
+import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/useAuth";
 
-const WalletSetup = () => {
-  const { walletId } = useParams();
-  const [showAddressInput, setShowAddressInput] = useState(false);
-
-  const wallets = {
-    metamask: {
-      name: "MetaMask",
-      icon: "🦊",
-      url: "https://metamask.io/",
-      instructions: [
-        "Click 'Click & Connect MetaMask' below",
-        "Install the browser extension if needed",
-        "Create a new wallet or import existing",
-        "Secure your seed phrase",
-        "Return here to input your wallet address"
-      ]
-    },
-    coinbase: {
-      name: "Coinbase Wallet",
-      icon: "🔵",
-      url: "https://www.coinbase.com/",
-      instructions: [
-        "Click 'Click & Connect Coinbase' below",
-        "Download Coinbase Wallet app if needed",
-        "Create your account",
-        "Set up your wallet",
-        "Return here to input your wallet address"
-      ]
-    },
-    exodus: {
-      name: "Exodus",
-      icon: "💎",
-      url: "https://www.exodus.com/",
-      instructions: [
-        "Click 'Click & Connect Exodus' below",
-        "Download Exodus wallet if needed",
-        "Install and launch the application",
-        "Create a new wallet",
-        "Return here to input your wallet address"
-      ]
-    }
-  };
-
-  const currentWallet = wallets[walletId as keyof typeof wallets];
-
-  const handleWalletOpen = () => {
-    if (currentWallet?.url) {
-      window.open(currentWallet.url, '_blank');
-      setShowAddressInput(true);
-    }
-  };
-
-  if (!currentWallet) {
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <Card>
-          <CardContent className="p-6 text-center">
-            <p>Wallet not found</p>
-            <Link to="/wallet-creation">
-              <Button className="mt-4">Back to Wallet Selection</Button>
-            </Link>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
-  if (showAddressInput) {
-    return (
-      <div className="min-h-screen bg-background">
-        <div className="container mx-auto p-6">
-          <div className="mb-6">
-            <Link to="/wallet-creation" className="inline-flex items-center gap-2 text-muted-foreground hover:text-foreground">
-              <ArrowLeft className="h-4 w-4" />
-              Back to Wallet Selection
-            </Link>
-          </div>
-
-          <div className="max-w-2xl mx-auto">
-            <div className="text-center mb-8">
-              <div className="text-4xl mb-2">{currentWallet.icon}</div>
-              <h1 className="text-3xl font-bold">Connect {currentWallet.name}</h1>
-              <p className="text-muted-foreground mt-2">
-                Enter your wallet address to complete the connection
-              </p>
-            </div>
-
-            <WalletAddressInput 
-              title={`Connect ${currentWallet.name}`}
-              walletType={walletId || 'unknown'}
-              walletName={currentWallet?.name}
-            />
-
-            <div className="mt-6 p-4 bg-muted/50 rounded-lg">
-              <div className="flex items-center gap-2 text-success mb-2">
-                <CheckCircle className="h-4 w-4" />
-                <span className="font-medium">Wallet setup completed</span>
-              </div>
-              <p className="text-sm text-muted-foreground">
-                You should now have {currentWallet.name} installed and ready. 
-                Copy your wallet address from the wallet app and paste it above.
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="min-h-screen bg-background">
-      <div className="container mx-auto p-6">
-        <div className="mb-6">
-          <Link to="/wallet-creation" className="inline-flex items-center gap-2 text-muted-foreground hover:text-foreground">
-            <ArrowLeft className="h-4 w-4" />
-            Back to Wallet Selection
-          </Link>
-        </div>
-
-        <div className="max-w-4xl mx-auto">
-          <div className="text-center mb-8">
-            <div className="text-4xl mb-2">{currentWallet.icon}</div>
-            <h1 className="text-3xl font-bold">Set up {currentWallet.name}</h1>
-            <p className="text-muted-foreground mt-2">
-              Follow the steps below to create and connect your wallet
-            </p>
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-            {/* Instructions */}
-            <Card>
-              <CardHeader>
-                <CardTitle>Setup Instructions</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <ol className="space-y-3">
-                  {currentWallet.instructions.map((instruction, index) => (
-                    <li key={index} className="flex items-start gap-3">
-                      <span className="flex-shrink-0 w-6 h-6 bg-primary text-primary-foreground rounded-full flex items-center justify-center text-sm font-medium">
-                        {index + 1}
-                      </span>
-                      <span className="text-sm">{instruction}</span>
-                    </li>
-                  ))}
-                </ol>
-
-                <div className="mt-6 space-y-3">
-                  <Button
-                    onClick={handleWalletOpen}
-                    className="w-full"
-                  >
-                    <ExternalLink className="mr-2 h-4 w-4" />
-                    Click & Connect {currentWallet.name}
-                  </Button>
-                  
-                  <p className="text-xs text-muted-foreground text-center">
-                    This will open {currentWallet.name} website in a new tab for wallet setup
-                  </p>
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* Wallet Setup Info */}
-            <Card>
-              <CardHeader>
-                <CardTitle>Next Steps</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="text-sm space-y-2">
-                  <p className="font-medium">After clicking the button above:</p>
-                  <ol className="list-decimal list-inside space-y-1 text-muted-foreground">
-                    <li>Complete the wallet setup on {currentWallet.name} website</li>
-                    <li>Copy your wallet address from the wallet</li>
-                    <li>Return here to input your address</li>
-                    <li>Your wallet will be connected to your account</li>
-                  </ol>
-                </div>
-                
-                <div className="p-3 bg-muted/50 rounded-lg">
-                  <p className="text-xs text-muted-foreground">
-                    <strong>Security Note:</strong> We only store your wallet address, never your private keys. 
-                    Your funds remain secure in your wallet.
-                  </p>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
+type WalletRow = {
+  id: string;
+  address: string;
+  verified: boolean | null;
+  created_at: string;
 };
 
-export default WalletSetup;
+export default function WalletSetup() {
+  const { user } = useAuth();
+  const [address, setAddress] = useState("");
+  const [rows, setRows] = useState<WalletRow[]>([]);
+  const [saving, setSaving] = useState(false);
+
+  const load = async () => {
+    if (!user) return;
+    const { data } = await supabase
+      .from("wallets")
+      .select("id,address,verified,created_at")
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: false });
+    setRows((data as any) ?? []);
+  };
+
+  useEffect(() => { load(); }, [user]);
+
+  const add = async () => {
+    if (!user) return;
+    if (!address) return alert("Please input a wallet address");
+    setSaving(true);
+    const { error } = await supabase.from("wallets").insert({
+      user_id: user.id,
+      address,
+      verified: false,
+    });
+    setSaving(false);
+    if (error) alert("Failed to save: " + error.message);
+    else {
+      setAddress("");
+      await load();
+      alert("Wallet added");
+    }
+  };
+
+  const remove = async (id: string) => {
+    if (!user) return;
+    if (!confirm("Delete this wallet?")) return;
+    const { error } = await supabase.from("wallets").delete().eq("id", id).eq("user_id", user.id);
+    if (error) alert("Failed to delete: " + error.message);
+    else await load();
+  };
+
+  return (
+    <div className="mx-auto max-w-4xl p-6 space-y-6">
+      <h1 className="text-2xl font-bold">Wallet Creation / Linking</h1>
+
+      <Card>
+        <CardHeader><CardTitle>MetaMask (address only for MVP)</CardTitle></CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="sm:col-span-2">
+              <Label>Wallet Address</Label>
+              <Input placeholder="0x..." value={address} onChange={(e) => setAddress(e.target.value)} />
+            </div>
+            <div className="sm:col-span-1 flex items-end">
+              <Button onClick={add} disabled={saving} className="w-full">
+                {saving ? "Saving..." : "Add"}
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle>Linked Wallets</CardTitle></CardHeader>
+        <CardContent className="space-y-3">
+          {rows.length === 0 ? (
+            <div className="text-sm text-muted-foreground">No wallet yet.</div>
+          ) : (
+            <ul className="space-y-2">
+              {rows.map((r) => (
+                <li key={r.id} className="flex items-center justify-between border rounded px-3 py-2">
+                  <div>
+                    <div className="font-mono text-sm break-all">{r.address}</div>
+                    <div className="text-xs text-muted-foreground flex items-center gap-2">
+                      <Badge variant={r.verified ? "default" : "outline"}>
+                        {r.verified ? "verified" : "unverified"}
+                      </Badge>
+                      <span>{new Date(r.created_at).toLocaleString()}</span>
+                    </div>
+                  </div>
+                  <Button variant="ghost" size="icon" onClick={() => remove(r.id)} aria-label="delete">
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
