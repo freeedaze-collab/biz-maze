@@ -1,54 +1,99 @@
 // src/pages/accounting/AccountingTaxScreen1.tsx
-import React, { useEffect, useMemo, useState } from 'react'
-import { supabase, type Profile } from '@/lib/supabaseClient'
-import { triggerWalletSync } from '@/lib/walletSync'
-import { WalletConnectButton } from '@/components/WalletConnectButton'
-import TaxEngineRouter from '@/components/TaxEngineRouter'
+import { useState } from "react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+
+type TaxSummary = {
+  ok?: boolean;
+  summary?: {
+    country: "US" | "JP";
+    entity_type: string;
+    income_usd: number;
+    expense_usd: number;
+    taxable_income_usd: number;
+    fx_used?: number;
+    taxable_income_jpy?: number;
+  };
+  error?: string;
+};
 
 export default function AccountingTaxScreen1() {
-  const [profile, setProfile] = useState<Profile | null>(null)
-  const [syncing, setSyncing] = useState(false)
-  const [err, setErr] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false);
+  const [tax, setTax] = useState<TaxSummary | null>(null);
+  const [log, setLog] = useState<string>("");
 
-  useEffect(() => {
-    ;(async () => {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) return
-      const { data } = await supabase.from('profiles').select('*').eq('id', user.id).single()
-      setProfile(data as Profile)
-    })()
-  }, [])
+  const runGenerate = async () => {
+    setBusy(true);
+    setLog("Generating journal entries...");
+    try {
+      const res = await fetch("/functions/v1/generate-journal-entries", { method: "POST" });
+      const json = await res.json();
+      setLog(`Generated: ${json.inserted ?? 0} entries`);
+    } catch (e: any) {
+      setLog(`Error: ${String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
 
-  const country = useMemo(() => profile?.tax_country ?? 'IFRS', [profile])
-
-  const handleSync = async () => {
-    setSyncing(true)
-    setErr(null)
-    const res = await triggerWalletSync('polygon').catch((e) => ({ ok: false, message: e?.message }))
-    if (!res.ok) setErr(res.message ?? 'Sync failed')
-    setSyncing(false)
-  }
+  const runTax = async () => {
+    setBusy(true);
+    setLog("Calculating taxable income...");
+    try {
+      // For JP we allow fx param; US simply ignores it server-side
+      const res = await fetch("/functions/v1/calculate-taxable-income?fx=150", { method: "GET" });
+      const json = (await res.json()) as TaxSummary;
+      setTax(json);
+      setLog("Done.");
+    } catch (e: any) {
+      setLog(`Error: ${String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
-    <div className="max-w-5xl mx-auto p-4 space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Accounting / Tax</h1>
-        <div className="flex gap-2">
-          <WalletConnectButton />
-          <button className="px-3 py-2 rounded-md border" onClick={handleSync} disabled={syncing}>
-            {syncing ? 'Syncing…' : 'Resync (Polygon)'}
-          </button>
-        </div>
-      </div>
+    <div className="mx-auto max-w-5xl p-6 space-y-6">
+      <h1 className="text-2xl font-bold">Accounting / Tax</h1>
 
-      <div className="text-sm text-gray-600">
-        Account type: <b>{profile?.account_type ?? '—'}</b> / Country: <b>{country}</b>
-      </div>
+      <Card>
+        <CardHeader><CardTitle>Automation</CardTitle></CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={runGenerate} disabled={busy}>Generate Journal Entries</Button>
+            <Button onClick={runTax} variant="outline" disabled={busy}>Calculate Taxable Income</Button>
+          </div>
+          <div className="text-sm text-muted-foreground">{log}</div>
+        </CardContent>
+      </Card>
 
-      {err && <div className="text-red-600">{err}</div>}
-
-      {/* 国・アカウント種別ごとに税務/会計の表示・集計を切替 */}
-      <TaxEngineRouter profile={profile ?? undefined} />
+      <Card>
+        <CardHeader><CardTitle>Result</CardTitle></CardHeader>
+        <CardContent>
+          {!tax?.ok ? (
+            <div className="text-sm text-muted-foreground">
+              No result yet. Click “Calculate Taxable Income”.
+            </div>
+          ) : (
+            <div className="text-sm">
+              <div><b>Country:</b> {tax.summary?.country}</div>
+              <div><b>Entity:</b> {tax.summary?.entity_type}</div>
+              <div><b>Income (USD):</b> {tax.summary?.income_usd}</div>
+              <div><b>Expense (USD):</b> {tax.summary?.expense_usd}</div>
+              <div><b>Taxable Income (USD):</b> {tax.summary?.taxable_income_usd}</div>
+              {tax.summary?.country === "JP" && (
+                <>
+                  <div><b>FX used:</b> {tax.summary?.fx_used}</div>
+                  <div><b>Taxable Income (JPY):</b> {tax.summary?.taxable_income_jpy}</div>
+                </>
+              )}
+              <div className="mt-2 text-xs text-muted-foreground">
+                * MVP estimation only — not tax advice.
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
-  )
+  );
 }
