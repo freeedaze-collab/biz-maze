@@ -1,70 +1,95 @@
-// src/components/Navigation.tsx
-import { Link, useLocation } from "react-router-dom";
-import { Card } from "@/components/ui/card";
+// src/pages/accounting/AccountingTaxScreen1.tsx
+import { useState } from "react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import {
-  LayoutDashboard, ArrowLeftRight, FileText, Calculator, CreditCard,
-  Wallet, Tag, History, User, LogOut, Menu
-} from "lucide-react";
-import { useAuth } from "@/hooks/useAuth";
 
-const nav = [
-  { to: "/dashboard", label: "My Page", icon: LayoutDashboard },
-  { to: "/transfer", label: "Transfer", icon: ArrowLeftRight },
-  { to: "/billing", label: "Create Invoice", icon: FileText },  // Billing page alive
-  { to: "/accounting", label: "Accounting/Tax", icon: Calculator },
-  { to: "/payment-gateway", label: "Payment Gateway", icon: CreditCard },
-  { to: "/wallet", label: "Wallet Creation/Linking", icon: Wallet }, // WalletSetup keeps linking
-  { to: "/transactions", label: "History", icon: History },
-  { to: "/pricing", label: "Pricing/Change Plan", icon: Tag },
-];
+type Json = any;
 
-export default function Navigation() {
-  const { signOut } = useAuth();
-  const { pathname } = useLocation();
+export default function AccountingTaxScreen1() {
+  const [busy, setBusy] = useState(false);
+  const [log, setLog] = useState<string>("");
+  const [basic, setBasic] = useState<Json | null>(null);
+  const [us, setUs] = useState<Json | null>(null);
+  const [ifrs, setIfrs] = useState<Json | null>(null);
+
+  const call = async (url: string, init?: RequestInit) => {
+    const res = await fetch(url, init);
+    try { return await res.json(); } catch { return { ok:false }; }
+  };
+
+  const genJE = async () => {
+    setBusy(true); setLog("Generating journal entries...");
+    try {
+      const r = await call("/functions/v1/generate-journal-entries", { method: "POST" });
+      setLog(`Generated: ${r?.inserted ?? 0}`);
+    } finally { setBusy(false); }
+  };
+
+  const calcBasic = async () => {
+    setBusy(true); setLog("Calculating (MVP)...");
+    try {
+      const r = await call("/functions/v1/calculate-taxable-income?fx=150");
+      setBasic(r);
+      setLog("Done.");
+    } finally { setBusy(false); }
+  };
+
+  const calcUs = async () => {
+    setBusy(true); setLog("Estimating US federal tax...");
+    try {
+      const r = await call("/functions/v1/calculate-us-tax");
+      setUs(r);
+      setLog("Done.");
+    } finally { setBusy(false); }
+  };
+
+  const genIFRS = async () => {
+    setBusy(true); setLog("Generating IFRS report (trial balance / P&L)...");
+    try {
+      const r = await call("/functions/v1/generate-ifrs-report");
+      setIfrs(r);
+      setLog("Done.");
+    } finally { setBusy(false); }
+  };
 
   return (
-    <Card className="p-3 flex items-center justify-between gap-2">
-      <div className="flex flex-wrap gap-2">
-        {nav.map((item) => {
-          const Icon = item.icon;
-          const active = pathname.startsWith(item.to);
-          return (
-            <Link key={item.to} to={item.to}>
-              <Button variant={active ? "default" : "outline"} className="flex items-center gap-2">
-                <Icon className="h-4 w-4" />
-                {item.label}
-              </Button>
-            </Link>
-          );
-        })}
-      </div>
+    <div className="mx-auto max-w-5xl p-6 space-y-6">
+      <h1 className="text-2xl font-bold">Accounting / Tax</h1>
 
-      <Popover>
-        <PopoverTrigger asChild>
-          <Button variant="outline" className="flex items-center gap-2">
-            <Menu className="h-4 w-4" />
-            my menu
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent className="w-56">
-          <div className="flex flex-col gap-2">
-            <Link to="/profile">
-              <Button variant="ghost" className="w-full justify-start gap-2">
-                <User className="h-4 w-4" /> Edit Profile
-              </Button>
-            </Link>
-            <Button
-              variant="ghost"
-              className="w-full justify-start gap-2 text-red-600"
-              onClick={async () => { await signOut(); window.location.href = "/"; }}
-            >
-              <LogOut className="h-4 w-4" /> Sign out
-            </Button>
+      <Card>
+        <CardHeader><CardTitle>Automation</CardTitle></CardHeader>
+        <CardContent className="space-y-2">
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={genJE} disabled={busy}>Generate Journal Entries</Button>
+            <Button onClick={calcBasic} variant="outline" disabled={busy}>Calculate (MVP)</Button>
+            <Button onClick={calcUs} variant="outline" disabled={busy}>Estimate US Tax</Button>
+            <Button onClick={genIFRS} variant="outline" disabled={busy}>Generate IFRS Report</Button>
           </div>
-        </PopoverContent>
-      </Popover>
-    </Card>
+          <div className="text-sm text-muted-foreground">{log}</div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle>MVP Summary</CardTitle></CardHeader>
+        <CardContent>
+          <pre className="text-xs overflow-auto">{JSON.stringify(basic, null, 2) || "—"}</pre>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle>US Federal Estimate</CardTitle></CardHeader>
+        <CardContent>
+          <pre className="text-xs overflow-auto">{JSON.stringify(us, null, 2) || "—"}</pre>
+          <div className="mt-2 text-xs text-muted-foreground">* Rough estimate only. Not tax advice.</div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle>IFRS (Trial Balance / P&L)</CardTitle></CardHeader>
+        <CardContent>
+          <pre className="text-xs overflow-auto">{JSON.stringify(ifrs, null, 2) || "—"}</pre>
+        </CardContent>
+      </Card>
+    </div>
   );
 }
