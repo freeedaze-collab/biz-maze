@@ -9,10 +9,9 @@ import { AuthProvider } from '@/hooks/useAuth'
 import App from './App'
 
 /**
- * プレビュー/CDNでも落ちないための自動フォールバック
- * - 既定: BrowserRouter
- * - Lovable preview 等で 404 が出る環境は HashRouter へ
- * - .env で VITE_FORCE_HASH="1" でも強制ハッシュ
+ * Preview/CDN でも落ちないための自動フォールバック:
+ *  - default: BrowserRouter
+ *  - preview--*.lovable.app / file:// / VITE_FORCE_HASH="1" は HashRouter
  */
 function shouldUseHashRouter(): boolean {
   const force = import.meta.env.VITE_FORCE_HASH === '1'
@@ -22,19 +21,19 @@ function shouldUseHashRouter(): boolean {
   return force || isPreview || isFile
 }
 const Router = shouldUseHashRouter() ? HashRouter : BrowserRouter
-
 const qc = new QueryClient()
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <WagmiProvider config={wagmiConfig}>
-      <QueryClientProvider client={qc}>
-        <AuthProvider>
+    {/* ✅ あなたの順序に統一 */}
+    <AuthProvider>
+      <WagmiProvider config={wagmiConfig}>
+        <QueryClientProvider client={qc}>
           <Router>
             <App />
           </Router>
-        </AuthProvider>
-      </QueryClientProvider>
-    </WagmiProvider>
+        </QueryClientProvider>
+      </WagmiProvider>
+    </AuthProvider>
   </React.StrictMode>
 )
