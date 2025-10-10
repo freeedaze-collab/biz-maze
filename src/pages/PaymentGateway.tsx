@@ -6,9 +6,7 @@ export default function PaymentGateway() {
     <div className="mx-auto max-w-5xl p-6 space-y-6">
       <h1 className="text-2xl font-bold">Payment Gateway</h1>
       <Card>
-        <CardHeader>
-          <CardTitle>準備中</CardTitle>
-        </CardHeader>
+        <CardHeader><CardTitle>準備中</CardTitle></CardHeader>
         <CardContent className="text-sm text-muted-foreground">
           決済連携（受取・支払・手数料計上など）は次フェーズで接続します。  
           まずは UI・台帳（journal_entries）までの整合性を優先して仕上げます。
@@ -17,4 +15,3 @@ export default function PaymentGateway() {
     </div>
   );
 }
-
