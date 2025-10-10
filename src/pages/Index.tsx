@@ -1,29 +1,35 @@
 // src/pages/Index.tsx
+import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { useNavigate } from "react-router-dom";
-import Navigation from "@/components/Navigation";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 export default function Index() {
-  const nav = useNavigate();
-
   return (
-    <div className="min-h-screen bg-background">
-      <div className="container mx-auto p-6">
-        <Navigation />
-        <div className="max-w-3xl mx-auto mt-16 text-center space-y-6">
-          <h1 className="text-4xl font-bold tracking-tight">All-in-one Crypto Toolkit</h1>
-          <p className="text-muted-foreground">
-            Transfer, invoice, and manage your crypto business with ease.
+    <div className="mx-auto max-w-4xl p-6 space-y-8">
+      <Card>
+        <CardHeader>
+          <CardTitle>Biz Maze</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-sm text-muted-foreground">
+            暗号資産ウォレットを接続・検証し、取引履歴を自動同期。仕訳と税務レポートまで一気通貫で。
           </p>
-
-          <div className="flex flex-col sm:flex-row gap-3 justify-center">
-            <Button size="lg" onClick={() => nav("/auth/login")}>Get started</Button>
-            <Button size="lg" variant="secondary" onClick={() => nav("/auth/login")}>Sign In</Button>
-            <Button size="lg" variant="outline" onClick={() => nav("/auth/signup")}>Create your account</Button>
-            <Button size="lg" variant="ghost" onClick={() => nav("/pricing")}>Pricing</Button>
+          <div className="flex flex-wrap gap-2">
+            <Link to="/auth/login">
+              <Button>Get started</Button>
+            </Link>
+            <Link to="/auth/login">
+              <Button variant="outline">Sign In</Button>
+            </Link>
+            <Link to="/auth/register">
+              <Button variant="outline">Create your account</Button>
+            </Link>
+            <Link to="/pricing">
+              <Button variant="outline">Pricing</Button>
+            </Link>
           </div>
-        </div>
-      </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }
