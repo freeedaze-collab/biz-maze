@@ -2,75 +2,99 @@
 import React from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 
-// Public pages
+// Public
 import Index from '@/pages/Index'
 import Login from '@/pages/auth/Login'
+import Register from '@/pages/auth/Register'
 
-// Dashboard (requires auth)
+// Core
 import Dashboard from '@/pages/Dashboard'
-
-// Feature pages (requires auth)
 import TransactionHistory from '@/pages/TransactionHistory'
-import SynthesisStatus from '@/pages/SynthesisStatus'
-import InvoiceStatusCheck from '@/pages/invoice/InvoiceStatusCheck'
-import WalletSelection from '@/pages/wallet/WalletSelection'
-import WithdrawalRequest from '@/pages/withdrawal/WithdrawalRequest'
-import AccountingTaxScreen1 from '@/pages/accounting/AccountingTaxScreen1'
 import Pricing from '@/pages/Pricing'
-
-// Billing（請求書作成）
+import Profile from '@/pages/Profile'
 import Billing from '@/pages/Billing'
 
-// Transfer
-import Transfer from '@/pages/transfer/Transfer'
-import TransferNew from '@/pages/transfer/TransferNew'
-import TransferExisting from '@/pages/transfer/TransferExisting'
-import TransferFromInvoice from '@/pages/transfer/TransferFromInvoice'
+// Wallet
+import WalletSetup from '@/pages/wallet/WalletSetup'
+import WalletSelection from '@/pages/wallet/WalletSelection'
+import WalletCreationScreen1 from '@/pages/wallet/WalletCreationScreen1'
+import WalletConnect from '@/pages/wallet/WalletConnect'
+import WalletSuccess from '@/pages/wallet/WalletSuccess'
+import WalletScreen2 from '@/pages/wallet/WalletScreen2'
+import WalletScreen3 from '@/pages/wallet/WalletScreen3'
 
-// Guard & Dev tools
-import { AuthGuard } from '@/components/AuthGuard'
+// Transfer (keep existing multi-step pages if present)
+import TransferScreen1 from '@/pages/transfer/TransferScreen1'
+import TransferScreen2 from '@/pages/transfer/TransferScreen2'
+import TransferScreen2_1 from '@/pages/transfer/TransferScreen2_1'
+import TransferScreen2_2 from '@/pages/transfer/TransferScreen2_2'
+import TransferScreen3 from '@/pages/transfer/TransferScreen3'
+
+// Accounting
+import AccountingTaxScreen1 from '@/pages/accounting/AccountingTaxScreen1'
+
+// Misc
+import NotFound from '@/pages/NotFound'
+import Navigation from '@/components/Navigation'
+import AuthGuard from '@/components/AuthGuard'
+import DevAuthPanel from '@/components/DevAuthPanel'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
-import DevAuthPanel from '@/components/DevAuthPanel' // ← 既存
+import PaymentGateway from '@/pages/PaymentGateway'
+
+const WithNav: React.FC<React.PropsWithChildren> = ({ children }) => (
+  <div className="space-y-4">
+    <Navigation />
+    {children}
+  </div>
+)
 
 export default function App() {
   return (
-    <div className="min-h-screen flex flex-col">
-      <main className="flex-1">
+    <div className="min-h-dvh">
+      <main>
         <ErrorBoundary>
           <Routes>
-              {/* Public */}
-              <Route path="/" element={<Index />} />
-              <Route path="/auth/login" element={<Login />} />
+            {/* Public */}
+            <Route path="/" element={<Index />} />
+            <Route path="/auth/login" element={<Login />} />
+            <Route path="/auth/register" element={<Register />} />
 
-              {/* Auth required */}
-              <Route path="/dashboard" element={<AuthGuard><Dashboard /></AuthGuard>} />
-              <Route path="/transactions" element={<AuthGuard><TransactionHistory /></AuthGuard>} />
-              <Route path="/transaction-history" element={<AuthGuard><TransactionHistory /></AuthGuard>} />
-              <Route path="/synthesis-status" element={<AuthGuard><SynthesisStatus /></AuthGuard>} />
-              <Route path="/invoice-status" element={<AuthGuard><InvoiceStatusCheck /></AuthGuard>} />
-              <Route path="/wallet" element={<AuthGuard><WalletSelection /></AuthGuard>} />
-              <Route path="/withdrawal" element={<AuthGuard><WithdrawalRequest /></AuthGuard>} />
+            {/* Authenticated routes */}
+            <Route path="/dashboard" element={<AuthGuard><WithNav><Dashboard /></WithNav></AuthGuard>} />
+            <Route path="/transactions" element={<AuthGuard><WithNav><TransactionHistory /></WithNav></AuthGuard>} />
+            <Route path="/pricing" element={<AuthGuard><WithNav><Pricing /></WithNav></AuthGuard>} />
+            <Route path="/profile" element={<AuthGuard><WithNav><Profile /></WithNav></AuthGuard>} />
+            <Route path="/billing" element={<AuthGuard><WithNav><Billing /></WithNav></AuthGuard>} />
 
-              {/* Billing */}
-              <Route path="/billing" element={<AuthGuard><Billing /></AuthGuard>} />
+            {/* Wallet */}
+            <Route path="/wallet" element={<AuthGuard><WithNav><WalletSetup /></WithNav></AuthGuard>} />
+            <Route path="/wallet/select" element={<AuthGuard><WithNav><WalletSelection /></WithNav></AuthGuard>} />
+            <Route path="/wallet/create" element={<AuthGuard><WithNav><WalletCreationScreen1 /></WithNav></AuthGuard>} />
+            <Route path="/wallet/connect" element={<AuthGuard><WithNav><WalletConnect /></WithNav></AuthGuard>} />
+            <Route path="/wallet/success" element={<AuthGuard><WithNav><WalletSuccess /></WithNav></AuthGuard>} />
+            <Route path="/wallet/s2" element={<AuthGuard><WithNav><WalletScreen2 /></WithNav></AuthGuard>} />
+            <Route path="/wallet/s3" element={<AuthGuard><WithNav><WalletScreen3 /></WithNav></AuthGuard>} />
 
-              {/* Optional features */}
-              <Route path="/pricing" element={<AuthGuard><Pricing /></AuthGuard>} />
-              <Route path="/accounting" element={<AuthGuard><AccountingTaxScreen1 /></AuthGuard>} />
+            {/* Transfer multi-step (keep) */}
+            <Route path="/transfer" element={<AuthGuard><WithNav><TransferScreen1 /></WithNav></AuthGuard>} />
+            <Route path="/transfer/step2" element={<AuthGuard><WithNav><TransferScreen2 /></WithNav></AuthGuard>} />
+            <Route path="/transfer/step2-1" element={<AuthGuard><WithNav><TransferScreen2_1 /></WithNav></AuthGuard>} />
+            <Route path="/transfer/step2-2" element={<AuthGuard><WithNav><TransferScreen2_2 /></WithNav></AuthGuard>} />
+            <Route path="/transfer/step3" element={<AuthGuard><WithNav><TransferScreen3 /></WithNav></AuthGuard>} />
 
-              {/* Transfer */}
-              <Route path="/transfer" element={<AuthGuard><Transfer /></AuthGuard>} />
-              <Route path="/transfer/new" element={<AuthGuard><TransferNew /></AuthGuard>} />
-              <Route path="/transfer/existing" element={<AuthGuard><TransferExisting /></AuthGuard>} />
-              <Route path="/transfer/invoice" element={<AuthGuard><TransferFromInvoice /></AuthGuard>} />
+            {/* Accounting */}
+            <Route path="/accounting" element={<AuthGuard><WithNav><AccountingTaxScreen1 /></WithNav></AuthGuard>} />
 
-              {/* Fallback */}
-              <Route path="*" element={<Navigate to="/" replace />} />
+            {/* Optional stub */}
+            <Route path="/payment-gateway" element={<AuthGuard><WithNav><PaymentGateway /></WithNav></AuthGuard>} />
+
+            {/* Back-compat & 404 */}
+            <Route path="/home" element={<Navigate to="/dashboard" replace />} />
+            <Route path="*" element={<NotFound />} />
           </Routes>
         </ErrorBoundary>
       </main>
 
-      {/* DEV のときだけ小さなデバッグパネルを表示（本番では出ません） */}
       {import.meta.env.DEV && <DevAuthPanel />}
     </div>
   )
