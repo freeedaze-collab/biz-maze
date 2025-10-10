@@ -1,218 +1,82 @@
-import "https://deno.land/x/xhr@0.1.0/mod.ts";
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.57.4';
+// supabase/functions/calculate-us-tax/index.ts
+// Extremely simplified US federal estimate (not advice).
+// personal(Schedule C-like): progressive brackets; corporate(C-corp): flat 21%.
+// standard_deduction is a single-filer placeholder. Adjust as needed.
+import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4'
+const JSON_OK=(o:any,i:ResponseInit={})=>new Response(JSON.stringify(o,null,2),{headers:{'content-type':'application/json; charset=utf-8'},...i})
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-};
+const BRACKETS_2024_SINGLE = [
+  { upTo: 11600, rate: 0.10 },
+  { upTo: 47150, rate: 0.12 },
+  { upTo: 100525, rate: 0.22 },
+  { upTo: 191950, rate: 0.24 },
+  { upTo: 243725, rate: 0.32 },
+  { upTo: 609350, rate: 0.35 },
+  { upTo: Infinity, rate: 0.37 },
+]
+const STANDARD_DEDUCTION_SINGLE = 14600  // placeholder for MVP
+const CORP_FLAT_RATE = 0.21
 
-interface TaxCalculationInput {
-  userId: string;
-  method: 'FIFO' | 'AVERAGE';
-  period: {
-    start: string;
-    end: string;
-  };
-}
-
-interface TaxCalculationOutput {
-  totalIncome: number;
-  totalCapitalGains: number;
-  totalCapitalLosses: number;
-  netCapitalGains: number;
-  estimatedTaxOwed: number;
-  effectiveTaxRate: number;
-  taxBracket: string;
-  calculations: Array<{
-    asset: string;
-    transactions: number;
-    totalGains: number;
-    totalLosses: number;
-    netGainLoss: number;
-    costBasis: number;
-    proceeds: number;
-  }>;
-  transactions: Array<{
-    date: string;
-    type: string;
-    asset: string;
-    amount: number;
-    usd_value: number;
-    gain_loss?: number;
-  }>;
-}
-
-serve(async (req) => {
-  if (req.method === 'OPTIONS') {
-    return new Response(null, { headers: corsHeaders });
+function taxByBrackets(taxable:number, brackets=BRACKETS_2024_SINGLE){
+  let remain = taxable, last = 0, tax = 0
+  for (const b of brackets) {
+    const span = Math.max(0, Math.min(remain, b.upTo - last))
+    tax += span * b.rate
+    remain -= span
+    last = b.upTo
+    if (remain <= 0) break
   }
+  return Math.max(0, +tax.toFixed(2))
+}
 
+Deno.serve(async (req)=>{
   try {
-    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-    const supabase = createClient(supabaseUrl, supabaseKey);
+    const supabase = createClient(
+      Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_ANON_KEY')!,
+      { global: { headers: { Authorization: req.headers.get('Authorization')! } } }
+    )
+    const { data: auth } = await supabase.auth.getUser()
+    if(!auth.user) return JSON_OK({error:'unauthorized'},{status:401})
+    const uid = auth.user.id
 
-    const input: TaxCalculationInput = await req.json();
-    const { userId, method = 'FIFO', period } = input;
-    
-    console.log('Calculating US tax for user:', userId, 'method:', method, 'period:', period);
+    // aggregate from journal_entries
+    const { data: rows, error } = await supabase
+      .from('journal_entries')
+      .select('debit_account, credit_account, amount_usd')
+      .eq('user_id', uid).limit(10000)
+    if (error) throw error
 
-    // Fetch transactions for the period
-    const { data: transactions, error } = await supabase
-      .from('transactions')
-      .select('*')
-      .eq('user_id', userId)
-      .gte('transaction_date', period.start)
-      .lte('transaction_date', period.end)
-      .order('transaction_date', { ascending: true });
+    let income = 0, expense = 0
+    for (const r of rows ?? []) {
+      if (r.credit_account === 'OtherIncome') income += Number(r.amount_usd ?? 0)
+      if (r.debit_account === 'OperatingExpense') expense += Number(r.amount_usd ?? 0)
+    }
+    const baseTaxable = Math.max(0, income - expense)
 
-    if (error) {
-      throw new Error(`Failed to fetch transactions: ${error.message}`);
+    // entity type
+    const { data: prof } = await supabase.from('profiles').select('entity_type').eq('id', uid).maybeSingle()
+    const entity = (prof?.entity_type ?? 'personal') as 'personal'|'corporate'
+
+    let estTax = 0, taxableUsed = baseTaxable
+    if (entity === 'corporate') {
+      estTax = +(baseTaxable * CORP_FLAT_RATE).toFixed(2)
+    } else {
+      taxableUsed = Math.max(0, baseTaxable - STANDARD_DEDUCTION_SINGLE)
+      estTax = taxByBrackets(taxableUsed)
     }
 
-    if (!transactions || transactions.length === 0) {
-      return new Response(
-        JSON.stringify({
-          totalIncome: 0,
-          totalCapitalGains: 0,
-          totalCapitalLosses: 0,
-          netCapitalGains: 0,
-          estimatedTaxOwed: 0,
-          effectiveTaxRate: 0,
-          taxBracket: "0%",
-          calculations: [],
-          transactions: []
-        }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
-    // Calculate tax using specified method
-    const taxData = method === 'FIFO' 
-      ? calculateTaxFIFO(transactions)
-      : calculateTaxAverage(transactions);
-
-    return new Response(
-      JSON.stringify(taxData),
-      {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      }
-    );
-
-  } catch (error) {
-    console.error('Error calculating US tax:', error);
-    
-    return new Response(
-      JSON.stringify({ error: (error as Error).message }),
-      {
-        status: 500,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      }
-    );
+    return JSON_OK({
+      ok:true,
+      entity_type: entity,
+      income_usd:+income.toFixed(2),
+      expense_usd:+expense.toFixed(2),
+      taxable_income_usd:+baseTaxable.toFixed(2),
+      taxable_after_deduction_usd:+taxableUsed.toFixed(2),
+      estimated_federal_tax_usd: estTax,
+      notes: "MVP rough estimate. Not tax advice."
+    })
+  } catch (e:any) {
+    return JSON_OK({ error:String(e?.message||e) }, { status:500 })
   }
-});
-
-function calculateTaxFIFO(transactions: any[]): TaxCalculationOutput {
-  const assetInventory: { [asset: string]: Array<{ amount: number; costBasis: number; date: string }> } = {};
-  const calculations: { [asset: string]: { gains: number; losses: number; transactions: number; costBasis: number; proceeds: number } } = {};
-  const processedTransactions: any[] = [];
-
-  let totalGains = 0;
-  let totalLosses = 0;
-
-  for (const tx of transactions) {
-    const asset = tx.asset_symbol || tx.currency;
-    const amount = parseFloat(tx.amount || '0');
-    const usdValue = parseFloat(tx.usd_value_at_tx || tx.usd_value || '0');
-
-    if (!calculations[asset]) {
-      calculations[asset] = { gains: 0, losses: 0, transactions: 0, costBasis: 0, proceeds: 0 };
-      assetInventory[asset] = [];
-    }
-
-    calculations[asset].transactions++;
-
-    if (tx.direction === 'in' || tx.transaction_type === 'receive') {
-      // Acquisition - add to inventory
-      assetInventory[asset].push({
-        amount,
-        costBasis: usdValue / amount,
-        date: tx.transaction_date
-      });
-      calculations[asset].costBasis += usdValue;
-
-    } else if (tx.direction === 'out' || tx.transaction_type === 'send') {
-      // Disposition - calculate gain/loss using FIFO
-      let remainingAmount = amount;
-      let totalCostBasis = 0;
-      
-      while (remainingAmount > 0 && assetInventory[asset].length > 0) {
-        const oldest = assetInventory[asset][0];
-        const usedAmount = Math.min(remainingAmount, oldest.amount);
-        
-        totalCostBasis += usedAmount * oldest.costBasis;
-        
-        oldest.amount -= usedAmount;
-        remainingAmount -= usedAmount;
-        
-        if (oldest.amount <= 0) {
-          assetInventory[asset].shift();
-        }
-      }
-
-      const gainLoss = usdValue - totalCostBasis;
-      
-      if (gainLoss > 0) {
-        calculations[asset].gains += gainLoss;
-        totalGains += gainLoss;
-      } else {
-        calculations[asset].losses += Math.abs(gainLoss);
-        totalLosses += Math.abs(gainLoss);
-      }
-
-      calculations[asset].proceeds += usdValue;
-
-      processedTransactions.push({
-        ...tx,
-        gain_loss: gainLoss
-      });
-    }
-  }
-
-  const netCapitalGains = totalGains - totalLosses;
-  const estimatedTaxOwed = Math.max(0, netCapitalGains * 0.15); // Simplified 15% capital gains rate
-  const effectiveTaxRate = netCapitalGains > 0 ? (estimatedTaxOwed / netCapitalGains) * 100 : 0;
-
-  return {
-    totalIncome: 0, // Not calculated from crypto transactions
-    totalCapitalGains: totalGains,
-    totalCapitalLosses: totalLosses,
-    netCapitalGains,
-    estimatedTaxOwed,
-    effectiveTaxRate,
-    taxBracket: netCapitalGains > 40000 ? "20%" : "15%",
-    calculations: Object.entries(calculations).map(([asset, calc]) => ({
-      asset,
-      transactions: calc.transactions,
-      totalGains: calc.gains,
-      totalLosses: calc.losses,
-      netGainLoss: calc.gains - calc.losses,
-      costBasis: calc.costBasis,
-      proceeds: calc.proceeds
-    })),
-    transactions: processedTransactions.map(tx => ({
-      date: tx.transaction_date,
-      type: tx.transaction_type || tx.direction,
-      asset: tx.asset_symbol || tx.currency,
-      amount: parseFloat(tx.amount || '0'),
-      usd_value: parseFloat(tx.usd_value_at_tx || tx.usd_value || '0'),
-      gain_loss: tx.gain_loss
-    }))
-  };
-}
-
-function calculateTaxAverage(transactions: any[]): TaxCalculationOutput {
-  // Simplified average cost method - in production would need more sophisticated calculation
-  return calculateTaxFIFO(transactions); // For now, use FIFO as fallback
-}
+})
