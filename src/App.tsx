@@ -1,127 +1,124 @@
 // src/App.tsx
-import React from "react";
-import { Routes, Route, Navigate } from "react-router-dom";
+import React from 'react'
+import { Routes, Route, Navigate } from 'react-router-dom'
 
-import Index from "@/pages/Index";
-import Login from "@/pages/auth/Login";
-import Register from "@/pages/auth/Register";
+// Public pages
+import Index from '@/pages/Index'
+import Login from '@/pages/auth/Login'
+import Register from '@/pages/auth/Register'
 
-import Dashboard from "@/pages/Dashboard";
-import TransactionHistory from "@/pages/TransactionHistory";
-import Pricing from "@/pages/Pricing";
-import Profile from "@/pages/Profile";
-import PaymentGateway from "@/pages/PaymentGateway";
-import WalletSetup from "@/pages/wallet/WalletSetup";
+// Protected pages
+import Dashboard from '@/pages/Dashboard'
+import TransactionHistory from '@/pages/TransactionHistory'
+import Pricing from '@/pages/Pricing'
+import Profile from '@/pages/Profile'
+import WalletSetup from '@/pages/wallet/WalletSetup'
+import AccountingTaxScreen1 from '@/pages/accounting/AccountingTaxScreen1'
+import TransferScreen1 from '@/pages/transfer/TransferScreen1'
+import NotFound from '@/pages/NotFound'
 
-import AccountingTaxScreen1 from "@/pages/accounting/AccountingTaxScreen1";
-import TransferScreen1 from "@/pages/transfer/TransferScreen1";
-import NotFound from "@/pages/NotFound";
-import Navigation from "@/components/Navigation";
-import AuthGuard from "@/components/AuthGuard";
+// Layout bits
+import Navigation from '@/components/Navigation'
+import AuthGuard from '@/components/AuthGuard'
+import DevAuthPanel from '@/components/DevAuthPanel'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 
-const App: React.FC = () => {
+// Optional stub page
+import PaymentGateway from '@/pages/PaymentGateway'
+
+const WithNav = ({ children }: { children: React.ReactNode }) => (
+  <div className="space-y-4">
+    <Navigation />
+    {children}
+  </div>
+)
+
+export default function App() {
   return (
-    <Routes>
-      {/* Public */}
-      <Route path="/" element={<Index />} />
-      <Route path="/auth/login" element={<Login />} />
-      <Route path="/auth/register" element={<Register />} />
+    <div className="min-h-dvh">
+      <main>
+        <ErrorBoundary>
+          <Routes>
+            {/* Public */}
+            <Route path="/" element={<Index />} />
+            <Route path="/auth/login" element={<Login />} />
+            <Route path="/auth/register" element={<Register />} />
 
-      {/* Protected */}
-      <Route
-        path="/dashboard"
-        element={
-          <AuthGuard>
-            <div className="space-y-4">
-              <Navigation />
-              <Dashboard />
-            </div>
-          </AuthGuard>
-        }
-      />
-      <Route
-        path="/transactions"
-        element={
-          <AuthGuard>
-            <div className="space-y-4">
-              <Navigation />
-              <TransactionHistory />
-            </div>
-          </AuthGuard>
-        }
-      />
-      <Route
-        path="/pricing"
-        element={
-          <AuthGuard>
-            <div className="space-y-4">
-              <Navigation />
-              <Pricing />
-            </div>
-          </AuthGuard>
-        }
-      />
-      <Route
-        path="/profile"
-        element={
-          <AuthGuard>
-            <div className="space-y-4">
-              <Navigation />
-              <Profile />
-            </div>
-          </AuthGuard>
-        }
-      />
-      <Route
-        path="/payment-gateway"
-        element={
-          <AuthGuard>
-            <div className="space-y-4">
-              <Navigation />
-              <PaymentGateway />
-            </div>
-          </AuthGuard>
-        }
-      />
-      <Route
-        path="/wallet"
-        element={
-          <AuthGuard>
-            <div className="space-y-4">
-              <Navigation />
-              <WalletSetup />
-            </div>
-          </AuthGuard>
-        }
-      />
-      <Route
-        path="/accounting"
-        element={
-          <AuthGuard>
-            <div className="space-y-4">
-              <Navigation />
-              <AccountingTaxScreen1 />
-            </div>
-          </AuthGuard>
-        }
-      />
-      <Route
-        path="/transfer"
-        element={
-          <AuthGuard>
-            <div className="space-y-4">
-              <Navigation />
-              <TransferScreen1 />
-            </div>
-          </AuthGuard>
-        }
-      />
+            {/* Protected */}
+            <Route
+              path="/dashboard"
+              element={
+                <AuthGuard>
+                  <WithNav><Dashboard /></WithNav>
+                </AuthGuard>
+              }
+            />
+            <Route
+              path="/transactions"
+              element={
+                <AuthGuard>
+                  <WithNav><TransactionHistory /></WithNav>
+                </AuthGuard>
+              }
+            />
+            <Route
+              path="/pricing"
+              element={
+                <AuthGuard>
+                  <WithNav><Pricing /></WithNav>
+                </AuthGuard>
+              }
+            />
+            <Route
+              path="/profile"
+              element={
+                <AuthGuard>
+                  <WithNav><Profile /></WithNav>
+                </AuthGuard>
+              }
+            />
+            <Route
+              path="/wallet"
+              element={
+                <AuthGuard>
+                  <WithNav><WalletSetup /></WithNav>
+                </AuthGuard>
+              }
+            />
+            <Route
+              path="/accounting"
+              element={
+                <AuthGuard>
+                  <WithNav><AccountingTaxScreen1 /></WithNav>
+                </AuthGuard>
+              }
+            />
+            <Route
+              path="/transfer"
+              element={
+                <AuthGuard>
+                  <WithNav><TransferScreen1 /></WithNav>
+                </AuthGuard>
+              }
+            />
+            <Route
+              path="/payment-gateway"
+              element={
+                <AuthGuard>
+                  <WithNav><PaymentGateway /></WithNav>
+                </AuthGuard>
+              }
+            />
 
-      {/* Fallback */}
-      <Route path="/home" element={<Navigate to="/dashboard" replace />} />
-      <Route path="*" element={<NotFound />} />
-    </Routes>
-  );
-};
+            {/* Back-compat & 404 */}
+            <Route path="/home" element={<Navigate to="/dashboard" replace />} />
+            <Route path="*" element={<NotFound />} />
+          </Routes>
+        </ErrorBoundary>
+      </main>
 
-export default App;
+      {/* DEV 専用の小パネル（本番では表示されません） */}
+      {import.meta.env.DEV && <DevAuthPanel />}
+    </div>
+  )
+}
