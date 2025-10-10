@@ -5,13 +5,9 @@ import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
 
 type Row = {
-  id: string;
-  chain: string | null;
-  tx_hash: string;
-  direction: "in" | "out" | null;
-  value_wei: string | null;
-  asset_symbol: string | null;
-  timestamp: string | null;
+  id: string; chain: string | null; tx_hash: string;
+  direction: "in" | "out" | null; value_wei: string | null;
+  asset_symbol: string | null; timestamp: string | null;
 };
 
 export default function TransactionHistory() {
@@ -26,22 +22,15 @@ export default function TransactionHistory() {
       .select("id,chain,tx_hash,direction,value_wei,asset_symbol,timestamp")
       .order("timestamp", { ascending: false })
       .limit(200);
-    setRows((data as any) ?? []);
-    setLoading(false);
+    setRows((data as any) ?? []); setLoading(false);
   };
-
   useEffect(() => { load(); }, []);
 
   const sync = async () => {
     setSyncing(true);
-    try {
-      await fetch("/functions/v1/sync-wallet-transactions", { method: "POST" });
-    } catch (e) {
-      console.warn("sync error:", e);
-    } finally {
-      await load();
-      setSyncing(false);
-    }
+    try { await fetch("/functions/v1/sync-wallet-transactions", { method: "POST" }); }
+    catch (e) { console.warn("sync error:", e); }
+    finally { await load(); setSyncing(false); }
   };
 
   return (
@@ -57,18 +46,14 @@ export default function TransactionHistory() {
           {loading ? (
             <div>Loading...</div>
           ) : rows.length === 0 ? (
-            <div className="text-sm text-muted-foreground">
-              No transactions yet. Link a wallet and press “Sync now”.
-            </div>
+            <div className="text-sm text-muted-foreground">No transactions yet. Link a wallet and press “Sync now”.</div>
           ) : (
             <ul className="space-y-2">
               {rows.map((r) => (
                 <li key={r.id} className="border rounded p-3">
                   <div className="flex items-center justify-between gap-4">
                     <div className="text-sm">
-                      <div className="font-mono break-all">
-                        {r.tx_hash.slice(0, 10)}…{r.tx_hash.slice(-8)}
-                      </div>
+                      <div className="font-mono break-all">{r.tx_hash.slice(0, 10)}…{r.tx_hash.slice(-8)}</div>
                       <div className="text-xs text-muted-foreground">
                         {r.chain ?? "-"} · {r.direction ?? "-"} · {r.timestamp ? new Date(r.timestamp).toLocaleString() : "-"}
                       </div>
