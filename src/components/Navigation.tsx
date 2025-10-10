@@ -12,10 +12,10 @@ import { useAuth } from "@/hooks/useAuth";
 const nav = [
   { to: "/dashboard", label: "My Page", icon: LayoutDashboard },
   { to: "/transfer", label: "Transfer", icon: ArrowLeftRight },
-  { to: "/invoice", label: "Create Invoice", icon: FileText },
+  { to: "/billing", label: "Create Invoice", icon: FileText },  // Billing page alive
   { to: "/accounting", label: "Accounting/Tax", icon: Calculator },
   { to: "/payment-gateway", label: "Payment Gateway", icon: CreditCard },
-  { to: "/wallet", label: "Wallet Creation/Linking", icon: Wallet },
+  { to: "/wallet", label: "Wallet Creation/Linking", icon: Wallet }, // WalletSetup keeps linking
   { to: "/transactions", label: "History", icon: History },
   { to: "/pricing", label: "Pricing/Change Plan", icon: Tag },
 ];
@@ -52,18 +52,15 @@ export default function Navigation() {
           <div className="flex flex-col gap-2">
             <Link to="/profile">
               <Button variant="ghost" className="w-full justify-start gap-2">
-                <User className="h-4 w-4" /> プロフィール編集
+                <User className="h-4 w-4" /> Edit Profile
               </Button>
             </Link>
             <Button
               variant="ghost"
               className="w-full justify-start gap-2 text-red-600"
-              onClick={async () => {
-                await signOut();
-                window.location.href = "/"; // メインに戻る
-              }}
+              onClick={async () => { await signOut(); window.location.href = "/"; }}
             >
-              <LogOut className="h-4 w-4" /> サインアウト
+              <LogOut className="h-4 w-4" /> Sign out
             </Button>
           </div>
         </PopoverContent>
