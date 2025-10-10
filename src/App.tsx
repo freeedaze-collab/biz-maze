@@ -23,7 +23,7 @@ import WalletSuccess from '@/pages/wallet/WalletSuccess'
 import WalletScreen2 from '@/pages/wallet/WalletScreen2'
 import WalletScreen3 from '@/pages/wallet/WalletScreen3'
 
-// Transfer (keep existing multi-step pages if present)
+// Transfer
 import TransferScreen1 from '@/pages/transfer/TransferScreen1'
 import TransferScreen2 from '@/pages/transfer/TransferScreen2'
 import TransferScreen2_1 from '@/pages/transfer/TransferScreen2_1'
@@ -36,7 +36,7 @@ import AccountingTaxScreen1 from '@/pages/accounting/AccountingTaxScreen1'
 // Misc
 import NotFound from '@/pages/NotFound'
 import Navigation from '@/components/Navigation'
-import AuthGuard from '@/components/AuthGuard'
+import { AuthGuard } from '@/components/AuthGuard'   // ← ★ named import に修正
 import DevAuthPanel from '@/components/DevAuthPanel'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import PaymentGateway from '@/pages/PaymentGateway'
@@ -75,7 +75,7 @@ export default function App() {
             <Route path="/wallet/s2" element={<AuthGuard><WithNav><WalletScreen2 /></WithNav></AuthGuard>} />
             <Route path="/wallet/s3" element={<AuthGuard><WithNav><WalletScreen3 /></WithNav></AuthGuard>} />
 
-            {/* Transfer multi-step (keep) */}
+            {/* Transfer multi-step */}
             <Route path="/transfer" element={<AuthGuard><WithNav><TransferScreen1 /></WithNav></AuthGuard>} />
             <Route path="/transfer/step2" element={<AuthGuard><WithNav><TransferScreen2 /></WithNav></AuthGuard>} />
             <Route path="/transfer/step2-1" element={<AuthGuard><WithNav><TransferScreen2_1 /></WithNav></AuthGuard>} />
