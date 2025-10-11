@@ -1,44 +1,38 @@
-// supabase/functions/generate-ifrs-report/index.ts
-// Minimal trial balance & P/L from journal_entries (JSON response).
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4'
 const JSON_OK=(o:any,i:ResponseInit={})=>new Response(JSON.stringify(o,null,2),{headers:{'content-type':'application/json; charset=utf-8'},...i})
 
 Deno.serve(async (req)=>{
   try{
-    const supabase = createClient(
-      Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_ANON_KEY')!,
-      { global: { headers: { Authorization: req.headers.get('Authorization')! } } }
-    )
-    const { data: auth } = await supabase.auth.getUser()
-    if(!auth.user) return JSON_OK({error:'unauthorized'},{status:401})
-    const uid = auth.user.id
+    const supabase=createClient(Deno.env.get('SUPABASE_URL')!,Deno.env.get('SUPABASE_ANON_KEY')!,{global:{headers:{Authorization:req.headers.get('Authorization')!}}})
+    const {data:auth}=await supabase.auth.getUser()
+    if(!auth.user) return JSON_OK({ok:false,error:'unauthorized'},{status:401})
+    const uid=auth.user.id
 
-    const { data: rows, error } = await supabase
+    const {data:rows,error}=await supabase
       .from('journal_entries')
-      .select('debit_account, credit_account, amount_usd')
-      .eq('user_id', uid).limit(10000)
-    if (error) throw error
+      .select('account, dc, amount')
+      .eq('user_id',uid).limit(10000)
+    if(error) throw error
 
+    // Trial Balance
     const trial: Record<string,{debit:number,credit:number}> = {}
-    const inc = 'OtherIncome', exp='OperatingExpense'
     let income=0, expense=0
-
     for(const r of rows ?? []){
-      const amt = Number(r.amount_usd ?? 0)
-      if(!trial[r.debit_account]) trial[r.debit_account]={debit:0,credit:0}
-      if(!trial[r.credit_account]) trial[r.credit_account]={debit:0,credit:0}
-      trial[r.debit_account].debit += amt
-      trial[r.credit_account].credit += amt
-      if(r.credit_account===inc) income += amt
-      if(r.debit_account===exp) expense += amt
+      const amt=Number(r.amount ?? 0)
+      if(!trial[r.account]) trial[r.account]={debit:0,credit:0}
+      if(r.dc==='D') trial[r.account].debit  += amt
+      if(r.dc==='C') trial[r.account].credit += amt
+      if(r.account==='OtherIncome'      && r.dc==='C') income  += amt
+      if(r.account==='OperatingExpense' && r.dc==='D') expense += amt
     }
-
+    const tb = Object.entries(trial).map(([account, v])=>({
+      account, debit:+v.debit.toFixed(2), credit:+v.credit.toFixed(2)
+    }))
     const pl = { revenue_usd:+income.toFixed(2), expense_usd:+expense.toFixed(2), profit_usd:+(income-expense).toFixed(2) }
-    const tb = Object.entries(trial).map(([acct,v])=>({ account:acct, debit:+v.debit.toFixed(2), credit:+v.credit.toFixed(2) }))
 
     return JSON_OK({ ok:true, pl, trial_balance: tb })
   }catch(e:any){
-    return JSON_OK({ error:String(e?.message||e) }, { status:500 })
+    return JSON_OK({ ok:false, error:String(e?.message||e) }, { status:500 })
   }
 })
