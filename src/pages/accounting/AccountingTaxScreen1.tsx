@@ -1,11 +1,10 @@
 // src/pages/accounting/AccountingTaxScreen1.tsx
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
 
 type Json = any;
-
 type BasicSummary = {
   country?: "US" | "JP";
   entity_type?: "personal" | "corporate";
@@ -15,7 +14,6 @@ type BasicSummary = {
   fx_used?: number;
   taxable_income_jpy?: number;
 };
-
 type UsTaxResult = {
   ok?: boolean;
   entity_type?: "personal" | "corporate";
@@ -26,7 +24,6 @@ type UsTaxResult = {
   estimated_federal_tax_usd?: number;
   notes?: string;
 };
-
 type IfrsResult = {
   ok?: boolean;
   pl?: { revenue_usd?: number; expense_usd?: number; profit_usd?: number };
@@ -41,61 +38,72 @@ export default function AccountingTaxScreen1() {
 
   const [basic, setBasic] = useState<BasicSummary | null>(null);
   const [basicRaw, setBasicRaw] = useState<Json | null>(null);
-  const [basicAt, setBasicAt] = useState<string | null>(null);
 
   const [us, setUs] = useState<UsTaxResult | null>(null);
   const [usRaw, setUsRaw] = useState<Json | null>(null);
-  const [usAt, setUsAt] = useState<string | null>(null);
 
   const [ifrs, setIfrs] = useState<IfrsResult | null>(null);
   const [ifrsRaw, setIfrsRaw] = useState<Json | null>(null);
-  const [ifrsAt, setIfrsAt] = useState<string | null>(null);
 
-  // ✅ Functions 専用ホストを生成: https://<ref>.functions.supabase.co
-  const fnBase = useMemo(() => {
-    // 1) supabase-js が持つ URL から取り出す
-    //   supabase-js v2 では公開APIは無いので、env から確実に生成
-    const url = (import.meta as any).env?.VITE_SUPABASE_URL as string | undefined;
-    if (!url) return "";
-    const u = new URL(url.replace(/\/+$/, ""));
-    const host = u.host.replace(".supabase.co", ".functions.supabase.co");
-    return `${u.protocol}//${host}`;
-  }, []);
-
-  const getAuthHeader = async () => {
+  /** Authorization ヘッダ（JWT のみ）。apikey は付けません（CORS 回避） */
+  const authHeader = async () => {
     const { data } = await supabase.auth.getSession();
     const token = data.session?.access_token;
     return token ? { Authorization: `Bearer ${token}` } : {};
   };
 
-  // ✅ functions.host を使った堅牢呼び出し（GET/POST両対応）
-  const callFn = async (
+  /** 相対パス一本化版の invoker
+   *  - /functions/v1/<name> を常に叩く（Lovable プレビューで安定）
+   *  - fetch 例外も文字列化して UI に出す
+   */
+  const invoke = async (
     name: string,
     opt?: { method?: "GET" | "POST"; query?: Record<string, string | number>; body?: Json }
   ) => {
     const method = opt?.method ?? "POST";
-    const q = opt?.query ?? {};
+    const query = opt?.query ?? {};
     const qs =
-      Object.keys(q).length > 0
-        ? "?" + Object.entries(q).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`).join("&")
+      Object.keys(query).length > 0
+        ? "?" +
+          Object.entries(query)
+            .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
+            .join("&")
         : "";
-    const headers = { ...(await getAuthHeader()), "Content-Type": "application/json" } as Record<string, string>;
-    const url = `${fnBase}/${name}${qs}`;
+    const url = `/functions/v1/${name}${qs}`;
 
-    const res = await fetch(url, {
-      method,
-      headers,
-      body: method === "POST" ? JSON.stringify(opt?.body ?? {}) : undefined,
-    });
+    try {
+      const headers: Record<string, string> = {
+        ...(await authHeader()),
+      };
+      if (method === "POST") headers["Content-Type"] = "application/json";
 
-    let json: any = null;
-    try { json = await res.json(); } catch { /* ignore */ }
+      const res = await fetch(url, {
+        method,
+        headers,
+        body: method === "POST" ? JSON.stringify(opt?.body ?? {}) : undefined,
+        mode: "cors",
+        credentials: "omit",
+        cache: "no-store",
+      });
 
-    if (!res.ok || json?.ok === false) {
-      const msg = json?.error || `${res.status} ${res.statusText}`;
-      throw new Error(`${name}: ${msg}`);
+      const text = await res.text();
+      let json: any = null;
+      try {
+        json = text ? JSON.parse(text) : {};
+      } catch {
+        // JSONでなければそのまま raw として保持
+      }
+
+      if (!res.ok || (json && json.ok === false)) {
+        const msg = (json && json.error) || res.statusText || "Function call failed";
+        throw new Error(`${name}: ${msg}; status=${res.status}; raw=${text?.slice(0, 200)}`);
+      }
+      return { json: json ?? {}, raw: text ?? "" };
+    } catch (e: any) {
+      const message =
+        e?.message ?? e?.toString?.() ?? "Failed to fetch (unknown network error)";
+      throw new Error(`${name}: ${message}`);
     }
-    return json;
   };
 
   const genJE = async () => {
@@ -103,8 +111,8 @@ export default function AccountingTaxScreen1() {
     setLog("Generating journal entries...");
     setInserted(null);
     try {
-      const r = await callFn("generate-journal-entries", { method: "POST" });
-      const ins = Number((r?.inserted ?? r?.count ?? 0) as any);
+      const { json } = await invoke("generate-journal-entries", { method: "POST" });
+      const ins = Number((json?.inserted ?? json?.count ?? 0) as any);
       setInserted(ins);
       setLog(`Generated rows: ${ins}`);
     } catch (e: any) {
@@ -119,11 +127,15 @@ export default function AccountingTaxScreen1() {
     setBusy(true);
     setLog("Calculating (MVP)...");
     try {
-      const r = await callFn("calculate-taxable-income", { method: "GET", query: { fx: 150 } });
-      const summary: BasicSummary | null = (r?.summary as any) ?? (("income_usd" in (r ?? {})) ? (r as any) : null);
+      const { json, raw } = await invoke("calculate-taxable-income", {
+        method: "GET",
+        query: { fx: 150 },
+      });
+      const summary: BasicSummary | null =
+        (json?.summary as any) ??
+        (("income_usd" in (json ?? {})) ? (json as any) : null);
       setBasic(summary);
-      setBasicRaw(r);
-      setBasicAt(new Date().toISOString());
+      setBasicRaw(summary ? json : raw);
       setLog("Done.");
     } catch (e: any) {
       console.error(e);
@@ -137,10 +149,9 @@ export default function AccountingTaxScreen1() {
     setBusy(true);
     setLog("Estimating US federal tax...");
     try {
-      const r = await callFn("calculate-us-tax", { method: "GET" });
-      setUs(r ?? null);
-      setUsRaw(r);
-      setUsAt(new Date().toISOString());
+      const { json, raw } = await invoke("calculate-us-tax", { method: "GET" });
+      setUs((json as any) ?? null);
+      setUsRaw(json ?? raw);
       setLog("Done.");
     } catch (e: any) {
       console.error(e);
@@ -154,10 +165,9 @@ export default function AccountingTaxScreen1() {
     setBusy(true);
     setLog("Generating IFRS report...");
     try {
-      const r = await callFn("generate-ifrs-report", { method: "GET" });
-      setIfrs(r ?? null);
-      setIfrsRaw(r);
-      setIfrsAt(new Date().toISOString());
+      const { json, raw } = await invoke("generate-ifrs-report", { method: "GET" });
+      setIfrs((json as any) ?? null);
+      setIfrsRaw(json ?? raw);
       setLog("Done.");
     } catch (e: any) {
       console.error(e);
@@ -169,12 +179,15 @@ export default function AccountingTaxScreen1() {
 
   const cur = (n?: number) =>
     typeof n === "number" ? `$${n.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : "-";
-  const jpy = (n?: number) => (typeof n === "number" ? `${n.toLocaleString()} JPY` : "-");
+  const jpy = (n?: number) =>
+    typeof n === "number" ? `${n.toLocaleString()} JPY` : "-";
 
   const Raw = ({ obj }: { obj: any }) => (
     <details className="text-xs">
       <summary className="cursor-pointer text-muted-foreground">Raw JSON</summary>
-      <pre className="text-xs overflow-auto mt-2">{JSON.stringify(obj ?? {}, null, 2)}</pre>
+      <pre className="text-xs overflow-auto mt-2">
+        {typeof obj === "string" ? obj : JSON.stringify(obj ?? {}, null, 2)}
+      </pre>
     </details>
   );
 
@@ -210,9 +223,6 @@ export default function AccountingTaxScreen1() {
             </div>
           ) : (
             <>
-              <div className="text-xs text-muted-foreground">
-                Last updated: {basicAt ? new Date(basicAt).toLocaleString() : "-"}
-              </div>
               <div className="overflow-x-auto">
                 <table className="min-w-[720px] w-full text-sm">
                   <thead>
@@ -234,7 +244,9 @@ export default function AccountingTaxScreen1() {
                       <td className="py-2 text-right">{cur(basic.expense_usd)}</td>
                       <td className="py-2 text-right">{cur(basic.taxable_income_usd)}</td>
                       <td className="py-2 text-right">{jpy(basic.taxable_income_jpy)}</td>
-                      <td className="py-2 text-right">{typeof basic.fx_used === "number" ? basic.fx_used : "-"}</td>
+                      <td className="py-2 text-right">
+                        {typeof basic.fx_used === "number" ? basic.fx_used : "-"}
+                      </td>
                     </tr>
                   </tbody>
                 </table>
@@ -245,7 +257,7 @@ export default function AccountingTaxScreen1() {
         </CardContent>
       </Card>
 
-      {/* US Fed */}
+      {/* US Tax */}
       <Card>
         <CardHeader><CardTitle>US Federal Tax (Estimate)</CardTitle></CardHeader>
         <CardContent className="space-y-3">
@@ -255,9 +267,6 @@ export default function AccountingTaxScreen1() {
             </div>
           ) : (
             <>
-              <div className="text-xs text-muted-foreground">
-                Last updated: {usAt ? new Date(usAt).toLocaleString() : "-"}
-              </div>
               <div className="overflow-x-auto">
                 <table className="min-w-[720px] w-full text-sm">
                   <thead>
@@ -267,7 +276,7 @@ export default function AccountingTaxScreen1() {
                       <th className="text-right py-2">Expense (USD)</th>
                       <th className="text-right py-2">Taxable Base</th>
                       <th className="text-right py-2">After Deduction</th>
-                      <th className="text-right py-2">Est. Federal Tax</th>
+                      <th className="text-right py-2">Estimated Tax</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -298,9 +307,6 @@ export default function AccountingTaxScreen1() {
             </div>
           ) : (
             <>
-              <div className="text-xs text-muted-foreground">
-                Last updated: {ifrsAt ? new Date(ifrsAt).toLocaleString() : "-"}
-              </div>
               <div>
                 <div className="font-semibold mb-2">Profit &amp; Loss</div>
                 <div className="overflow-x-auto">
