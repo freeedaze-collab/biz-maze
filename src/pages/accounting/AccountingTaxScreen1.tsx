@@ -41,32 +41,37 @@ export default function AccountingTaxScreen1() {
 
   const [basic, setBasic] = useState<BasicSummary | null>(null);
   const [basicRaw, setBasicRaw] = useState<Json | null>(null);
-  const [basicAt, setBasicAt] = useState<string | null>(null);
 
   const [us, setUs] = useState<UsTaxResult | null>(null);
   const [usRaw, setUsRaw] = useState<Json | null>(null);
-  const [usAt, setUsAt] = useState<string | null>(null);
 
   const [ifrs, setIfrs] = useState<IfrsResult | null>(null);
   const [ifrsRaw, setIfrsRaw] = useState<Json | null>(null);
-  const [ifrsAt, setIfrsAt] = useState<string | null>(null);
 
   const baseFnUrl = useMemo(() => {
     const u = (import.meta as any).env?.VITE_SUPABASE_URL as string | undefined;
     return (u ?? "").replace(/\/+$/, "") + "/functions/v1";
   }, []);
+  const anonKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY as string | undefined;
 
   const getAuthHeader = async () => {
     const { data } = await supabase.auth.getSession();
     const token = data.session?.access_token;
-    return token ? { Authorization: `Bearer ${token}` } : {};
+    const h: Record<string, string> = {};
+    if (token) h.Authorization = `Bearer ${token}`;
+    if (anonKey) h.apikey = anonKey; // 念のため付与（ゲートウェイで要求されることがある）
+    return h;
   };
 
-  // Robust invoker: try supabase.functions.invoke first, then absolute fetch fallback.
+  /** Robust invoker:
+   *  1) supabase.functions.invoke（任意method対応）
+   *  2) 失敗時は fetch(絶対URL) にフォールバック
+   *  3) 本文が空/非JSONでも rawText を返す
+   */
   const invoke = async (
     name: string,
     opt?: { method?: "GET" | "POST"; query?: Record<string, string | number>; body?: Json }
-  ): Promise<{ data: any; raw: any }> => {
+  ): Promise<{ json: any; rawText: string; status: number }> => {
     const method = opt?.method ?? "POST";
     const query = opt?.query ?? {};
     const qs =
@@ -77,26 +82,21 @@ export default function AccountingTaxScreen1() {
             .join("&")
         : "";
 
-    // 1) supabase.functions.invoke (always POST) — works best when no query needed
-    if (method === "POST" && Object.keys(query).length === 0) {
-      try {
-        const { data, error } = await supabase.functions.invoke(name, {
-          body: opt?.body ?? {},
-          headers: await getAuthHeader(),
-        });
-        if (error) throw error;
-        return { data, raw: data };
-      } catch (e) {
-        console.warn(`[invoke] supabase.functions.invoke failed for ${name}:`, e);
-        // fallthrough to fetch
-      }
+    // 1) invoke（method対応）
+    try {
+      const { data, error } = await supabase.functions.invoke(`${name}${qs}`, {
+        method,
+        body: method === "POST" ? (opt?.body ?? {}) : undefined,
+        headers: await getAuthHeader(),
+      });
+      if (error) throw error;
+      return { json: data, rawText: JSON.stringify(data), status: 200 };
+    } catch (e) {
+      console.warn(`[invoke] supabase.functions.invoke failed for ${name}:`, e);
     }
 
-    // 2) Absolute fetch with Authorization header (works for GET and for query params)
-    const headers = { ...(await getAuthHeader()), "Content-Type": "application/json" } as Record<
-      string,
-      string
-    >;
+    // 2) fetch fallback（絶対URL + apikey + Authorization）
+    const headers = { ...(await getAuthHeader()), "Content-Type": "application/json" };
     const url = `${baseFnUrl}/${name}${qs}`;
     const res = await fetch(url, {
       method,
@@ -104,18 +104,20 @@ export default function AccountingTaxScreen1() {
       body: method === "POST" ? JSON.stringify(opt?.body ?? {}) : undefined,
     });
 
+    const status = res.status;
+    const text = await res.text();
     let json: any = null;
     try {
-      json = await res.json();
+      json = text ? JSON.parse(text) : {};
     } catch {
-      // no body / not JSON
+      // 非JSONでも rawText を返す
     }
 
-    if (!res.ok || json?.ok === false) {
-      const msg = json?.error || res.statusText || "Function call failed";
-      throw new Error(`${name}: ${msg}`);
+    if (!res.ok || (json && json.ok === false)) {
+      const msg = (json && json.error) || res.statusText || "Function call failed";
+      throw new Error(`${name}: ${msg}; status=${status}; raw=${text?.slice(0, 200)}`);
     }
-    return { data: json, raw: json };
+    return { json, rawText: text, status };
   };
 
   const genJE = async () => {
@@ -123,13 +125,11 @@ export default function AccountingTaxScreen1() {
     setLog("Generating journal entries...");
     setInserted(null);
     try {
-      const { data } = await invoke("generate-journal-entries", { method: "POST" });
-      // Accept both { ok:true, inserted:n } or legacy { inserted:n }
-      const ins = Number((data?.inserted ?? data?.count ?? 0) as any);
+      const { json } = await invoke("generate-journal-entries", { method: "POST" });
+      const ins = Number((json?.inserted ?? json?.count ?? 0) as any);
       setInserted(ins);
       setLog(`Generated rows: ${ins}`);
     } catch (e: any) {
-      console.error(e);
       setLog(`Error: ${String(e.message || e)}`);
     } finally {
       setBusy(false);
@@ -140,20 +140,17 @@ export default function AccountingTaxScreen1() {
     setBusy(true);
     setLog("Calculating (MVP)...");
     try {
-      const { data, raw } = await invoke("calculate-taxable-income", {
+      const { json, rawText } = await invoke("calculate-taxable-income", {
         method: "GET",
         query: { fx: 150 },
       });
-      // Accept either { ok:true, summary:{...} } or { ... } directly
       const summary: BasicSummary | null =
-        (data?.summary as any) ??
-        (("income_usd" in (data ?? {})) ? (data as any) : null);
+        (json?.summary as any) ??
+        (("income_usd" in (json ?? {})) ? (json as any) : null);
       setBasic(summary);
-      setBasicRaw(raw);
-      setBasicAt(new Date().toISOString());
+      setBasicRaw(json ?? rawText);
       setLog("Done.");
     } catch (e: any) {
-      console.error(e);
       setLog(`Error: ${String(e.message || e)}`);
     } finally {
       setBusy(false);
@@ -164,13 +161,11 @@ export default function AccountingTaxScreen1() {
     setBusy(true);
     setLog("Estimating US federal tax...");
     try {
-      const { data, raw } = await invoke("calculate-us-tax", { method: "GET" });
-      setUs(data ?? null);
-      setUsRaw(raw);
-      setUsAt(new Date().toISOString());
+      const { json, rawText } = await invoke("calculate-us-tax", { method: "GET" });
+      setUs((json as any) ?? null);
+      setUsRaw(json ?? rawText);
       setLog("Done.");
     } catch (e: any) {
-      console.error(e);
       setLog(`Error: ${String(e.message || e)}`);
     } finally {
       setBusy(false);
@@ -181,13 +176,11 @@ export default function AccountingTaxScreen1() {
     setBusy(true);
     setLog("Generating IFRS report...");
     try {
-      const { data, raw } = await invoke("generate-ifrs-report", { method: "GET" });
-      setIfrs(data ?? null);
-      setIfrsRaw(raw);
-      setIfrsAt(new Date().toISOString());
+      const { json, rawText } = await invoke("generate-ifrs-report", { method: "GET" });
+      setIfrs((json as any) ?? null);
+      setIfrsRaw(json ?? rawText);
       setLog("Done.");
     } catch (e: any) {
-      console.error(e);
       setLog(`Error: ${String(e.message || e)}`);
     } finally {
       setBusy(false);
@@ -199,10 +192,12 @@ export default function AccountingTaxScreen1() {
   const jpy = (n?: number) =>
     typeof n === "number" ? `${n.toLocaleString()} JPY` : "-";
 
-  const RawBlock = ({ obj }: { obj: any }) => (
+  const Raw = ({ obj }: { obj: any }) => (
     <details className="text-xs">
       <summary className="cursor-pointer text-muted-foreground">Raw JSON</summary>
-      <pre className="text-xs overflow-auto mt-2">{JSON.stringify(obj ?? {}, null, 2)}</pre>
+      <pre className="text-xs overflow-auto mt-2">
+        {typeof obj === "string" ? obj : JSON.stringify(obj ?? {}, null, 2)}
+      </pre>
     </details>
   );
 
@@ -210,27 +205,15 @@ export default function AccountingTaxScreen1() {
     <div className="mx-auto max-w-5xl p-6 space-y-6">
       <h1 className="text-2xl font-bold">Accounting / Tax</h1>
 
-      {/* Actions */}
       <Card>
-        <CardHeader>
-          <CardTitle>Automation</CardTitle>
-        </CardHeader>
+        <CardHeader><CardTitle>Automation</CardTitle></CardHeader>
         <CardContent className="space-y-3">
           <div className="flex flex-wrap gap-2">
-            <Button onClick={genJE} disabled={busy}>
-              Generate Journal Entries
-            </Button>
-            <Button onClick={calcBasic} variant="outline" disabled={busy}>
-              Calculate (MVP)
-            </Button>
-            <Button onClick={calcUs} variant="outline" disabled={busy}>
-              Estimate US Tax
-            </Button>
-            <Button onClick={genIFRS} variant="outline" disabled={busy}>
-              Generate IFRS Report
-            </Button>
+            <Button onClick={genJE} disabled={busy}>Generate Journal Entries</Button>
+            <Button onClick={calcBasic} variant="outline" disabled={busy}>Calculate (MVP)</Button>
+            <Button onClick={calcUs} variant="outline" disabled={busy}>Estimate US Tax</Button>
+            <Button onClick={genIFRS} variant="outline" disabled={busy}>Generate IFRS Report</Button>
           </div>
-
           <div className="text-sm">{busy ? "Working..." : log || "Ready."}</div>
           {inserted !== null && (
             <div className="text-sm text-muted-foreground">
@@ -242,9 +225,7 @@ export default function AccountingTaxScreen1() {
 
       {/* MVP Summary */}
       <Card>
-        <CardHeader>
-          <CardTitle>MVP Summary</CardTitle>
-        </CardHeader>
+        <CardHeader><CardTitle>MVP Summary</CardTitle></CardHeader>
         <CardContent className="space-y-3">
           {!basic ? (
             <div className="text-sm text-muted-foreground">
@@ -252,9 +233,6 @@ export default function AccountingTaxScreen1() {
             </div>
           ) : (
             <>
-              <div className="text-xs text-muted-foreground">
-                Last updated: {basicAt ? new Date(basicAt).toLocaleString() : "-"}
-              </div>
               <div className="overflow-x-auto">
                 <table className="min-w-[720px] w-full text-sm">
                   <thead>
@@ -276,24 +254,20 @@ export default function AccountingTaxScreen1() {
                       <td className="py-2 text-right">{cur(basic.expense_usd)}</td>
                       <td className="py-2 text-right">{cur(basic.taxable_income_usd)}</td>
                       <td className="py-2 text-right">{jpy(basic.taxable_income_jpy)}</td>
-                      <td className="py-2 text-right">
-                        {typeof basic.fx_used === "number" ? basic.fx_used : "-"}
-                      </td>
+                      <td className="py-2 text-right">{typeof basic.fx_used === "number" ? basic.fx_used : "-"}</td>
                     </tr>
                   </tbody>
                 </table>
               </div>
-              <RawBlock obj={basicRaw} />
+              <Raw obj={basicRaw} />
             </>
           )}
         </CardContent>
       </Card>
 
-      {/* US Federal Estimate */}
+      {/* US Tax */}
       <Card>
-        <CardHeader>
-          <CardTitle>US Federal Tax (Estimate)</CardTitle>
-        </CardHeader>
+        <CardHeader><CardTitle>US Federal Tax (Estimate)</CardTitle></CardHeader>
         <CardContent className="space-y-3">
           {!us ? (
             <div className="text-sm text-muted-foreground">
@@ -301,9 +275,6 @@ export default function AccountingTaxScreen1() {
             </div>
           ) : (
             <>
-              <div className="text-xs text-muted-foreground">
-                Last updated: {usAt ? new Date(usAt).toLocaleString() : "-"}
-              </div>
               <div className="overflow-x-auto">
                 <table className="min-w-[720px] w-full text-sm">
                   <thead>
@@ -311,9 +282,9 @@ export default function AccountingTaxScreen1() {
                       <th className="text-left py-2">Entity</th>
                       <th className="text-right py-2">Income (USD)</th>
                       <th className="text-right py-2">Expense (USD)</th>
-                      <th className="text-right py-2">Taxable Base (USD)</th>
-                      <th className="text-right py-2">Taxable After Deduction</th>
-                      <th className="text-right py-2">Estimated Federal Tax</th>
+                      <th className="text-right py-2">Taxable Base</th>
+                      <th className="text-right py-2">After Deduction</th>
+                      <th className="text-right py-2">Estimated Tax</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -328,17 +299,15 @@ export default function AccountingTaxScreen1() {
                   </tbody>
                 </table>
               </div>
-              <RawBlock obj={usRaw} />
+              <Raw obj={usRaw} />
             </>
           )}
         </CardContent>
       </Card>
 
-      {/* IFRS Report */}
+      {/* IFRS */}
       <Card>
-        <CardHeader>
-          <CardTitle>IFRS Report (P/L & Trial Balance)</CardTitle>
-        </CardHeader>
+        <CardHeader><CardTitle>IFRS Report (P/L & Trial Balance)</CardTitle></CardHeader>
         <CardContent className="space-y-4">
           {!ifrs ? (
             <div className="text-sm text-muted-foreground">
@@ -346,11 +315,6 @@ export default function AccountingTaxScreen1() {
             </div>
           ) : (
             <>
-              <div className="text-xs text-muted-foreground">
-                Last updated: {ifrsAt ? new Date(ifrsAt).toLocaleString() : "-"}
-              </div>
-
-              {/* P/L */}
               <div>
                 <div className="font-semibold mb-2">Profit &amp; Loss</div>
                 <div className="overflow-x-auto">
@@ -372,8 +336,6 @@ export default function AccountingTaxScreen1() {
                   </table>
                 </div>
               </div>
-
-              {/* Trial Balance */}
               <div>
                 <div className="font-semibold mb-2">Trial Balance</div>
                 <div className="overflow-x-auto">
@@ -397,7 +359,7 @@ export default function AccountingTaxScreen1() {
                   </table>
                 </div>
               </div>
-              <RawBlock obj={ifrsRaw} />
+              <Raw obj={ifrsRaw} />
             </>
           )}
         </CardContent>
