@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { WagmiProvider } from 'wagmi'
 import { wagmiConfig } from '@/config/wagmi'
 import { AuthProvider } from '@/hooks/useAuth'
+import { supabase } from "@/integrations/supabase/client";
 import App from './App'
 
 /**
@@ -22,6 +23,8 @@ function shouldUseHashRouter(): boolean {
 }
 const Router = shouldUseHashRouter() ? HashRouter : BrowserRouter
 const qc = new QueryClient()
+
+window.supabase = supabase;
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
