@@ -1,5 +1,5 @@
 // src/pages/accounting/AccountingTaxScreen1.tsx
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
@@ -40,38 +40,82 @@ export default function AccountingTaxScreen1() {
   const [inserted, setInserted] = useState<number | null>(null);
 
   const [basic, setBasic] = useState<BasicSummary | null>(null);
+  const [basicRaw, setBasicRaw] = useState<Json | null>(null);
   const [basicAt, setBasicAt] = useState<string | null>(null);
 
   const [us, setUs] = useState<UsTaxResult | null>(null);
+  const [usRaw, setUsRaw] = useState<Json | null>(null);
   const [usAt, setUsAt] = useState<string | null>(null);
 
   const [ifrs, setIfrs] = useState<IfrsResult | null>(null);
+  const [ifrsRaw, setIfrsRaw] = useState<Json | null>(null);
   const [ifrsAt, setIfrsAt] = useState<string | null>(null);
 
-  const authHeader = async () => {
+  const baseFnUrl = useMemo(() => {
+    const u = (import.meta as any).env?.VITE_SUPABASE_URL as string | undefined;
+    return (u ?? "").replace(/\/+$/, "") + "/functions/v1";
+  }, []);
+
+  const getAuthHeader = async () => {
     const { data } = await supabase.auth.getSession();
     const token = data.session?.access_token;
     return token ? { Authorization: `Bearer ${token}` } : {};
   };
 
-  const call = async (url: string, init?: RequestInit) => {
-    const headers = {
-      ...(await authHeader()),
-      ...(init?.headers || {}),
-    } as Record<string, string>;
-    const res = await fetch(url, { ...init, headers });
+  // Robust invoker: try supabase.functions.invoke first, then absolute fetch fallback.
+  const invoke = async (
+    name: string,
+    opt?: { method?: "GET" | "POST"; query?: Record<string, string | number>; body?: Json }
+  ): Promise<{ data: any; raw: any }> => {
+    const method = opt?.method ?? "POST";
+    const query = opt?.query ?? {};
+    const qs =
+      Object.keys(query).length > 0
+        ? "?" +
+          Object.entries(query)
+            .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
+            .join("&")
+        : "";
+
+    // 1) supabase.functions.invoke (always POST) — works best when no query needed
+    if (method === "POST" && Object.keys(query).length === 0) {
+      try {
+        const { data, error } = await supabase.functions.invoke(name, {
+          body: opt?.body ?? {},
+          headers: await getAuthHeader(),
+        });
+        if (error) throw error;
+        return { data, raw: data };
+      } catch (e) {
+        console.warn(`[invoke] supabase.functions.invoke failed for ${name}:`, e);
+        // fallthrough to fetch
+      }
+    }
+
+    // 2) Absolute fetch with Authorization header (works for GET and for query params)
+    const headers = { ...(await getAuthHeader()), "Content-Type": "application/json" } as Record<
+      string,
+      string
+    >;
+    const url = `${baseFnUrl}/${name}${qs}`;
+    const res = await fetch(url, {
+      method,
+      headers,
+      body: method === "POST" ? JSON.stringify(opt?.body ?? {}) : undefined,
+    });
+
     let json: any = null;
     try {
       json = await res.json();
     } catch {
-      /* ignore */
+      // no body / not JSON
     }
+
     if (!res.ok || json?.ok === false) {
-      // Edge Function は 200 + {ok:false,error} を返すこともあるため併用で判定
-      const msg = json?.error || res.statusText || "Request failed";
-      throw new Error(msg);
+      const msg = json?.error || res.statusText || "Function call failed";
+      throw new Error(`${name}: ${msg}`);
     }
-    return json;
+    return { data: json, raw: json };
   };
 
   const genJE = async () => {
@@ -79,11 +123,13 @@ export default function AccountingTaxScreen1() {
     setLog("Generating journal entries...");
     setInserted(null);
     try {
-      const r = await call("/functions/v1/generate-journal-entries", { method: "POST" });
-      // 期待: { ok:true, inserted:n }
-      setInserted(Number(r?.inserted ?? 0));
-      setLog(`Generated rows: ${r?.inserted ?? 0}`);
+      const { data } = await invoke("generate-journal-entries", { method: "POST" });
+      // Accept both { ok:true, inserted:n } or legacy { inserted:n }
+      const ins = Number((data?.inserted ?? data?.count ?? 0) as any);
+      setInserted(ins);
+      setLog(`Generated rows: ${ins}`);
     } catch (e: any) {
+      console.error(e);
       setLog(`Error: ${String(e.message || e)}`);
     } finally {
       setBusy(false);
@@ -94,12 +140,20 @@ export default function AccountingTaxScreen1() {
     setBusy(true);
     setLog("Calculating (MVP)...");
     try {
-      const r = await call("/functions/v1/calculate-taxable-income?fx=150");
-      // 期待: { ok:true, summary:{...} }
-      setBasic(r?.summary ?? null);
+      const { data, raw } = await invoke("calculate-taxable-income", {
+        method: "GET",
+        query: { fx: 150 },
+      });
+      // Accept either { ok:true, summary:{...} } or { ... } directly
+      const summary: BasicSummary | null =
+        (data?.summary as any) ??
+        (("income_usd" in (data ?? {})) ? (data as any) : null);
+      setBasic(summary);
+      setBasicRaw(raw);
       setBasicAt(new Date().toISOString());
       setLog("Done.");
     } catch (e: any) {
+      console.error(e);
       setLog(`Error: ${String(e.message || e)}`);
     } finally {
       setBusy(false);
@@ -110,11 +164,13 @@ export default function AccountingTaxScreen1() {
     setBusy(true);
     setLog("Estimating US federal tax...");
     try {
-      const r = await call("/functions/v1/calculate-us-tax");
-      setUs(r ?? null);
+      const { data, raw } = await invoke("calculate-us-tax", { method: "GET" });
+      setUs(data ?? null);
+      setUsRaw(raw);
       setUsAt(new Date().toISOString());
       setLog("Done.");
     } catch (e: any) {
+      console.error(e);
       setLog(`Error: ${String(e.message || e)}`);
     } finally {
       setBusy(false);
@@ -125,11 +181,13 @@ export default function AccountingTaxScreen1() {
     setBusy(true);
     setLog("Generating IFRS report...");
     try {
-      const r = await call("/functions/v1/generate-ifrs-report");
-      setIfrs(r ?? null);
+      const { data, raw } = await invoke("generate-ifrs-report", { method: "GET" });
+      setIfrs(data ?? null);
+      setIfrsRaw(raw);
       setIfrsAt(new Date().toISOString());
       setLog("Done.");
     } catch (e: any) {
+      console.error(e);
       setLog(`Error: ${String(e.message || e)}`);
     } finally {
       setBusy(false);
@@ -140,6 +198,13 @@ export default function AccountingTaxScreen1() {
     typeof n === "number" ? `$${n.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : "-";
   const jpy = (n?: number) =>
     typeof n === "number" ? `${n.toLocaleString()} JPY` : "-";
+
+  const RawBlock = ({ obj }: { obj: any }) => (
+    <details className="text-xs">
+      <summary className="cursor-pointer text-muted-foreground">Raw JSON</summary>
+      <pre className="text-xs overflow-auto mt-2">{JSON.stringify(obj ?? {}, null, 2)}</pre>
+    </details>
+  );
 
   return (
     <div className="mx-auto max-w-5xl p-6 space-y-6">
@@ -166,11 +231,7 @@ export default function AccountingTaxScreen1() {
             </Button>
           </div>
 
-          <div className="text-sm">
-            {busy ? "Working..." : log || "Ready."}
-          </div>
-
-          {/* JE inserted count */}
+          <div className="text-sm">{busy ? "Working..." : log || "Ready."}</div>
           {inserted !== null && (
             <div className="text-sm text-muted-foreground">
               Inserted rows (journal_entries): <span className="font-mono">{inserted}</span>
@@ -179,7 +240,7 @@ export default function AccountingTaxScreen1() {
         </CardContent>
       </Card>
 
-      {/* MVP Summary (Income/Expense/Taxable) */}
+      {/* MVP Summary */}
       <Card>
         <CardHeader>
           <CardTitle>MVP Summary</CardTitle>
@@ -222,6 +283,7 @@ export default function AccountingTaxScreen1() {
                   </tbody>
                 </table>
               </div>
+              <RawBlock obj={basicRaw} />
             </>
           )}
         </CardContent>
@@ -266,11 +328,7 @@ export default function AccountingTaxScreen1() {
                   </tbody>
                 </table>
               </div>
-              {us.notes && (
-                <div className="text-xs text-muted-foreground mt-2">
-                  * {us.notes}
-                </div>
-              )}
+              <RawBlock obj={usRaw} />
             </>
           )}
         </CardContent>
@@ -294,7 +352,7 @@ export default function AccountingTaxScreen1() {
 
               {/* P/L */}
               <div>
-                <div className="font-semibold mb-2">Profit & Loss</div>
+                <div className="font-semibold mb-2">Profit &amp; Loss</div>
                 <div className="overflow-x-auto">
                   <table className="min-w-[580px] w-full text-sm">
                     <thead>
@@ -339,6 +397,7 @@ export default function AccountingTaxScreen1() {
                   </table>
                 </div>
               </div>
+              <RawBlock obj={ifrsRaw} />
             </>
           )}
         </CardContent>
