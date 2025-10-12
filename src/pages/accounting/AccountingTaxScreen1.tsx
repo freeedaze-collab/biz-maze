@@ -1,10 +1,11 @@
 // src/pages/accounting/AccountingTaxScreen1.tsx
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
 
 type Json = any;
+
 type BasicSummary = {
   country?: "US" | "JP";
   entity_type?: "personal" | "corporate";
@@ -14,6 +15,7 @@ type BasicSummary = {
   fx_used?: number;
   taxable_income_jpy?: number;
 };
+
 type UsTaxResult = {
   ok?: boolean;
   entity_type?: "personal" | "corporate";
@@ -24,6 +26,7 @@ type UsTaxResult = {
   estimated_federal_tax_usd?: number;
   notes?: string;
 };
+
 type IfrsResult = {
   ok?: boolean;
   pl?: { revenue_usd?: number; expense_usd?: number; profit_usd?: number };
@@ -37,72 +40,50 @@ export default function AccountingTaxScreen1() {
   const [inserted, setInserted] = useState<number | null>(null);
 
   const [basic, setBasic] = useState<BasicSummary | null>(null);
-  const [basicRaw, setBasicRaw] = useState<Json | null>(null);
+  const [basicRaw, setBasicRaw] = useState<Json | string | null>(null);
 
   const [us, setUs] = useState<UsTaxResult | null>(null);
-  const [usRaw, setUsRaw] = useState<Json | null>(null);
+  const [usRaw, setUsRaw] = useState<Json | string | null>(null);
 
   const [ifrs, setIfrs] = useState<IfrsResult | null>(null);
-  const [ifrsRaw, setIfrsRaw] = useState<Json | null>(null);
+  const [ifrsRaw, setIfrsRaw] = useState<Json | string | null>(null);
 
-  /** Authorization ヘッダ（JWT のみ）。apikey は付けません（CORS 回避） */
-  const authHeader = async () => {
-    const { data } = await supabase.auth.getSession();
-    const token = data.session?.access_token;
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  };
+  // ===== Debug info (可視化) =====
+  const [dbg, setDbg] = useState<{url?: string; hasJWT?: boolean; jwtPrefix?: string; err?: string} | null>(null);
+  const projectUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
+  const anon = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
+  const baseFnUrl = useMemo(() => (projectUrl ?? "").replace(/\/+$/, "") + "/functions/v1", [projectUrl]);
 
-  /** 相対パス一本化版の invoker
-   *  - /functions/v1/<name> を常に叩く（Lovable プレビューで安定）
-   *  - fetch 例外も文字列化して UI に出す
-   */
-  const invoke = async (
-    name: string,
-    opt?: { method?: "GET" | "POST"; query?: Record<string, string | number>; body?: Json }
-  ) => {
-    const method = opt?.method ?? "POST";
-    const query = opt?.query ?? {};
-    const qs =
-      Object.keys(query).length > 0
-        ? "?" +
-          Object.entries(query)
-            .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
-            .join("&")
-        : "";
-    const url = `/functions/v1/${name}${qs}`;
-
-    try {
-      const headers: Record<string, string> = {
-        ...(await authHeader()),
-      };
-      if (method === "POST") headers["Content-Type"] = "application/json";
-
-      const res = await fetch(url, {
-        method,
-        headers,
-        body: method === "POST" ? JSON.stringify(opt?.body ?? {}) : undefined,
-        mode: "cors",
-        credentials: "omit",
-        cache: "no-store",
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+      setDbg({
+        url: baseFnUrl || "(VITE_SUPABASE_URL missing)",
+        hasJWT: !!token,
+        jwtPrefix: token ? token.slice(0, 12) + "...(len=" + token.length + ")" : "(none)",
       });
+    })();
+  }, [baseFnUrl]);
 
-      const text = await res.text();
-      let json: any = null;
-      try {
-        json = text ? JSON.parse(text) : {};
-      } catch {
-        // JSONでなければそのまま raw として保持
-      }
-
-      if (!res.ok || (json && json.ok === false)) {
-        const msg = (json && json.error) || res.statusText || "Function call failed";
-        throw new Error(`${name}: ${msg}; status=${res.status}; raw=${text?.slice(0, 200)}`);
-      }
-      return { json: json ?? {}, raw: text ?? "" };
+  // 共通: supabase.functions.invoke を使う（POST固定; GETの代わりにクエリは body に乗せる）
+  // invoke は supabase-js がプロジェクトURLを内部で解決するので、相対/絶対URL問題・apikey付与問題を回避できます。
+  const invoke = async (name: string, body?: any) => {
+    try {
+      const { data, error } = await supabase.functions.invoke(name, {
+        method: "POST",            // ← GET は使わず POST に統一（関数側は GET/POST どちらでも処理する実装にしてある）
+        body: body ?? {},
+        headers: {
+          // Authorization は supabase-js が自動で付与。なにかあれば下記を有効化:
+          // ...(await authHeader())
+        },
+      });
+      if (error) throw error;
+      return data;
     } catch (e: any) {
-      const message =
-        e?.message ?? e?.toString?.() ?? "Failed to fetch (unknown network error)";
-      throw new Error(`${name}: ${message}`);
+      const msg = e?.message || JSON.stringify(e);
+      setDbg((prev) => ({ ...(prev ?? {}), err: `[invoke error] ${msg}` }));
+      throw e;
     }
   };
 
@@ -111,12 +92,12 @@ export default function AccountingTaxScreen1() {
     setLog("Generating journal entries...");
     setInserted(null);
     try {
-      const { json } = await invoke("generate-journal-entries", { method: "POST" });
+      // 仕訳生成は引数不要
+      const json = await invoke("generate-journal-entries");
       const ins = Number((json?.inserted ?? json?.count ?? 0) as any);
       setInserted(ins);
       setLog(`Generated rows: ${ins}`);
     } catch (e: any) {
-      console.error(e);
       setLog(`Error: ${String(e.message || e)}`);
     } finally {
       setBusy(false);
@@ -127,18 +108,15 @@ export default function AccountingTaxScreen1() {
     setBusy(true);
     setLog("Calculating (MVP)...");
     try {
-      const { json, raw } = await invoke("calculate-taxable-income", {
-        method: "GET",
-        query: { fx: 150 },
-      });
+      // fx を body で渡す（関数側は GET/POST両対応にしてある）
+      const json = await invoke("calculate-taxable-income", { fx: 150 });
       const summary: BasicSummary | null =
         (json?.summary as any) ??
         (("income_usd" in (json ?? {})) ? (json as any) : null);
       setBasic(summary);
-      setBasicRaw(summary ? json : raw);
+      setBasicRaw(json);
       setLog("Done.");
     } catch (e: any) {
-      console.error(e);
       setLog(`Error: ${String(e.message || e)}`);
     } finally {
       setBusy(false);
@@ -149,12 +127,11 @@ export default function AccountingTaxScreen1() {
     setBusy(true);
     setLog("Estimating US federal tax...");
     try {
-      const { json, raw } = await invoke("calculate-us-tax", { method: "GET" });
+      const json = await invoke("calculate-us-tax");
       setUs((json as any) ?? null);
-      setUsRaw(json ?? raw);
+      setUsRaw(json);
       setLog("Done.");
     } catch (e: any) {
-      console.error(e);
       setLog(`Error: ${String(e.message || e)}`);
     } finally {
       setBusy(false);
@@ -165,12 +142,11 @@ export default function AccountingTaxScreen1() {
     setBusy(true);
     setLog("Generating IFRS report...");
     try {
-      const { json, raw } = await invoke("generate-ifrs-report", { method: "GET" });
+      const json = await invoke("generate-ifrs-report");
       setIfrs((json as any) ?? null);
-      setIfrsRaw(json ?? raw);
+      setIfrsRaw(json);
       setLog("Done.");
     } catch (e: any) {
-      console.error(e);
       setLog(`Error: ${String(e.message || e)}`);
     } finally {
       setBusy(false);
@@ -182,9 +158,9 @@ export default function AccountingTaxScreen1() {
   const jpy = (n?: number) =>
     typeof n === "number" ? `${n.toLocaleString()} JPY` : "-";
 
-  const Raw = ({ obj }: { obj: any }) => (
+  const Raw = ({ obj, title }: { obj: any; title: string }) => (
     <details className="text-xs">
-      <summary className="cursor-pointer text-muted-foreground">Raw JSON</summary>
+      <summary className="cursor-pointer text-muted-foreground">{title}</summary>
       <pre className="text-xs overflow-auto mt-2">
         {typeof obj === "string" ? obj : JSON.stringify(obj ?? {}, null, 2)}
       </pre>
@@ -194,6 +170,18 @@ export default function AccountingTaxScreen1() {
   return (
     <div className="mx-auto max-w-5xl p-6 space-y-6">
       <h1 className="text-2xl font-bold">Accounting / Tax</h1>
+
+      {/* Debug Panel */}
+      <Card>
+        <CardHeader><CardTitle>Debug</CardTitle></CardHeader>
+        <CardContent className="space-y-1 text-sm">
+          <div>Supabase URL (from env): <span className="font-mono">{projectUrl || "(missing)"}</span></div>
+          <div>Functions Base URL: <span className="font-mono">{dbg?.url}</span></div>
+          <div>Has JWT: <span className="font-mono">{String(dbg?.hasJWT)}</span> / JWT prefix: <span className="font-mono">{dbg?.jwtPrefix}</span></div>
+          <div>Anon key present: <span className="font-mono">{String(!!anon)}</span></div>
+          {dbg?.err && <div className="text-red-600">Last invoke error: {dbg.err}</div>}
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader><CardTitle>Automation</CardTitle></CardHeader>
@@ -251,7 +239,7 @@ export default function AccountingTaxScreen1() {
                   </tbody>
                 </table>
               </div>
-              <Raw obj={basicRaw} />
+              <Raw title="Raw JSON (MVP)" obj={basicRaw} />
             </>
           )}
         </CardContent>
@@ -291,7 +279,7 @@ export default function AccountingTaxScreen1() {
                   </tbody>
                 </table>
               </div>
-              <Raw obj={usRaw} />
+              <Raw title="Raw JSON (US Tax)" obj={usRaw} />
             </>
           )}
         </CardContent>
@@ -351,7 +339,7 @@ export default function AccountingTaxScreen1() {
                   </table>
                 </div>
               </div>
-              <Raw obj={ifrsRaw} />
+              <Raw title="Raw JSON (IFRS)" obj={ifrsRaw} />
             </>
           )}
         </CardContent>
