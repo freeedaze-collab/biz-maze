@@ -1,10 +1,12 @@
+// supabase/functions/generate-ifrs-report/index.ts
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4'
 
-const corsHeaders = {
+const corsHeaders: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'authorization, content-type, apikey',
+  'Access-Control-Allow-Headers':
+    'authorization, content-type, apikey, x-client-info, x-supabase-authorization',
 }
 
 const json = (obj: any, init: ResponseInit = {}) =>
@@ -38,17 +40,16 @@ Deno.serve(async (req) => {
     const trial: Record<string, { debit: number; credit: number }> = {}
 
     for (const e of entries ?? []) {
-      const amt = Number(e.amount ?? 0)
-      if (e.dc === 'D') {
-        trial[e.account] = trial[e.account] || { debit: 0, credit: 0 }
-        trial[e.account].debit += amt
-      } else {
-        trial[e.account] = trial[e.account] || { debit: 0, credit: 0 }
-        trial[e.account].credit += amt
-      }
+      const amt = Number((e as any)?.amount ?? 0)
+      const dc = String((e as any)?.dc ?? 'C')
+      const account = String((e as any)?.account ?? '')
 
-      if (e.account === 'OtherIncome') revenue += amt
-      if (e.account === 'OperatingExpense') expense += amt
+      if (!trial[account]) trial[account] = { debit: 0, credit: 0 }
+      if (dc === 'D') trial[account].debit += amt
+      else trial[account].credit += amt
+
+      if (account === 'OtherIncome') revenue += amt
+      if (account === 'OperatingExpense') expense += amt
     }
 
     const profit = revenue - expense
@@ -64,6 +65,6 @@ Deno.serve(async (req) => {
       trial_balance: tb,
     })
   } catch (e: any) {
-    return json({ ok: false, error: String(e.message || e) }, { status: 500 })
+    return json({ ok: false, error: String(e?.message || e) }, { status: 500 })
   }
 })
