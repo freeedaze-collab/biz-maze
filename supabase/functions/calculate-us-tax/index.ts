@@ -1,10 +1,12 @@
+// supabase/functions/calculate-us-tax/index.ts
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4'
 
-const corsHeaders = {
+const corsHeaders: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'authorization, content-type, apikey',
+  'Access-Control-Allow-Headers':
+    'authorization, content-type, apikey, x-client-info, x-supabase-authorization',
 }
 
 const json = (obj: any, init: ResponseInit = {}) =>
@@ -37,9 +39,9 @@ Deno.serve(async (req) => {
     let income = 0
     let expense = 0
     for (const t of txs ?? []) {
-      const v = Number(t.fiat_value_usd ?? 0)
-      if (t.direction === 'in') income += v
-      else if (t.direction === 'out') expense += v
+      const v = Number((t as any)?.fiat_value_usd ?? 0)
+      if ((t as any)?.direction === 'in') income += v
+      else if ((t as any)?.direction === 'out') expense += v
     }
 
     const taxable = income - expense
@@ -58,6 +60,6 @@ Deno.serve(async (req) => {
       notes: 'MVP flat-rate estimation (22%)',
     })
   } catch (e: any) {
-    return json({ ok: false, error: String(e.message || e) }, { status: 500 })
+    return json({ ok: false, error: String(e?.message || e) }, { status: 500 })
   }
 })
