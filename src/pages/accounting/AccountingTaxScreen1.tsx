@@ -67,16 +67,11 @@ export default function AccountingTaxScreen1() {
   }, [baseFnUrl]);
 
   // 共通: supabase.functions.invoke を使う（POST固定; GETの代わりにクエリは body に乗せる）
-  // invoke は supabase-js がプロジェクトURLを内部で解決するので、相対/絶対URL問題・apikey付与問題を回避できます。
   const invoke = async (name: string, body?: any) => {
     try {
       const { data, error } = await supabase.functions.invoke(name, {
-        method: "POST",            // ← GET は使わず POST に統一（関数側は GET/POST どちらでも処理する実装にしてある）
+        method: "POST",
         body: body ?? {},
-        headers: {
-          // Authorization は supabase-js が自動で付与。なにかあれば下記を有効化:
-          // ...(await authHeader())
-        },
       });
       if (error) throw error;
       return data;
@@ -92,7 +87,6 @@ export default function AccountingTaxScreen1() {
     setLog("Generating journal entries...");
     setInserted(null);
     try {
-      // 仕訳生成は引数不要
       const json = await invoke("generate-journal-entries");
       const ins = Number((json?.inserted ?? json?.count ?? 0) as any);
       setInserted(ins);
@@ -108,7 +102,6 @@ export default function AccountingTaxScreen1() {
     setBusy(true);
     setLog("Calculating (MVP)...");
     try {
-      // fx を body で渡す（関数側は GET/POST両対応にしてある）
       const json = await invoke("calculate-taxable-income", { fx: 150 });
       const summary: BasicSummary | null =
         (json?.summary as any) ??
