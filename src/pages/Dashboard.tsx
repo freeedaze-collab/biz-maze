@@ -1,36 +1,67 @@
 // src/pages/Dashboard.tsx
 import { Link } from "react-router-dom";
-import { useAccount } from "wagmi";
-
-const Card = ({ to, title, desc }: { to: string; title: string; desc: string }) => (
-  <Link to={to} className="block rounded-2xl border p-5 hover:shadow transition">
-    <div className="text-lg font-semibold">{title}</div>
-    <div className="text-sm text-muted-foreground">{desc}</div>
-  </Link>
-);
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 
 export default function Dashboard() {
-  const { address, isConnected } = useAccount();
-
   return (
-    <div className="mx-auto max-w-5xl p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">My Page</h1>
-        <div className="text-sm">
-          Wallet:{" "}
-          <span className="font-mono">
-            {isConnected && address ? `${address.slice(0, 6)}...${address.slice(-4)}` : "(not connected)"}
-          </span>
-        </div>
-      </div>
+    <div className="mx-auto max-w-7xl p-6 space-y-6">
+      <h1 className="text-2xl font-bold">Dashboard</h1>
 
-      <div className="grid md:grid-cols-3 gap-4">
-        <Card to="/wallet" title="Wallet Creation / Linking" desc="Connect & link your wallet" />
-        <Card to="/transfer" title="Transfer" desc="Send ETH to new or saved recipients" />
-        <Card to="/billing" title="Create Invoice" desc="Issue invoices like cryptoinvoice.new" />
-        <Card to="/transaction-history" title="Transaction History" desc="View on-chain / records" />
-        <Card to="/pricing" title="Pricing / Change Plan" desc="Check and change your plan" />
-        <Card to="/accounting" title="Accounting / Tax" desc="Bookkeeping & tax calculations" />
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+        <Card>
+          <CardHeader><CardTitle>Send money</CardTitle></CardHeader>
+          <CardContent className="space-y-2">
+            <p className="text-sm text-muted-foreground">
+              Start manual transfer flow and confirm the payment.
+            </p>
+            <Button asChild><Link to="/transfer/start">Start transfer</Link></Button>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader><CardTitle>Create invoice</CardTitle></CardHeader>
+          <CardContent className="space-y-2">
+            <p className="text-sm text-muted-foreground">
+              Prepare an invoice (save company/client, add line items).
+            </p>
+            <Button asChild variant="outline"><Link to="/invoice/new">Create invoice</Link></Button>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader><CardTitle>Accounting / Tax</CardTitle></CardHeader>
+          <CardContent className="space-y-2">
+            <p className="text-sm text-muted-foreground">
+              Generate journal entries, P/L, trial balance and US tax estimate.
+            </p>
+            <Button asChild variant="outline"><Link to="/accounting">Open</Link></Button>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader><CardTitle>Transactions</CardTitle></CardHeader>
+          <CardContent className="space-y-2">
+            <p className="text-sm text-muted-foreground">View synchronized on-chain history.</p>
+            <Button asChild variant="outline"><Link to="/transactions">Open</Link></Button>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader><CardTitle>Pricing</CardTitle></CardHeader>
+          <CardContent className="space-y-2">
+            <p className="text-sm text-muted-foreground">Check your plan and metered fees.</p>
+            <Button asChild variant="outline"><Link to="/pricing">Open</Link></Button>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader><CardTitle>Profile</CardTitle></CardHeader>
+          <CardContent className="space-y-2">
+            <p className="text-sm text-muted-foreground">Update country and entity type.</p>
+            <Button asChild variant="outline"><Link to="/profile">Open</Link></Button>
+          </CardContent>
+        </Card>
       </div>
     </div>
   );
