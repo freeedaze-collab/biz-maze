@@ -13,16 +13,7 @@ export default defineConfig({
   },
   server: {
     host: true,
-    port: 5173,
-    strictPort: true,  // 5173が塞がれていたらエラーにして気付けるように
-    open: true,
-    // HMRのオーバーレイで操作不能になるのを避けたい場合は次を有効化
-    // hmr: { overlay: false },
-  },
-  preview: {
-    host: true,
-    port: 5173,
-    strictPort: true,
+    port: 8080,
   },
 })
 
