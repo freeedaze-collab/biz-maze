@@ -33,6 +33,9 @@ import TransferScreen3 from '@/pages/transfer/TransferScreen3'
 // Accounting
 import AccountingTaxScreen1 from '@/pages/accounting/AccountingTaxScreen1'
 
+import PaymentGateway from "@/pages/PaymentGateway";
+import ManualTransfer from "@/pages/transfer/ManualTransfer";
+
 // Misc
 import NotFound from '@/pages/NotFound'
 import Navigation from '@/components/Navigation'
