@@ -23,7 +23,7 @@ export default function Profile() {
       const { data, error } = await supabase
         .from("profiles")
         .select("display_name, country, entity_type")
-        .eq("id", user.id)
+        .eq("id", user.id) // 既存の「id = auth.users.id」運用を維持
         .maybeSingle();
       if (!error && data) {
         setDisplayName(data.display_name ?? "");
@@ -38,7 +38,7 @@ export default function Profile() {
     setSaving(true);
     const { error } = await supabase.from("profiles").upsert(
       {
-        id: user.id,
+        id: user.id, // 既存運用に合わせる
         display_name: displayName,
         country,
         entity_type: entityType,
