@@ -48,7 +48,7 @@ export default function AccountingTaxScreen1() {
   const [ifrs, setIfrs] = useState<IfrsResult | null>(null);
   const [ifrsRaw, setIfrsRaw] = useState<Json | string | null>(null);
 
-  // ===== Debug info (可視化) =====
+  // ===== Debug info =====
   const [dbg, setDbg] = useState<{url?: string; hasJWT?: boolean; jwtPrefix?: string; err?: string} | null>(null);
   const projectUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
   const anon = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
@@ -66,7 +66,6 @@ export default function AccountingTaxScreen1() {
     })();
   }, [baseFnUrl]);
 
-  // 共通: supabase.functions.invoke を使う（POST固定; GETの代わりにクエリは body に乗せる）
   const invoke = async (name: string, body?: any) => {
     try {
       const { data, error } = await supabase.functions.invoke(name, {
@@ -151,6 +150,59 @@ export default function AccountingTaxScreen1() {
   const jpy = (n?: number) =>
     typeof n === "number" ? `${n.toLocaleString()} JPY` : "-";
 
+  const toCSV = (rows: Array<Record<string, any>>) => {
+    if (!rows || rows.length === 0) return "empty\n";
+    const headers = Object.keys(rows[0]);
+    const esc = (v: any) => {
+      const s = (v ?? "").toString();
+      if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+      return s;
+    };
+    return [headers.join(","), ...rows.map(r => headers.map(h => esc(r[h])).join(","))].join("\n");
+  };
+
+  const exportCSV = () => {
+    const basicRow = basic ? [{
+      country: basic.country ?? "",
+      entity: basic.entity_type ?? "",
+      income_usd: basic.income_usd ?? "",
+      expense_usd: basic.expense_usd ?? "",
+      taxable_income_usd: basic.taxable_income_usd ?? "",
+      taxable_income_jpy: basic.taxable_income_jpy ?? "",
+      fx_used: basic.fx_used ?? "",
+    }] : [];
+
+    const plRow = ifrs?.pl ? [{
+      revenue_usd: ifrs.pl.revenue_usd ?? "",
+      expense_usd: ifrs.pl.expense_usd ?? "",
+      profit_usd: ifrs.pl.profit_usd ?? "",
+    }] : [];
+
+    const tbRows = (ifrs?.trial_balance ?? []).map(r => ({
+      account: r.account, debit: r.debit, credit: r.credit,
+    }));
+
+    const files: Array<{name: string; content: string}> = [
+      { name: "mvp_summary.csv", content: toCSV(basicRow) },
+      { name: "pl.csv", content: toCSV(plRow) },
+      { name: "trial_balance.csv", content: toCSV(tbRows) },
+    ];
+
+    // 単一CSVとして連結（MVP簡易）
+    const merged = files
+      .map(f => `### ${f.name}\n${f.content}`)
+      .join("\n");
+
+    const blob = new Blob([merged], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "biz-maze_tax_pack.csv";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
   const Raw = ({ obj, title }: { obj: any; title: string }) => (
     <details className="text-xs">
       <summary className="cursor-pointer text-muted-foreground">{title}</summary>
@@ -164,7 +216,6 @@ export default function AccountingTaxScreen1() {
     <div className="mx-auto max-w-5xl p-6 space-y-6">
       <h1 className="text-2xl font-bold">Accounting / Tax</h1>
 
-      {/* Debug Panel */}
       <Card>
         <CardHeader><CardTitle>Debug</CardTitle></CardHeader>
         <CardContent className="space-y-1 text-sm">
@@ -184,6 +235,7 @@ export default function AccountingTaxScreen1() {
             <Button onClick={calcBasic} variant="outline" disabled={busy}>Calculate (MVP)</Button>
             <Button onClick={calcUs} variant="outline" disabled={busy}>Estimate US Tax</Button>
             <Button onClick={genIFRS} variant="outline" disabled={busy}>Generate IFRS Report</Button>
+            <Button onClick={exportCSV} variant="secondary" disabled={!basic && !ifrs}>Export CSV</Button>
           </div>
           <div className="text-sm">{busy ? "Working..." : log || "Ready."}</div>
           {inserted !== null && (
