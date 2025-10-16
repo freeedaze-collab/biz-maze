@@ -23,7 +23,7 @@ export default function Profile() {
       const { data, error } = await supabase
         .from("profiles")
         .select("display_name, country, entity_type")
-        .eq("id", user.id) // ← 既存運用( profiles.id = auth.users.id )に合わせます
+        .eq("user_id", user.id) // ✅ user_id で取得
         .maybeSingle();
       if (!error && data) {
         setDisplayName(data.display_name ?? "");
@@ -38,13 +38,14 @@ export default function Profile() {
     setSaving(true);
     const { error } = await supabase.from("profiles").upsert(
       {
-        id: user.id, // ← 既存運用どおり
+        id: user.id,          // 運用維持（id = auth id）
+        user_id: user.id,     // ✅ NOT NULL のため必ず保存
         display_name: displayName,
         country,
         entity_type: entityType,
         updated_at: new Date().toISOString(),
       },
-      { onConflict: "id" } // ← 保存失敗を防ぐ
+      { onConflict: "user_id" } // user_id 重複で更新
     );
     setSaving(false);
     if (error) {
@@ -100,7 +101,7 @@ export default function Profile() {
           </div>
 
           <div className="pt-2">
-            <Button onClick={save} disabled={saving}>
+            <Button onClick={save} disabled={saving || !user}>
               {saving ? "Saving..." : "保存"}
             </Button>
           </div>
