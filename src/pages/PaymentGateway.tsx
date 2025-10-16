@@ -18,7 +18,7 @@ export default function PaymentGateway() {
       const { data } = await supabase
         .from("profiles")
         .select("gateway_enabled")
-        .eq("id", user.id) // 既存運用の id を使用
+        .eq("id", user.id)
         .maybeSingle();
       setEnabled(Boolean((data as any)?.gateway_enabled));
       setLoading(false);
@@ -47,7 +47,6 @@ export default function PaymentGateway() {
   return (
     <div className="mx-auto max-w-5xl p-6 space-y-6">
       <h1 className="text-2xl font-bold">Payment Gateway</h1>
-
       <Card>
         <CardHeader><CardTitle>準備中</CardTitle></CardHeader>
         <CardContent className="text-sm text-muted-foreground">
