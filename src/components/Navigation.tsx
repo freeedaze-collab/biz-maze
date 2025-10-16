@@ -1,70 +1,68 @@
 // src/components/Navigation.tsx
-import { Link, useLocation } from "react-router-dom";
-import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import {
-  LayoutDashboard, ArrowLeftRight, FileText, Calculator, CreditCard,
-  Wallet, Tag, History, User, LogOut, Menu
-} from "lucide-react";
+import { Link, NavLink } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 
-const nav = [
-  { to: "/dashboard", label: "My Page", icon: LayoutDashboard },
-  { to: "/transfer", label: "Transfer", icon: ArrowLeftRight },
-  { to: "/billing", label: "Create Invoice", icon: FileText },  // Billing page alive
-  { to: "/accounting", label: "Accounting/Tax", icon: Calculator },
-  { to: "/payment-gateway", label: "Payment Gateway", icon: CreditCard },
-  { to: "/wallet", label: "Wallet Creation/Linking", icon: Wallet }, // WalletSetup keeps linking
-  { to: "/transactions", label: "History", icon: History },
-  { to: "/pricing", label: "Pricing/Change Plan", icon: Tag },
-];
+const item = "px-3 py-2 rounded hover:bg-muted transition";
+const active = "bg-muted font-semibold";
 
 export default function Navigation() {
-  const { signOut } = useAuth();
-  const { pathname } = useLocation();
+  const { user, signOut } = useAuth();
 
   return (
-    <Card className="p-3 flex items-center justify-between gap-2">
-      <div className="flex flex-wrap gap-2">
-        {nav.map((item) => {
-          const Icon = item.icon;
-          const active = pathname.startsWith(item.to);
-          return (
-            <Link key={item.to} to={item.to}>
-              <Button variant={active ? "default" : "outline"} className="flex items-center gap-2">
-                <Icon className="h-4 w-4" />
-                {item.label}
-              </Button>
-            </Link>
-          );
-        })}
-      </div>
+    <header className="border-b bg-background">
+      <div className="mx-auto max-w-7xl px-4 py-3 flex items-center justify-between gap-3">
+        <Link to={user ? "/dashboard" : "/"} className="text-lg font-bold">
+          Biz Maze
+        </Link>
 
-      <Popover>
-        <PopoverTrigger asChild>
-          <Button variant="outline" className="flex items-center gap-2">
-            <Menu className="h-4 w-4" />
-            my menu
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent className="w-56">
-          <div className="flex flex-col gap-2">
-            <Link to="/profile">
-              <Button variant="ghost" className="w-full justify-start gap-2">
-                <User className="h-4 w-4" /> Edit Profile
-              </Button>
-            </Link>
-            <Button
-              variant="ghost"
-              className="w-full justify-start gap-2 text-red-600"
-              onClick={async () => { await signOut(); window.location.href = "/"; }}
-            >
-              <LogOut className="h-4 w-4" /> Sign out
-            </Button>
-          </div>
-        </PopoverContent>
-      </Popover>
-    </Card>
+        <nav className="flex items-center gap-1 text-sm">
+          {/* 公開ページ */}
+          <NavLink to="/pricing" className={({isActive})=>`${item} ${isActive?active:""}`}>
+            Pricing
+          </NavLink>
+
+          {/* 認証後メニュー */}
+          {user && (
+            <>
+              <NavLink to="/dashboard" className={({isActive})=>`${item} ${isActive?active:""}`}>
+                Dashboard
+              </NavLink>
+              <NavLink to="/transactions" className={({isActive})=>`${item} ${isActive?active:""}`}>
+                History
+              </NavLink>
+              <NavLink to="/transfer/start" className={({isActive})=>`${item} ${isActive?active:""}`}>
+                Start transfer
+              </NavLink>
+              <NavLink to="/invoice/new" className={({isActive})=>`${item} ${isActive?active:""}`}>
+                Create invoice
+              </NavLink>
+              <NavLink to="/accounting" className={({isActive})=>`${item} ${isActive?active:""}`}>
+                Accounting/Tax
+              </NavLink>
+              <NavLink to="/payment-gateway" className={({isActive})=>`${item} ${isActive?active:""}`}>
+                Payment Gateway
+              </NavLink>
+              <NavLink to="/profile" className={({isActive})=>`${item} ${isActive?active:""}`}>
+                Profile
+              </NavLink>
+              <button onClick={signOut} className={`${item} text-muted-foreground`}>
+                Sign out
+              </button>
+            </>
+          )}
+
+          {!user && (
+            <>
+              <NavLink to="/auth/login" className={({isActive})=>`${item} ${isActive?active:""}`}>
+                Sign in
+              </NavLink>
+              <NavLink to="/auth/register" className={({isActive})=>`${item} ${isActive?active:""}`}>
+                Create account
+              </NavLink>
+            </>
+          )}
+        </nav>
+      </div>
+    </header>
   );
 }
