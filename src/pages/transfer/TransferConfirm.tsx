@@ -1,10 +1,11 @@
+// src/pages/transfer/TransferConfirm.tsx
 import { useLocation, useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
 import { useState } from "react";
 
-function TransferConfirm() {
+export default function TransferConfirm() {
   const nav = useNavigate();
   const { state } = useLocation() as { state?: { to: string; amount: number } };
   const to = state?.to ?? "";
@@ -50,5 +51,3 @@ function TransferConfirm() {
     </div>
   );
 }
-
-export default TransferConfirm;
