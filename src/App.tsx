@@ -29,12 +29,15 @@ import TransferScreen2 from '@/pages/transfer/TransferScreen2'
 import TransferScreen2_1 from '@/pages/transfer/TransferScreen2_1'
 import TransferScreen2_2 from '@/pages/transfer/TransferScreen2_2'
 import TransferScreen3 from '@/pages/transfer/TransferScreen3'
+import TransferStart from "@/pages/transfer/TransferStart";
+import ManualTransfer from "@/pages/transfer/ManualTransfer";
+import TransferDone from "@/pages/transfer/TransferDone";
+
+import InvoiceEditor from "@/pages/invoice/InvoiceEditor";
 
 // Accounting
 import AccountingTaxScreen1 from '@/pages/accounting/AccountingTaxScreen1'
-
 import PaymentGateway from "@/pages/PaymentGateway";
-import ManualTransfer from "@/pages/transfer/ManualTransfer";
 
 // Misc
 import NotFound from '@/pages/NotFound'
@@ -100,6 +103,10 @@ export default function App() {
             <Route path="/accounting" element={<AccountingTaxScreen1 />} />
             <Route path="/payment-gateway" element={<PaymentGateway />} />
             <Route path="/transfer/manual" element={<ManualTransfer />} />
+            <Route path="/invoice/new" element={<InvoiceEditor />} />
+            <Route path="/transfer/start" element={<TransferStart />} />
+            <Route path="/transfer/confirm" element={<TransferConfirm />} />
+            <Route path="/transfer/done" element={<TransferDone />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </ErrorBoundary>
