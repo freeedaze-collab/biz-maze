@@ -40,40 +40,22 @@ export default function InvoiceEditor() {
   const [tax, setTax] = useState<number>(0);
   const [notes, setNotes] = useState("");
 
-  const subtotal = useMemo(() => items.reduce((s,i)=>s + (Number(i.qty)||0)*(Number(i.unit_price)||0), 0), [items]);
+  const subtotal = useMemo(() =>
+    items.reduce((s,i)=>s + (Number(i.qty)||0)*(Number(i.unit_price)||0), 0),
+  [items]);
   const total = useMemo(()=> subtotal + (Number(tax)||0), [subtotal, tax]);
 
   useEffect(() => {
     (async () => {
       if (!user) return;
-      const { data: cs } = await supabase.from("companies").select("*").order("created_at", { ascending: false });
-      const { data: cls } = await supabase.from("clients").select("*").order("created_at", { ascending: false });
+      const [{ data: cs }, { data: cls }] = await Promise.all([
+        supabase.from("companies").select("*").order("created_at", { ascending: false }),
+        supabase.from("clients").select("*").order("created_at", { ascending: false }),
+      ]);
       setCompanies(cs || []);
       setClients(cls || []);
     })();
   }, [user]);
-
-  const saveCompany = async () => {
-    if (!user || !cName.trim()) return;
-    const { data, error } = await supabase.from("companies").insert({
-      user_id: user.id, name: cName, email: cEmail, address: cAddr, tax_id: cTaxId
-    }).select().single();
-    if (error) return alert(error.message);
-    setCompanies([data as any, ...companies]);
-    setCompanyId((data as any).id);
-    alert("Your company saved.");
-  };
-
-  const saveClient = async () => {
-    if (!user || !clName.trim()) return;
-    const { data, error } = await supabase.from("clients").insert({
-      user_id: user.id, name: clName, email: clEmail, address: clAddr
-    }).select().single();
-    if (error) return alert(error.message);
-    setClients([data as any, ...clients]);
-    setClientId((data as any).id);
-    alert("Client saved.");
-  };
 
   const pickCompany = (id: string) => {
     setCompanyId(id);
@@ -86,28 +68,41 @@ export default function InvoiceEditor() {
     if (c) { setClName(c.name||""); setClEmail(c.email||""); setClAddr(c.address||""); }
   };
 
-  const addRow = ()=> setItems([...items, { desc:"", qty:1, unit_price:0 }]);
+  const saveCompany = async () => {
+    if (!user || !cName.trim()) return alert("Company name is required.");
+    const { data, error } = await supabase.from("companies").insert({
+      user_id: user.id, name: cName, email: cEmail, address: cAddr, tax_id: cTaxId
+    }).select().single();
+    if (error) return alert(error.message);
+    setCompanies([data as any, ...companies]);
+    setCompanyId((data as any).id);
+    alert("Your company saved.");
+  };
+
+  const saveClient = async () => {
+    if (!user || !clName.trim()) return alert("Client name is required.");
+    const { data, error } = await supabase.from("clients").insert({
+      user_id: user.id, name: clName, email: clEmail, address: clAddr
+    }).select().single();
+    if (error) return alert(error.message);
+    setClients([data as any, ...clients]);
+    setClientId((data as any).id);
+    alert("Client saved.");
+  };
+
+  const addRow  = ()=> setItems([...items, { desc:"", qty:1, unit_price:0 }]);
   const editRow = (i:number, patch: Partial<Item>)=>{
     const next=[...items]; next[i] = { ...next[i], ...patch }; setItems(next);
   };
-  const delRow = (i:number)=> setItems(items.filter((_,k)=>k!==i));
+  const delRow  = (i:number)=> setItems(items.filter((_,k)=>k!==i));
 
   const saveInvoice = async () => {
     if (!user) return;
-    if (!companyId || !clientId) return alert("Select or save Your company / Your client first.");
-
+    if (!companyId || !clientId) return alert("Select or save Your company and Your client first.");
     const payload = {
-      user_id: user.id,
-      company_id: companyId,
-      client_id: clientId,
-      number, currency,
-      issue_date: issueDate,
-      due_date: dueDate,
-      items,
-      subtotal,
-      tax,
-      total,
-      notes
+      user_id: user.id, company_id: companyId, client_id: clientId,
+      number, currency, issue_date: issueDate, due_date: dueDate,
+      items, subtotal, tax, total, notes
     };
     const { error } = await supabase.from("invoices").insert(payload);
     if (error) return alert(error.message);
@@ -118,6 +113,7 @@ export default function InvoiceEditor() {
     <div className="mx-auto max-w-6xl p-6 space-y-6">
       <h1 className="text-2xl font-bold">Create Invoice</h1>
 
+      {/* 上段: 左右ペイン（Your company / Your client） */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Your company */}
         <Card>
@@ -190,7 +186,7 @@ export default function InvoiceEditor() {
         </Card>
       </div>
 
-      {/* Invoice meta */}
+      {/* 下段: 請求書メタ + 明細 */}
       <Card>
         <CardHeader><CardTitle>Invoice</CardTitle></CardHeader>
         <CardContent className="space-y-4">
