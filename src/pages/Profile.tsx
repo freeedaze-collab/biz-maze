@@ -23,7 +23,7 @@ export default function Profile() {
       const { data, error } = await supabase
         .from("profiles")
         .select("display_name, country, entity_type")
-        .eq("id", user.id) // 既存の「id = auth.users.id」運用を維持
+        .eq("id", user.id) // ← 既存運用( profiles.id = auth.users.id )に合わせます
         .maybeSingle();
       if (!error && data) {
         setDisplayName(data.display_name ?? "");
@@ -38,13 +38,13 @@ export default function Profile() {
     setSaving(true);
     const { error } = await supabase.from("profiles").upsert(
       {
-        id: user.id, // 既存運用に合わせる
+        id: user.id, // ← 既存運用どおり
         display_name: displayName,
         country,
         entity_type: entityType,
         updated_at: new Date().toISOString(),
       },
-      { onConflict: "id" }
+      { onConflict: "id" } // ← 保存失敗を防ぐ
     );
     setSaving(false);
     if (error) {
