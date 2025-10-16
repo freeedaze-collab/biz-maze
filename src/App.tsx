@@ -94,6 +94,13 @@ export default function App() {
             {/* Back-compat & 404 */}
             <Route path="/home" element={<Navigate to="/dashboard" replace />} />
             <Route path="*" element={<NotFound />} />
+            <Route path="/" element={<Navigate to="/pricing" replace />} />
+            <Route path="/pricing" element={<Pricing />} />
+            <Route path="/profile" element={<Profile />} />
+            <Route path="/accounting" element={<AccountingTaxScreen1 />} />
+            <Route path="/payment-gateway" element={<PaymentGateway />} />
+            <Route path="/transfer/manual" element={<ManualTransfer />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </ErrorBoundary>
       </main>
