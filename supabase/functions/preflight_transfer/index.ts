@@ -1,73 +1,132 @@
-// Supabase Edge Function (Deno)
-// 目的: 送金前の安全チェック（フォーマット/桁/自分のアドレスか/残高 足りるか）
-// POST { from, to, amountEth } を受け取り、OK なら { ok:true } を返す
-// ※ 実際の送金はフロントの MetaMask で実行します
+// supabase/functions/preflight_transfer/index.ts
+import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
 
-import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { ethers } from "npm:ethers@6";
-
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
-const ETH_RPC_URL = Deno.env.get("ETH_RPC_URL") || ""; // 任意（無くても動きます）
-
-function J(body: unknown, init: number | ResponseInit = 200) {
-  const resInit = typeof init === "number" ? { status: init } : init;
-  return new Response(JSON.stringify(body), {
-    ...resInit,
-    headers: { "content-type": "application/json", ...(resInit as ResponseInit).headers },
-  });
+/**
+ * 目的:
+ * - 送金前の概算手数料 (fee_usd) を返す
+ * - 受取アドレス `to` の実在性チェック (exists)：
+ *    - code != '0x' (コントラクトあり) OR
+ *    - balance > 0 OR
+ *    - txCount > 0
+ *   のいずれかで true
+ *
+ * 環境変数 (プロジェクトの Edge Functions > Settings > Environment variables):
+ * - RPC_URL : EVM JSON-RPC のエンドポイント (Polygon/ETH など)
+ * - FEE_USD_FALLBACK : 見積りができないときのデフォルト (例: "0.35")
+ * - FX_USD_PER_NATIVE (任意): ネイティブ通貨→USD の変換 (例: 1ETH=USD, 1MATIC=USD)。未設定なら概算計算で対応。
+ */
+const cors = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'authorization, content-type, apikey',
 }
 
-const isEthAddress = (v: string) => /^0x[a-fA-F0-9]{40}$/.test(v || "");
-const isPositiveNumber = (s: string) => /^(\d+)(\.\d{1,18})?$/.test(s || ""); // ETH 最大18桁の小数
+const JSON_OK = (obj: Record<string, unknown>, init: ResponseInit = {}) =>
+  new Response(JSON.stringify(obj, null, 2), {
+    headers: { 'content-type': 'application/json; charset=utf-8', ...cors },
+    ...init,
+  })
 
-serve(async (req) => {
-  if (req.method !== "POST") return J({ ok: false, error: "Method not allowed" }, 405);
+type Json = Record<string, unknown> | null
 
-  // ユーザー認証（Authorization: Bearer <access_token> 必須）
-  const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    global: { headers: { Authorization: req.headers.get("Authorization") ?? "" } },
-  });
-  const { data: auth } = await supabase.auth.getUser();
-  if (!auth?.user) return J({ ok: false, error: "Unauthorized" }, 401);
-  const userId = auth.user.id;
+async function rpc(method: string, params: unknown[]): Promise<Json> {
+  const RPC_URL = Deno.env.get('RPC_URL')
+  if (!RPC_URL) return { error: 'RPC_URL not configured' }
+
+  const body = { jsonrpc: '2.0', id: 1, method, params }
+  const res = await fetch(RPC_URL, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) return { error: `rpc ${method} failed: ${res.status}` }
+  const json = await res.json()
+  return json?.result ?? null
+}
+
+function hexToBn(hex: string | null): bigint {
+  if (!hex || typeof hex !== 'string') return 0n
+  try {
+    return BigInt(hex)
+  } catch {
+    return 0n
+  }
+}
+
+function weiToEth(wei: bigint): number {
+  // 1e18
+  return Number(wei) / 1e18
+}
+
+Deno.serve(async (req) => {
+  // CORS preflight
+  if (req.method === 'OPTIONS') {
+    return new Response(null, { headers: cors })
+  }
 
   try {
-    const body = await req.json().catch(() => ({}));
-    const from = (body.from || "").trim();
-    const to = (body.to || "").trim();
-    const amountEth = (body.amountEth || "").trim();
+    const isGet = req.method === 'GET'
+    const body = isGet ? {} : await req.json().catch(() => ({}))
+    const to = (isGet ? new URL(req.url).searchParams.get('to') : body?.to) as string | null
+    const amount = Number(isGet ? new URL(req.url).searchParams.get('amount') : body?.amount) || 0
+    const checkOnly = !!(isGet ? new URL(req.url).searchParams.get('checkOnly') : body?.checkOnly)
 
-    if (!isEthAddress(from)) return J({ ok: false, error: "Invalid 'from' address." }, 400);
-    if (!isEthAddress(to)) return J({ ok: false, error: "Invalid 'to' address." }, 400);
-    if (!isPositiveNumber(amountEth)) return J({ ok: false, error: "Invalid amount format." }, 400);
+    // ==== 実在性チェック ====
+    let exists = false
+    if (to && /^0x[0-9a-fA-F]{40}$/.test(to)) {
+      const [code, balanceHex, txCountHex] = await Promise.all([
+        rpc('eth_getCode', [to, 'latest']),            // string | '0x'
+        rpc('eth_getBalance', [to, 'latest']),         // hex
+        rpc('eth_getTransactionCount', [to, 'latest']) // hex
+      ])
 
-    // profiles.primary_wallet が自分の from と一致していること（簡易オーナー確認）
-    const { data: prof, error: profErr } = await supabase
-      .from("profiles")
-      .select("primary_wallet")
-      .eq("user_id", userId)
-      .single();
-    if (profErr) return J({ ok: false, error: "Profile not found." }, 404);
-    if (!prof?.primary_wallet || prof.primary_wallet.toLowerCase() !== from.toLowerCase()) {
-      return J({ ok: false, error: "Sender address is not your verified wallet." }, 400);
+      const balance = hexToBn(balanceHex as string | null)
+      const txCount = hexToBn(txCountHex as string | null)
+      const hasCode = !!(typeof code === 'string' && code !== '0x')
+
+      exists = hasCode || balance > 0n || txCount > 0n
+    } else {
+      exists = false
     }
 
-    // 残高チェック（ETH_RPC_URL があれば）
-    if (ETH_RPC_URL) {
-      try {
-        const provider = new ethers.JsonRpcProvider(ETH_RPC_URL);
-        const bal = await provider.getBalance(from);
-        const wei = ethers.parseUnits(amountEth, 18);
-        if (bal < wei) return J({ ok: false, error: "Insufficient balance." }, 400);
-      } catch {
-        // RPCが無くても機能は継続
+    // チェックのみモード（バリデーション用）
+    if (checkOnly) {
+      return JSON_OK({ ok: true, exists })
+    }
+
+    // ==== 概算手数料 ====
+    // できれば最新 gasPrice と標準 gasLimit を使って概算
+    let feeUsd = Number(Deno.env.get('FEE_USD_FALLBACK') ?? '0.35') // フォールバック
+    try {
+      const gasPriceHex = await rpc('eth_gasPrice', [])
+      const gasPriceWei = hexToBn(gasPriceHex as string | null)      // wei/gas
+      // シンプル送金想定: 21,000 gas（チェーンにより+α）
+      const gasLimit = 21_000n
+      const feeWei = gasPriceWei * gasLimit
+      const feeNative = weiToEth(feeWei) // ETH/MATIC など
+
+      // 簡易換算: 固定レート or フォールバック
+      const FX = Number(Deno.env.get('FX_USD_PER_NATIVE') ?? '0') // 未指定なら 0
+      if (FX > 0) {
+        feeUsd = feeNative * FX
+      } else {
+        // レート不明ならヒューリスティック（ETH: 1 native ~ $2000, MATIC: 1 ~ $0.6 等）
+        // ガス代は通常ごく小さいので固定フォールバックのほうが安定
       }
+      // 小数丸め
+      feeUsd = Math.max(0, Number(feeUsd.toFixed(4)))
+    } catch {
+      // noop（フォールバックを使う）
     }
 
-    return J({ ok: true });
-  } catch (e) {
-    return J({ ok: false, error: `Unhandled: ${e?.message ?? e}` }, 500);
+    return JSON_OK({
+      ok: true,
+      to,
+      amount,
+      exists,
+      fee_usd: feeUsd,
+    })
+  } catch (e: any) {
+    return JSON_OK({ ok: false, error: String(e?.message || e) }, { status: 500 })
   }
-});
+})
