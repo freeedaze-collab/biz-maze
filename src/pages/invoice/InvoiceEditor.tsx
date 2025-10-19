@@ -10,8 +10,9 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 
 type Company = { id: string; name: string; email?: string; address?: string; tax_id?: string };
-type Client = { id: string; name: string; email?: string; address?: string };
-type Item = { desc: string; qty: number; unit_price: number };
+type Client  = { id: string; name: string; email?: string; address?: string };
+type Item    = { desc: string; qty: number; unit_price: number };
+type Wallet  = { address: string };
 
 export default function InvoiceEditor() {
   const { user } = useAuth();
@@ -21,15 +22,17 @@ export default function InvoiceEditor() {
   const [companyId, setCompanyId] = useState<string>("");
   const [cName, setCName] = useState("");
   const [cEmail, setCEmail] = useState("");
-  const [cAddr, setCAddr] = useState("");
+  const [cAddr, setCAddr] = useState(""); // postal address
   const [cTaxId, setCTaxId] = useState("");
+  const [companyWallets, setCompanyWallets] = useState<Wallet[]>([]);
+  const [companyWalletAddress, setCompanyWalletAddress] = useState<string>("");
 
-  // Your client
+  // Your client（UIから address 入力は削除。型は温存）
   const [clients, setClients] = useState<Client[]>([]);
   const [clientId, setClientId] = useState<string>("");
   const [clName, setClName] = useState("");
   const [clEmail, setClEmail] = useState("");
-  const [clAddr, setClAddr] = useState("");
+  const [clAddr, setClAddr] = useState(""); // ← 見せないが既存値は保持（選択時にロード）
 
   // Invoice meta
   const [number, setNumber] = useState("");
@@ -40,32 +43,42 @@ export default function InvoiceEditor() {
   const [tax, setTax] = useState<number>(0);
   const [notes, setNotes] = useState("");
 
-  const subtotal = useMemo(() =>
-    items.reduce((s,i)=>s + (Number(i.qty)||0)*(Number(i.unit_price)||0), 0),
-  [items]);
-  const total = useMemo(()=> subtotal + (Number(tax)||0), [subtotal, tax]);
+  const subtotal = useMemo(() => items.reduce((s,i)=>s + (Number(i.qty)||0)*(Number(i.unit_price)||0), 0), [items]);
+  const total    = useMemo(()=> subtotal + (Number(tax)||0), [subtotal, tax]);
 
   useEffect(() => {
     (async () => {
       if (!user) return;
-      const [{ data: cs }, { data: cls }] = await Promise.all([
-        supabase.from("companies").select("*").order("created_at", { ascending: false }),
-        supabase.from("clients").select("*").order("created_at", { ascending: false }),
+      const [{ data: cs }, { data: cls }, { data: ws }] = await Promise.all([
+        supabase.from("companies" ).select("*").order("created_at", { ascending: false }),
+        supabase.from("clients"   ).select("*").order("created_at", { ascending: false }),
+        supabase.from("wallets"   ).select("address").eq("user_id", user.id).order("created_at", { ascending: false }),
       ]);
       setCompanies(cs || []);
-      setClients(cls || []);
+      setClients  (cls || []);
+      setCompanyWallets((ws || []) as Wallet[]);
+      if ((ws || []).length > 0) setCompanyWalletAddress((ws as any)[0].address);
     })();
   }, [user]);
 
   const pickCompany = (id: string) => {
     setCompanyId(id);
     const c = companies.find(x=>x.id===id);
-    if (c) { setCName(c.name||""); setCEmail(c.email||""); setCAddr(c.address||""); setCTaxId((c as any).tax_id||""); }
+    if (c) {
+      setCName (c.name||"");
+      setCEmail(c.email||"");
+      setCAddr (c.address||"");
+      setCTaxId((c as any).tax_id||"");
+    }
   };
   const pickClient = (id: string) => {
     setClientId(id);
     const c = clients.find(x=>x.id===id);
-    if (c) { setClName(c.name||""); setClEmail(c.email||""); setClAddr(c.address||""); }
+    if (c) {
+      setClName (c.name||"");
+      setClEmail(c.email||"");
+      setClAddr (c.address||""); // ← UIに出さないが内部で保持
+    }
   };
 
   const saveCompany = async () => {
@@ -81,8 +94,9 @@ export default function InvoiceEditor() {
 
   const saveClient = async () => {
     if (!user || !clName.trim()) return alert("Client name is required.");
+    // address は UI入力せず、既存値（選択時ロード分）をそのまま温存
     const { data, error } = await supabase.from("clients").insert({
-      user_id: user.id, name: clName, email: clEmail, address: clAddr
+      user_id: user.id, name: clName, email: clEmail, address: clAddr || null
     }).select().single();
     if (error) return alert(error.message);
     setClients([data as any, ...clients]);
@@ -99,8 +113,12 @@ export default function InvoiceEditor() {
   const saveInvoice = async () => {
     if (!user) return;
     if (!companyId || !clientId) return alert("Select or save Your company and Your client first.");
+    if (!companyWalletAddress)  return alert("Select payout wallet (Your company address).");
     const payload = {
-      user_id: user.id, company_id: companyId, client_id: clientId,
+      user_id: user.id,
+      company_id: companyId,
+      client_id: clientId,
+      company_wallet_address: companyWalletAddress,
       number, currency, issue_date: issueDate, due_date: dueDate,
       items, subtotal, tax, total, notes
     };
@@ -130,6 +148,7 @@ export default function InvoiceEditor() {
                 </SelectContent>
               </Select>
             </div>
+
             <div className="grid grid-cols-1 gap-3">
               <div>
                 <Label>Name</Label>
@@ -140,19 +159,38 @@ export default function InvoiceEditor() {
                 <Input value={cEmail} onChange={e=>setCEmail(e.target.value)} placeholder="contact@company.com"/>
               </div>
               <div>
-                <Label>Address</Label>
+                <Label>Postal address</Label>
                 <Textarea value={cAddr} onChange={e=>setCAddr(e.target.value)} rows={3}/>
               </div>
               <div>
                 <Label>Tax ID</Label>
                 <Input value={cTaxId} onChange={e=>setCTaxId(e.target.value)} placeholder="(optional)"/>
               </div>
-              <Button onClick={saveCompany}>Save company</Button>
             </div>
+
+            {/* 連携済みウォレットから選択 */}
+            <div className="space-y-2">
+              <Label>Payout wallet (Your company address)</Label>
+              <Select value={companyWalletAddress} onValueChange={setCompanyWalletAddress}>
+                <SelectTrigger><SelectValue placeholder="Select wallet"/></SelectTrigger>
+                <SelectContent>
+                  {companyWallets.map(w=>(
+                    <SelectItem key={w.address} value={w.address}>{w.address}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {!companyWallets.length && (
+                <div className="text-xs text-muted-foreground">
+                  No linked wallets. Please link a wallet on the Wallets page.
+                </div>
+              )}
+            </div>
+
+            <Button onClick={saveCompany}>Save company</Button>
           </CardContent>
         </Card>
 
-        {/* Your client */}
+        {/* Your client（住所入力は削除） */}
         <Card>
           <CardHeader><CardTitle>Your client</CardTitle></CardHeader>
           <CardContent className="space-y-4">
@@ -167,6 +205,7 @@ export default function InvoiceEditor() {
                 </SelectContent>
               </Select>
             </div>
+
             <div className="grid grid-cols-1 gap-3">
               <div>
                 <Label>Name</Label>
@@ -176,12 +215,10 @@ export default function InvoiceEditor() {
                 <Label>Email</Label>
                 <Input value={clEmail} onChange={e=>setClEmail(e.target.value)} placeholder="client@example.com"/>
               </div>
-              <div>
-                <Label>Address</Label>
-                <Textarea value={clAddr} onChange={e=>setClAddr(e.target.value)} rows={3}/>
-              </div>
-              <Button onClick={saveClient}>Save client</Button>
+              {/* Postal address は UI から外す（項目は温存） */}
             </div>
+
+            <Button onClick={saveClient}>Save client</Button>
           </CardContent>
         </Card>
       </div>
@@ -242,14 +279,14 @@ export default function InvoiceEditor() {
                       </td>
                       <td className="py-2 text-right">{((it.qty||0)*(it.unit_price||0)).toLocaleString()}</td>
                       <td className="py-2 text-right">
-                        <Button variant="ghost" onClick={()=>delRow(i)}>Del</Button>
+                        <Button variant="ghost" onClick={()=>setItems(items.filter((_,k)=>k!==i))}>Del</Button>
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-            <Button variant="outline" onClick={addRow}>+ Add item</Button>
+            <Button variant="outline" onClick={()=>setItems([...items, { desc:"", qty:1, unit_price:0 }])}>+ Add item</Button>
           </div>
 
           {/* totals */}
