@@ -25,14 +25,14 @@ export default function InvoiceEditor() {
   const [cAddr, setCAddr] = useState(""); // postal address
   const [cTaxId, setCTaxId] = useState("");
   const [companyWallets, setCompanyWallets] = useState<Wallet[]>([]);
-  const [companyWalletAddress, setCompanyWalletAddress] = useState<string>("");
+  const [companyWalletAddress, setCompanyWalletAddress] = useState<string>(""); // ✅ 連携ウォレットから選択
 
-  // Your client（UIから address 入力は削除。型は温存）
+  // Your client
   const [clients, setClients] = useState<Client[]>([]);
   const [clientId, setClientId] = useState<string>("");
   const [clName, setClName] = useState("");
   const [clEmail, setClEmail] = useState("");
-  const [clAddr, setClAddr] = useState(""); // ← 見せないが既存値は保持（選択時にロード）
+  const [clAddr, setClAddr] = useState("");
 
   // Invoice meta
   const [number, setNumber] = useState("");
@@ -77,7 +77,7 @@ export default function InvoiceEditor() {
     if (c) {
       setClName (c.name||"");
       setClEmail(c.email||"");
-      setClAddr (c.address||""); // ← UIに出さないが内部で保持
+      setClAddr (c.address||"");
     }
   };
 
@@ -94,9 +94,8 @@ export default function InvoiceEditor() {
 
   const saveClient = async () => {
     if (!user || !clName.trim()) return alert("Client name is required.");
-    // address は UI入力せず、既存値（選択時ロード分）をそのまま温存
     const { data, error } = await supabase.from("clients").insert({
-      user_id: user.id, name: clName, email: clEmail, address: clAddr || null
+      user_id: user.id, name: clName, email: clEmail, address: clAddr
     }).select().single();
     if (error) return alert(error.message);
     setClients([data as any, ...clients]);
@@ -118,7 +117,7 @@ export default function InvoiceEditor() {
       user_id: user.id,
       company_id: companyId,
       client_id: clientId,
-      company_wallet_address: companyWalletAddress,
+      company_wallet_address: companyWalletAddress, // ✅ 保存
       number, currency, issue_date: issueDate, due_date: dueDate,
       items, subtotal, tax, total, notes
     };
@@ -168,7 +167,7 @@ export default function InvoiceEditor() {
               </div>
             </div>
 
-            {/* 連携済みウォレットから選択 */}
+            {/* ✅ 連携済みウォレットから選択 */}
             <div className="space-y-2">
               <Label>Payout wallet (Your company address)</Label>
               <Select value={companyWalletAddress} onValueChange={setCompanyWalletAddress}>
@@ -190,7 +189,7 @@ export default function InvoiceEditor() {
           </CardContent>
         </Card>
 
-        {/* Your client（住所入力は削除） */}
+        {/* Your client */}
         <Card>
           <CardHeader><CardTitle>Your client</CardTitle></CardHeader>
           <CardContent className="space-y-4">
@@ -215,7 +214,10 @@ export default function InvoiceEditor() {
                 <Label>Email</Label>
                 <Input value={clEmail} onChange={e=>setClEmail(e.target.value)} placeholder="client@example.com"/>
               </div>
-              {/* Postal address は UI から外す（項目は温存） */}
+              <div>
+                <Label>Postal address</Label>
+                <Textarea value={clAddr} onChange={e=>setClAddr(e.target.value)} rows={3}/>
+              </div>
             </div>
 
             <Button onClick={saveClient}>Save client</Button>
@@ -279,7 +281,7 @@ export default function InvoiceEditor() {
                       </td>
                       <td className="py-2 text-right">{((it.qty||0)*(it.unit_price||0)).toLocaleString()}</td>
                       <td className="py-2 text-right">
-                        <Button variant="ghost" onClick={()=>setItems(items.filter((_,k)=>k!==i))}>Del</Button>
+                        <Button variant="ghost" onClick={()=>delRow(i)}>Del</Button>
                       </td>
                     </tr>
                   ))}
