@@ -16,16 +16,17 @@ export default function Navigation() {
         </Link>
 
         <nav className="flex items-center gap-1 text-sm">
-          {/* 公開ページ */}
           <NavLink to="/pricing" className={({isActive})=>`${item} ${isActive?active:""}`}>
             Pricing
           </NavLink>
 
-          {/* 認証後メニュー */}
           {user && (
             <>
               <NavLink to="/dashboard" className={({isActive})=>`${item} ${isActive?active:""}`}>
                 Dashboard
+              </NavLink>
+              <NavLink to="/wallet" className={({isActive})=>`${item} ${isActive?active:""}`}>
+                Wallets
               </NavLink>
               <NavLink to="/transactions" className={({isActive})=>`${item} ${isActive?active:""}`}>
                 History
