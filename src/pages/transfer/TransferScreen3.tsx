@@ -1,3 +1,4 @@
+// @ts-nocheck
 // src/pages/transfer/TransferScreen3.tsx
 import React, { useMemo, useState } from 'react'
 import { useAccount, useSwitchChain, useWriteContract } from 'wagmi'

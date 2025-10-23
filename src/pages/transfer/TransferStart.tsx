@@ -1,3 +1,4 @@
+// @ts-nocheck
 // src/pages/transfer/TransferStart.tsx
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";

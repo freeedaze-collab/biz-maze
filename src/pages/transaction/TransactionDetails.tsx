@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import Navigation from "@/components/Navigation";

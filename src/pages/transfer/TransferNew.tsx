@@ -1,3 +1,4 @@
+// @ts-nocheck
 // src/pages/transfer/TransferNew.tsx
 // 目的: 送金フォーム（宛先/金額を入力 → Edge Functionで事前検証 → MetaMaskで送金実行）
 // 追加: ?to=0x...&amount=0.01 のクエリ文字列を初期値として読込

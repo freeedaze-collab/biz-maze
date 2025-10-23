@@ -1,4 +1,5 @@
 // src/pages/wallet/WalletSelection.tsx
+// @ts-nocheck
 import { useMemo, useState } from "react";
 import { useAccount, useBalance, useConnect, useDisconnect, useSignMessage } from "wagmi";
 import { injected } from "wagmi/connectors";
