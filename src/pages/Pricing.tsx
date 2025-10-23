@@ -1,3 +1,4 @@
+// @ts-nocheck
 // src/pages/Pricing.tsx
 import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";

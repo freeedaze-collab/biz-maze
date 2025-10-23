@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
-import { supabase } from '@/integrations/supabase/client';
+import { supabase } from '../integrations/supabase/client';
 import { useAuth } from './useAuth';
-import { useToast } from '@/hooks/use-toast';
+import { useToast } from './use-toast';
 
 export interface Invoice {
   id: string;
@@ -36,7 +36,7 @@ export function useInvoiceStatus() {
             table: 'invoices',
             filter: `user_id=eq.${user.id}`
           }, 
-          (payload) => {
+          (payload: any) => {
             console.log('Invoice update received:', payload);
             handleInvoiceUpdate(payload.new as Invoice);
           }

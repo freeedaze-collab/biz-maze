@@ -1,6 +1,6 @@
 // src/hooks/useProfile.ts
 import { useEffect, useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import { supabase } from "../integrations/supabase/client";
 
 export type Profile = {
   id?: string;

@@ -1,7 +1,7 @@
 // src/hooks/useWallet.tsx
 import { useAccount, useDisconnect, useConnect, useSignMessage } from 'wagmi'
 import { getAddress } from 'viem'
-import { supabase } from '@/lib/supabaseClient'
+import { supabase } from '../lib/supabaseClient'
 
 type Options = {
   requireAuth?: boolean // Supabaseログイン必須にするか
