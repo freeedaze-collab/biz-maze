@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { Link } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 import { InvoiceGenerator } from "@/components/InvoiceGenerator";

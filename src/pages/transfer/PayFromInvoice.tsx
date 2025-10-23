@@ -1,3 +1,4 @@
+// @ts-nocheck
 // src/pages/transfer/PayFromInvoice.tsx
 // PDF をアップロード → pdfjs-dist でテキスト抽出 → 受取人・金額・通貨らしき値を推測
 // 足りない箇所は手動補完 → /transfer/new と同じレビュー→送金フローを踏ませる

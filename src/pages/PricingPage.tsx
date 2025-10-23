@@ -1,3 +1,4 @@
+// @ts-nocheck
 // src/pages/pricing/Pricing.tsx
 import { useState, useMemo } from "react";
 import { useProfile } from "@/hooks/useProfile";

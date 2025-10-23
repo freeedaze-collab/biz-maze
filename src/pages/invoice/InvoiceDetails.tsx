@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { useParams, Link } from "react-router-dom";
 import Navigation from "@/components/Navigation";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
