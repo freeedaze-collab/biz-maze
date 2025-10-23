@@ -2,11 +2,17 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Mail, Lock, Eye, EyeOff, ArrowLeft } from 'lucide-react';
 
 export default function Login() {
   const navigate = useNavigate();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -37,60 +43,89 @@ export default function Login() {
   const disabled = busy || !email || !password;
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-6">
-      <div className="w-full max-w-sm space-y-5">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-bold">Sign in</h1>
-          <p className="text-sm text-gray-500">Use your email and password to continue.</p>
+    <div className="min-h-screen bg-background flex items-center justify-center p-6 relative overflow-hidden">
+      {/* Background gradient effect */}
+      <div className="absolute inset-0 bg-gradient-to-br from-primary/5 via-background to-accent/5 -z-10" />
+      
+      <div className="w-full max-w-md">
+        <div className="mb-6">
+          <Link to="/" className="inline-flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors">
+            <ArrowLeft className="h-4 w-4" />
+            Back to Home
+          </Link>
         </div>
 
-        <div className="space-y-3">
-          <div>
-            <label className="block text-sm text-gray-600 mb-1">Email</label>
-            <input
-              type="email"
-              autoComplete="email"
-              className="w-full border rounded px-3 py-2"
-              placeholder="you@example.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value.trim())}
-            />
-          </div>
-          <div>
-            <label className="block text-sm text-gray-600 mb-1">Password</label>
-            <input
-              type="password"
-              autoComplete="current-password"
-              className="w-full border rounded px-3 py-2"
-              placeholder="••••••••"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-          </div>
+        <Card className="shadow-elegant border-border/50">
+          <CardHeader className="text-center space-y-2">
+            <CardTitle className="text-3xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
+              Welcome Back
+            </CardTitle>
+            <CardDescription>
+              Sign in to access your account
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            <form onSubmit={(e) => { e.preventDefault(); onLogin(); }} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="email">Email</Label>
+                <div className="relative">
+                  <Mail className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    id="email"
+                    type="email"
+                    autoComplete="email"
+                    placeholder="you@example.com"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value.trim())}
+                    className="pl-10"
+                    required
+                  />
+                </div>
+              </div>
 
-          <button
-            className="w-full px-4 py-2 rounded bg-black text-white disabled:opacity-50"
-            onClick={onLogin}
-            disabled={disabled}
-          >
-            {busy ? 'Signing in…' : 'Sign in'}
-          </button>
+              <div className="space-y-2">
+                <Label htmlFor="password">Password</Label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    id="password"
+                    type={showPassword ? "text" : "password"}
+                    autoComplete="current-password"
+                    placeholder="••••••••"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="pl-10 pr-10"
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-1/2 transform -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
+              </div>
 
-          {err && <div className="text-red-600 text-sm whitespace-pre-wrap">{err}</div>}
-        </div>
+              {err && (
+                <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-sm">
+                  {err}
+                </div>
+              )}
 
-        <div className="text-sm text-gray-600">
-          <span className="mr-1">No account?</span>
-          <Link className="underline" to="/auth/register">Create one</Link>
-        </div>
+              <Button type="submit" className="w-full" variant="premium" disabled={disabled}>
+                {busy ? 'Signing in...' : 'Sign in'}
+              </Button>
+            </form>
 
-        {/* 開発補助：環境変数警告 */}
-        {!import.meta.env.VITE_SUPABASE_URL ||
-         !import.meta.env.VITE_SUPABASE_ANON_KEY ? (
-          <div className="text-xs rounded bg-red-50 text-red-700 p-3">
-            Missing <code>VITE_SUPABASE_URL</code> or <code>VITE_SUPABASE_ANON_KEY</code>. Check your <code>.env</code>.
-          </div>
-        ) : null}
+            <div className="text-center text-sm">
+              <span className="text-muted-foreground">Don't have an account? </span>
+              <Link to="/auth/register" className="text-primary hover:underline font-semibold">
+                Create account
+              </Link>
+            </div>
+          </CardContent>
+        </Card>
       </div>
     </div>
   );

@@ -3,16 +3,16 @@
 import { Link, NavLink } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 
-const item = "px-4 py-2 rounded-lg hover:bg-muted transition-all duration-200 font-medium";
-const active = "bg-primary text-primary-foreground hover:bg-primary/90";
+const item = "px-4 py-2 rounded-lg hover:bg-muted transition-all duration-300 font-medium hover:scale-105";
+const active = "bg-gradient-to-r from-primary to-accent text-primary-foreground shadow-md";
 
 export default function Navigation() {
   const { user, signOut } = useAuth();
 
   return (
-    <header className="border-b bg-background/95 backdrop-blur-sm sticky top-0 z-50 shadow-sm">
+    <header className="border-b border-border/50 bg-background/95 backdrop-blur-md sticky top-0 z-50 shadow-md">
       <div className="mx-auto max-w-7xl px-4 py-4 flex items-center justify-between gap-3">
-        <Link to={user ? "/dashboard" : "/"} className="text-xl font-bold text-primary hover:text-primary/80 transition-colors">
+        <Link to={user ? "/dashboard" : "/"} className="text-xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent hover:opacity-80 transition-opacity">
           Biz Maze
         </Link>
 
