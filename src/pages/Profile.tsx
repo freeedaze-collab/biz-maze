@@ -57,57 +57,77 @@ export default function Profile() {
   };
 
   return (
-    <div className="mx-auto max-w-3xl p-6 space-y-6">
-      <h1 className="text-2xl font-bold">Profile</h1>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>基本情報</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <Label>表示名</Label>
-              <Input value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
-            </div>
-
-            <div>
-              <Label>国</Label>
-              <Select value={country} onValueChange={setCountry}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select country" />
-                </SelectTrigger>
-                <SelectContent>
-                  {["US", "JP", "PH", "GB", "DE", "SG"].map((c) => (
-                    <SelectItem key={c} value={c}>
-                      {c}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div>
-              <Label>区分</Label>
-              <Select value={entityType} onValueChange={(v) => setEntityType(v as EntityType)}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select entity type" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="personal">個人</SelectItem>
-                  <SelectItem value="corporate">法人</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+    <div className="min-h-screen bg-gradient-to-br from-background via-background to-accent/5">
+      <div className="mx-auto max-w-3xl p-6 space-y-8">
+        {/* Header */}
+        <div className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-primary to-accent p-8 text-primary-foreground shadow-elegant">
+          <div className="relative z-10">
+            <h1 className="text-4xl font-bold mb-2">Profile Settings</h1>
+            <p className="text-primary-foreground/90">Manage your account information and preferences</p>
           </div>
+          <div className="absolute -right-8 -bottom-8 w-40 h-40 bg-primary-foreground/10 rounded-full blur-2xl"></div>
+        </div>
 
-          <div className="pt-2">
-            <Button onClick={save} disabled={saving || !user}>
-              {saving ? "Saving..." : "保存"}
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+        <Card className="shadow-lg border-2 hover:border-primary/30 transition-colors">
+          <CardHeader className="border-b bg-gradient-to-r from-card to-primary/5">
+            <CardTitle className="text-2xl flex items-center gap-2">
+              <div className="h-2 w-2 rounded-full bg-primary animate-pulse"></div>
+              基本情報
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-6 pt-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+              <div className="space-y-2">
+                <Label className="text-sm font-semibold text-foreground">表示名</Label>
+                <Input 
+                  value={displayName} 
+                  onChange={(e) => setDisplayName(e.target.value)}
+                  className="border-2 focus:border-primary transition-colors"
+                  placeholder="Enter your display name"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label className="text-sm font-semibold text-foreground">国</Label>
+                <Select value={country} onValueChange={setCountry}>
+                  <SelectTrigger className="border-2 focus:border-primary transition-colors">
+                    <SelectValue placeholder="Select country" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {["US", "JP", "PH", "GB", "DE", "SG"].map((c) => (
+                      <SelectItem key={c} value={c}>
+                        {c}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2 sm:col-span-2">
+                <Label className="text-sm font-semibold text-foreground">区分</Label>
+                <Select value={entityType} onValueChange={(v) => setEntityType(v as EntityType)}>
+                  <SelectTrigger className="border-2 focus:border-primary transition-colors">
+                    <SelectValue placeholder="Select entity type" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="personal">個人</SelectItem>
+                    <SelectItem value="corporate">法人</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="pt-4 flex gap-3">
+              <Button onClick={save} disabled={saving || !user} className="flex-1" size="lg">
+                {saving ? "Saving..." : "保存"}
+              </Button>
+              <Button variant="outline" disabled={saving} className="flex-1" size="lg">
+                Cancel
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }

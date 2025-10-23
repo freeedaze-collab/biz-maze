@@ -61,52 +61,112 @@ export default function TransactionHistory() {
   };
 
   return (
-    <div className="mx-auto max-w-5xl p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Transaction History</h1>
-        <Button onClick={sync} disabled={syncing}>{syncing ? "Syncing..." : "Sync now"}</Button>
-      </div>
-
-      <Card>
-        <CardHeader><CardTitle>Latest Transactions</CardTitle></CardHeader>
-        <CardContent>
-          {loading ? (
-            <div>Loading...</div>
-          ) : rows.length === 0 ? (
-            <div className="text-sm text-muted-foreground">
-              No transactions yet. Link a wallet and press “Sync now” or import CSV into Supabase.
+    <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5">
+      <div className="mx-auto max-w-6xl p-6 space-y-8">
+        {/* Header */}
+        <div className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-primary via-primary to-accent p-8 text-primary-foreground shadow-elegant">
+          <div className="relative z-10 flex items-center justify-between flex-wrap gap-4">
+            <div>
+              <h1 className="text-4xl font-bold mb-2">Transaction History</h1>
+              <p className="text-primary-foreground/90">View all your blockchain transactions</p>
             </div>
-          ) : (
-            <ul className="space-y-2">
-              {rows.map((r) => (
-                <li key={r.id} className="border rounded p-3">
-                  <div className="flex items-center justify-between gap-4">
-                    <div className="text-sm">
-                      <div className="font-mono break-all">
-                        {r.tx_hash.slice(0, 10)}…{r.tx_hash.slice(-8)}
+            <Button 
+              onClick={sync} 
+              disabled={syncing}
+              variant="secondary"
+              size="lg"
+              className="bg-primary-foreground text-primary hover:bg-primary-foreground/90"
+            >
+              {syncing ? "Syncing..." : "Sync Now"}
+            </Button>
+          </div>
+          <div className="absolute -right-10 -bottom-10 w-48 h-48 bg-primary-foreground/10 rounded-full blur-2xl"></div>
+        </div>
+
+        <Card className="shadow-lg border-2">
+          <CardHeader className="border-b bg-gradient-to-r from-card to-primary/5">
+            <CardTitle className="text-2xl">Latest Transactions</CardTitle>
+          </CardHeader>
+          <CardContent className="p-6">
+            {loading ? (
+              <div className="flex items-center justify-center py-12">
+                <div className="flex flex-col items-center gap-3">
+                  <div className="h-12 w-12 rounded-full border-4 border-primary/30 border-t-primary animate-spin"></div>
+                  <p className="text-sm text-muted-foreground">Loading transactions...</p>
+                </div>
+              </div>
+            ) : rows.length === 0 ? (
+              <div className="text-center py-12">
+                <div className="mx-auto w-16 h-16 mb-4 rounded-full bg-muted flex items-center justify-center">
+                  <svg className="w-8 h-8 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                  </svg>
+                </div>
+                <p className="text-lg font-semibold mb-2">No transactions yet</p>
+                <p className="text-sm text-muted-foreground max-w-md mx-auto">
+                  Link a wallet and press "Sync Now" to load your transaction history.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {rows.map((r) => (
+                  <div 
+                    key={r.id} 
+                    className="group border-2 rounded-xl p-4 hover:border-primary/50 hover:shadow-md transition-all duration-300 bg-gradient-to-r from-card to-muted/20"
+                  >
+                    <div className="flex items-center justify-between gap-4">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                            r.direction === 'in' 
+                              ? 'bg-success/10 text-success' 
+                              : r.direction === 'out'
+                              ? 'bg-destructive/10 text-destructive'
+                              : 'bg-muted text-muted-foreground'
+                          }`}>
+                            {r.direction === 'in' ? '↓ Incoming' : r.direction === 'out' ? '↑ Outgoing' : 'Unknown'}
+                          </span>
+                          <span className="text-xs text-muted-foreground">
+                            Chain {r.chain_id ?? "-"}
+                          </span>
+                        </div>
+                        <div className="font-mono text-sm font-medium mb-1 truncate group-hover:text-primary transition-colors">
+                          {r.tx_hash.slice(0, 12)}…{r.tx_hash.slice(-10)}
+                        </div>
+                        <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                          <span>
+                            {r.occurred_at ? new Date(r.occurred_at).toLocaleString() : "-"}
+                          </span>
+                          <span>•</span>
+                          <span className="truncate">
+                            Block {r.block_number ?? "-"}
+                          </span>
+                        </div>
                       </div>
-                      <div className="text-xs text-muted-foreground">
-                        chain: {r.chain_id ?? "-"} · {r.direction ?? "-"} ·{" "}
-                        {r.occurred_at ? new Date(r.occurred_at).toLocaleString() : "-"}
+                      <div className="text-right">
+                        <div className="font-mono text-lg font-bold mb-1">
+                          {r.fiat_value_usd != null ? (
+                            <span className={r.direction === 'in' ? 'text-success' : 'text-foreground'}>
+                              ${r.fiat_value_usd}
+                            </span>
+                          ) : r.value_wei != null ? (
+                            <span className="text-sm">{r.value_wei} wei</span>
+                          ) : (
+                            <span className="text-muted-foreground">-</span>
+                          )}
+                        </div>
+                        <div className="text-xs font-medium text-muted-foreground">
+                          {r.asset_symbol ?? "-"}
+                        </div>
                       </div>
-                      <div className="text-xs text-muted-foreground">
-                        wallet: {r.wallet_address ?? "-"} · block: {r.block_number ?? "-"}
-                      </div>
-                    </div>
-                    <div className="text-right text-sm">
-                      <div className="font-mono">
-                        {r.fiat_value_usd != null ? `$${r.fiat_value_usd}` :
-                         r.value_wei != null ? `${r.value_wei} wei` : "-"}
-                      </div>
-                      <div className="text-xs text-muted-foreground">{r.asset_symbol ?? "-"}</div>
                     </div>
                   </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </CardContent>
-      </Card>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }
