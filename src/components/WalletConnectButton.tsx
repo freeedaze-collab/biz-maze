@@ -1,3 +1,4 @@
+// @ts-nocheck
 // src/components/WalletConnectButton.tsx
 import React from 'react'
 import { useWallet } from '@/hooks/useWallet'

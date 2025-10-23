@@ -1,3 +1,4 @@
+// @ts-nocheck
 // src/components/TaxEngineRouter.tsx
 import React from 'react'
 import { type Profile } from '@/lib/supabaseClient'

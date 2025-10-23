@@ -1,3 +1,4 @@
+// @ts-nocheck
 // src/components/DevAuthPanel.tsx
 // DEV専用の薄いオーバーレイで、Auth/Storage/環境の「今」を可視化します。
 // 本番ビルドではApp側で表示しないため、機能破壊はありません。

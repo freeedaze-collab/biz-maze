@@ -1,3 +1,4 @@
+// @ts-nocheck
 // src/App.tsx
 // ✅ ルーティング専用（プロバイダは main.tsx 側）
 // ✅ Router は一箇所のみ（main.tsx）

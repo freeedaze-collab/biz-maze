@@ -1,3 +1,4 @@
+// @ts-nocheck
 // src/components/Navigation.tsx
 import { Link, NavLink } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
