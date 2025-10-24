@@ -13,6 +13,7 @@ export default function Dashboard() {
       description: "Start manual transfer flow and confirm the payment.",
       link: "/transfer/start",
       variant: "default" as const,
+      color: "bg-primary/10 text-primary group-hover:bg-primary/20",
     },
     {
       icon: FileText,
@@ -20,6 +21,7 @@ export default function Dashboard() {
       description: "Prepare an invoice (save company/client, add line items).",
       link: "/invoice/new",
       variant: "secondary" as const,
+      color: "bg-success/10 text-success group-hover:bg-success/20",
     },
     {
       icon: Calculator,
@@ -27,6 +29,7 @@ export default function Dashboard() {
       description: "Generate journal entries, P/L, trial balance and US tax estimate.",
       link: "/accounting",
       variant: "secondary" as const,
+      color: "bg-accent/10 text-accent group-hover:bg-accent/20",
     },
     {
       icon: History,
@@ -34,6 +37,7 @@ export default function Dashboard() {
       description: "View synchronized on-chain history.",
       link: "/transactions",
       variant: "secondary" as const,
+      color: "bg-warning/10 text-warning group-hover:bg-warning/20",
     },
     {
       icon: DollarSign,
@@ -41,6 +45,7 @@ export default function Dashboard() {
       description: "Check your plan and metered fees.",
       link: "/pricing",
       variant: "secondary" as const,
+      color: "bg-secondary/10 text-secondary-foreground group-hover:bg-secondary/20",
     },
     {
       icon: User,
@@ -48,6 +53,7 @@ export default function Dashboard() {
       description: "Update country and entity type.",
       link: "/profile",
       variant: "secondary" as const,
+      color: "bg-muted text-muted-foreground group-hover:bg-muted/80",
     },
   ];
 
@@ -55,41 +61,41 @@ export default function Dashboard() {
     <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5">
       <div className="mx-auto max-w-7xl p-6 space-y-8">
         {/* Hero Section */}
-        <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-primary via-primary to-accent p-8 md:p-12 text-primary-foreground shadow-elegant">
+        <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-primary via-primary to-accent p-6 md:p-8 text-primary-foreground shadow-glow">
           <div className="relative z-10">
-            <div className="flex items-center gap-3 mb-4">
-              <Wallet className="h-10 w-10" />
-              <h1 className="text-4xl md:text-5xl font-bold">Dashboard</h1>
+            <div className="flex items-center gap-2 mb-3">
+              <Wallet className="h-7 w-7" />
+              <h1 className="text-3xl md:text-4xl font-bold">Dashboard</h1>
             </div>
-            <p className="text-lg md:text-xl text-primary-foreground/90 max-w-2xl">
+            <p className="text-base md:text-lg text-primary-foreground/90 max-w-2xl">
               Welcome back! Manage your finances, track transactions, and access all your financial tools in one place.
             </p>
           </div>
-          <div className="absolute -right-10 -bottom-10 w-64 h-64 bg-primary-foreground/10 rounded-full blur-3xl"></div>
-          <div className="absolute -left-10 -top-10 w-48 h-48 bg-accent/20 rounded-full blur-2xl"></div>
+          <div className="absolute -right-10 -bottom-10 w-48 h-48 bg-primary-foreground/10 rounded-full blur-3xl"></div>
+          <div className="absolute -left-10 -top-10 w-32 h-32 bg-accent/20 rounded-full blur-2xl"></div>
         </div>
 
         {/* Quick Actions Grid */}
         <div>
-          <h2 className="text-2xl font-semibold mb-6 text-foreground">Quick Actions</h2>
-          <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+          <h2 className="text-xl font-semibold mb-4 text-foreground">Quick Actions</h2>
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
             {quickActions.map((action) => {
               const Icon = action.icon;
               return (
-                <Card key={action.title} className="group hover:shadow-lg transition-all duration-300 border-2 hover:border-primary/50 hover:-translate-y-1">
-                  <CardHeader>
-                    <div className="flex items-center gap-3 mb-2">
-                      <div className="p-2 rounded-lg bg-primary/10 group-hover:bg-primary/20 transition-colors">
-                        <Icon className="h-6 w-6 text-primary" />
+                <Card key={action.title} className="group hover:shadow-lg transition-all duration-300 border hover:border-primary/30 hover:-translate-y-1">
+                  <CardHeader className="pb-3">
+                    <div className="flex items-center gap-3">
+                      <div className={`p-2 rounded-lg transition-colors ${action.color}`}>
+                        <Icon className="h-5 w-5" />
                       </div>
-                      <CardTitle className="text-xl">{action.title}</CardTitle>
+                      <CardTitle className="text-lg">{action.title}</CardTitle>
                     </div>
                   </CardHeader>
-                  <CardContent className="space-y-4">
+                  <CardContent className="space-y-3">
                     <p className="text-sm text-muted-foreground leading-relaxed">
                       {action.description}
                     </p>
-                    <Button asChild variant={action.variant} className="w-full group-hover:shadow-md transition-shadow">
+                    <Button asChild variant={action.variant} size="sm" className="w-full group-hover:shadow-md transition-shadow">
                       <Link to={action.link}>
                         {action.variant === "default" ? "Start Now" : "Open"}
                       </Link>
@@ -103,10 +109,12 @@ export default function Dashboard() {
 
         {/* Stats Overview */}
         <div className="grid gap-4 md:grid-cols-3">
-          <Card className="bg-gradient-to-br from-card to-primary/5 border-primary/20">
+          <Card className="bg-gradient-to-br from-card to-primary/5 border-primary/20 hover:shadow-glow transition-shadow">
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium text-muted-foreground">Total Balance</CardTitle>
-              <TrendingUp className="h-4 w-4 text-primary" />
+              <div className="p-2 rounded-lg bg-primary/10">
+                <TrendingUp className="h-4 w-4 text-primary" />
+              </div>
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold text-foreground">$0.00</div>
@@ -114,10 +122,12 @@ export default function Dashboard() {
             </CardContent>
           </Card>
 
-          <Card className="bg-gradient-to-br from-card to-accent/5 border-accent/20">
+          <Card className="bg-gradient-to-br from-card to-accent/5 border-accent/20 hover:shadow-glow transition-shadow">
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium text-muted-foreground">Recent Transactions</CardTitle>
-              <History className="h-4 w-4 text-accent" />
+              <div className="p-2 rounded-lg bg-accent/10">
+                <History className="h-4 w-4 text-accent" />
+              </div>
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold text-foreground">0</div>
@@ -125,10 +135,12 @@ export default function Dashboard() {
             </CardContent>
           </Card>
 
-          <Card className="bg-gradient-to-br from-card to-success/5 border-success/20">
+          <Card className="bg-gradient-to-br from-card to-success/5 border-success/20 hover:shadow-glow transition-shadow">
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium text-muted-foreground">Pending Invoices</CardTitle>
-              <FileText className="h-4 w-4 text-success" />
+              <div className="p-2 rounded-lg bg-success/10">
+                <FileText className="h-4 w-4 text-success" />
+              </div>
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold text-foreground">0</div>
