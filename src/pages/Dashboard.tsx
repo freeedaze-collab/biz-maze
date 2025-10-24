@@ -61,41 +61,41 @@ export default function Dashboard() {
     <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5">
       <div className="mx-auto max-w-7xl p-6 space-y-8">
         {/* Hero Section */}
-        <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-primary via-primary to-accent p-6 md:p-8 text-primary-foreground shadow-glow">
+        <div className="relative overflow-hidden rounded-xl bg-gradient-to-br from-primary/90 via-accent to-primary p-4 md:p-6 text-primary-foreground shadow-glow animate-fade-in">
           <div className="relative z-10">
-            <div className="flex items-center gap-2 mb-3">
-              <Wallet className="h-7 w-7" />
-              <h1 className="text-3xl md:text-4xl font-bold">Dashboard</h1>
+            <div className="flex items-center gap-2 mb-2">
+              <div className="p-1.5 rounded-lg bg-white/20">
+                <Wallet className="h-5 w-5" />
+              </div>
+              <h1 className="text-2xl md:text-3xl font-bold">Dashboard</h1>
             </div>
-            <p className="text-base md:text-lg text-primary-foreground/90 max-w-2xl">
-              Welcome back! Manage your finances, track transactions, and access all your financial tools in one place.
+            <p className="text-sm md:text-base text-primary-foreground/90">
+              Manage your finances and track transactions
             </p>
           </div>
-          <div className="absolute -right-10 -bottom-10 w-48 h-48 bg-primary-foreground/10 rounded-full blur-3xl"></div>
-          <div className="absolute -left-10 -top-10 w-32 h-32 bg-accent/20 rounded-full blur-2xl"></div>
         </div>
 
         {/* Quick Actions Grid */}
         <div>
-          <h2 className="text-xl font-semibold mb-4 text-foreground">Quick Actions</h2>
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          <h2 className="text-lg font-semibold mb-3 text-foreground">Quick Actions</h2>
+          <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
             {quickActions.map((action) => {
               const Icon = action.icon;
               return (
-                <Card key={action.title} className="group hover:shadow-lg transition-all duration-300 border hover:border-primary/30 hover:-translate-y-1">
-                  <CardHeader className="pb-3">
-                    <div className="flex items-center gap-3">
-                      <div className={`p-2 rounded-lg transition-colors ${action.color}`}>
-                        <Icon className="h-5 w-5" />
+                <Card key={action.title} className="group hover:shadow-lg transition-all duration-300 border hover:border-primary/30 hover:-translate-y-1 animate-scale-in">
+                  <CardHeader className="pb-2 pt-4">
+                    <div className="flex items-center gap-2">
+                      <div className={`p-1.5 rounded-lg transition-all ${action.color}`}>
+                        <Icon className="h-4 w-4" />
                       </div>
-                      <CardTitle className="text-lg">{action.title}</CardTitle>
+                      <CardTitle className="text-base">{action.title}</CardTitle>
                     </div>
                   </CardHeader>
-                  <CardContent className="space-y-3">
-                    <p className="text-sm text-muted-foreground leading-relaxed">
+                  <CardContent className="space-y-2 pb-4">
+                    <p className="text-xs text-muted-foreground leading-relaxed">
                       {action.description}
                     </p>
-                    <Button asChild variant={action.variant} size="sm" className="w-full group-hover:shadow-md transition-shadow">
+                    <Button asChild variant={action.variant} size="sm" className="w-full h-8 text-xs group-hover:shadow-md transition-shadow">
                       <Link to={action.link}>
                         {action.variant === "default" ? "Start Now" : "Open"}
                       </Link>
