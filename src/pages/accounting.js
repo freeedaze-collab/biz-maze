@@ -1,41 +1,53 @@
-import React, { useState } from 'react'
+import React, { useState } from 'react';
 
-function AccountingPage() {
-  const [journalEntries, setJournalEntries] = useState('')
-  const [calculationFormulas, setCalculationFormulas] = useState('')
+export default function Accounting() {
+  const [entries, setEntries] = useState(null);
+  const [formula, setFormula] = useState('');
 
-  const handleCalculate = () => {
-    // Example: set outputs based on selected options or computed values
-    // (In a real app, replace these with actual computed entries/formulas.)
-    setJournalEntries(
-      `Journal Entry:\n` +
-      `Debit: R&D Expense (¥XXX)\n` +
-      `Credit: Cash (¥XXX)`
-    )
-    setCalculationFormulas(
-      `Calculation Formula:\n` +
-      `R&D Tax Credit = 20% × (Qualified R&D Expenses – Base Amount)`
-    )
-  }
+  const generateEntries = () => {
+    // ボタン押下時に表示する仕訳例と計算式（例示用）
+    const exampleEntries = [
+      { description: '売上返戻金', debit: '100', credit: '現金100' },
+      { description: '消費税', debit: '10', credit: '仮受消費税10' }
+    ];
+    const exampleFormula = '100 = 1000 × 0.1 (例：消費税10%を計算)';
+    setEntries(exampleEntries);
+    setFormula(exampleFormula);
+  };
 
   return (
     <div>
-      {/* Existing UI components... */}
+      <h2>会計タブ</h2>
+      <button onClick={generateEntries}>仕訳・計算式を表示</button>
 
-      <button onClick={handleCalculate}>Calculate</button>
+      {entries && (
+        <div style={{ marginTop: '20px', borderTop: '1px solid #ccc', paddingTop: '10px' }}>
+          {/* 仕訳表示 */}
+          <h3>仕訳 (Journal Entries)</h3>
+          <table border="1" cellPadding="5" style={{ borderCollapse: 'collapse' }}>
+            <thead>
+              <tr>
+                <th>摘要</th>
+                <th>借方</th>
+                <th>貸方</th>
+              </tr>
+            </thead>
+            <tbody>
+              {entries.map((entry, idx) => (
+                <tr key={idx}>
+                  <td>{entry.description}</td>
+                  <td>{entry.debit}</td>
+                  <td>{entry.credit}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
 
-      {/* Display results if available */}
-      {journalEntries && (
-        <div className="result">
-          <h3>仕訳 (Journal Entries):</h3>
-          <pre>{journalEntries}</pre>
-
-          <h3>計算式 (Calculation Formula):</h3>
-          <pre>{calculationFormulas}</pre>
+          {/* 計算式表示 */}
+          <h3 style={{ marginTop: '15px' }}>計算式 (Calculation Formula)</h3>
+          <p>{formula}</p>
         </div>
       )}
     </div>
-  )
+  );
 }
-
-export default AccountingPage
