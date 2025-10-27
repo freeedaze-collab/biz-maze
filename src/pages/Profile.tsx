@@ -1,106 +1,124 @@
-import { useEffect, useState } from "react"
-import { supabase } from "@/integrations/supabase/client"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Label } from "@/components/ui/label"
-import { Input } from "@/components/ui/input"
-import { Button } from "@/components/ui/button"
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select"
+// File: src/pages/Profile.tsx
 
-export default function Profile() {
-  const [email, setEmail] = useState("")
-  const [country, setCountry] = useState("Japan")
-  const [userType, setUserType] = useState("Individual")
-  const [dependentCount, setDependentCount] = useState(0)
-  const [rndExpense, setRndExpense] = useState(0)
+import React, { useEffect, useState } from 'react';
+import { supabase } from '../lib/supabaseClient';
+
+const Profile = () => {
+  // State for fields (fetch existing profile on load)
+  const [profile, setProfile] = useState<any>({});
+  const [region, setRegion] = useState('');
+  const [accountType, setAccountType] = useState('');
+  const [entityType, setEntityType] = useState('');
+  const [stateOfIncorp, setStateOfIncorp] = useState('');
+  const [incomeBracket, setIncomeBracket] = useState('');
 
   useEffect(() => {
-    (async () => {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) return
-      setEmail(user.email || "")
-      setCountry(user.user_metadata?.country || "Japan")
-      setUserType(user.user_metadata?.user_type || "Individual")
-      setDependentCount(user.user_metadata?.dependent_count || 0)
-      setRndExpense(user.user_metadata?.rnd_expense || 0)
-    })()
-  }, [])
-
-  const handleSave = async () => {
-    const { error } = await supabase.auth.updateUser({
-      data: {
-        country,
-        user_type: userType,
-        dependent_count: dependentCount,
-        rnd_expense: rndExpense,
+    // Load profile from Supabase
+    const loadProfile = async () => {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .single();
+      if (error) {
+        console.error('Error loading profile:', error.message);
+        return;
       }
-    })
+      setProfile(data);
+      setRegion(data.region);
+      setAccountType(data.account_type);
+      setEntityType(data.entity_type || '');
+      setStateOfIncorp(data.state_of_incorporation || '');
+      setIncomeBracket(data.income_bracket || '');
+    };
+    loadProfile();
+  }, []);
+
+  const handleUpdate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    // Prepare updated fields, clearing unused fields per logic
+    const updates: any = { 
+      region, 
+      account_type: accountType,
+      ...(region === 'United States' && accountType === 'Corporation' ? {
+        entity_type: entityType,
+        state_of_incorporation: stateOfIncorp,
+      } : {
+        // Clear if not applicable
+        entity_type: null,
+        state_of_incorporation: null,
+      }),
+      ...(region === 'Japan' ? { income_bracket: incomeBracket } : { income_bracket: null }),
+    };
+    const { error } = await supabase
+      .from('profiles')
+      .update(updates)
+      .match({ user_id: profile.user_id });
     if (error) {
-      alert("保存に失敗しました: " + error.message)
-    } else {
-      alert("保存しました")
+      console.error('Error updating profile:', error.message);
     }
-  }
+  };
 
   return (
-    <div className="max-w-xl mx-auto p-6 space-y-6">
-      <h1 className="text-2xl font-bold">Profile</h1>
-      <Card>
-        <CardHeader><CardTitle>Basic Info</CardTitle></CardHeader>
-        <CardContent className="space-y-4">
-          <div>
-            <Label>Email</Label>
-            <Input value={email} readOnly disabled />
-          </div>
+    <form onSubmit={handleUpdate}>
+      {/* ... display/update other profile fields ... */}
 
-          <div>
-            <Label>Country</Label>
-            <Select value={country} onValueChange={setCountry}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="Japan">Japan</SelectItem>
-                <SelectItem value="United States">United States</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
+      <label>Region:</label>
+      <select value={region} onChange={e => setRegion(e.target.value)}>
+        <option value="">Select Region</option>
+        <option value="United States">United States</option>
+        <option value="Japan">Japan</option>
+      </select>
 
-          <div>
-            <Label>User Type</Label>
-            <Select value={userType} onValueChange={setUserType}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="Individual">Individual</SelectItem>
-                <SelectItem value="Corporation">Corporation</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
+      <label>Account Type:</label>
+      <select value={accountType} onChange={e => setAccountType(e.target.value)}>
+        <option value="Individual">Individual</option>
+        <option value="Corporation">Corporation</option>
+      </select>
 
-          {/* 条件付き入力：扶養人数 */}
-          {country === "Japan" && userType === "Individual" && (
-            <div>
-              <Label>扶養人数（日本個人向け）</Label>
-              <Input
-                type="number"
-                value={dependentCount}
-                onChange={e => setDependentCount(Number(e.target.value))}
-              />
-            </div>
-          )}
+      {region === 'United States' && accountType === 'Corporation' && (
+        <>
+          <label>Entity Type:</label>
+          <select value={entityType} onChange={e => setEntityType(e.target.value)}>
+            <option value="">Select Entity Type</option>
+            <option value="C Corporation">C Corporation</option>
+            <option value="S Corporation">S Corporation</option>
+            <option value="LLC">LLC</option>
+            <option value="Partnership">Partnership</option>
+            <option value="Professional Corporation / Professional Association">Professional Corporation / Professional Association</option>
+            <option value="Public Benefit Corporation">Public Benefit Corporation</option>
+          </select>
 
-          {/* 条件付き入力：R&D費用 */}
-          {country === "United States" && userType === "Corporation" && (
-            <div>
-              <Label>R&D費用（米国法人向け）</Label>
-              <Input
-                type="number"
-                value={rndExpense}
-                onChange={e => setRndExpense(Number(e.target.value))}
-              />
-            </div>
-          )}
+          <label>State of Incorporation:</label>
+          <select value={stateOfIncorp} onChange={e => setStateOfIncorp(e.target.value)}>
+            <option value="">Select State</option>
+            {/* US States list */}
+            {[
+              'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA',
+              'HI','ID','IL','IN','IA','KS','KY','LA','ME','MD',
+              'MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ',
+              'NM','NY','NC','ND','OH','OK','OR','PA','RI','SC',
+              'SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC'
+            ].map(state => (
+              <option key={state} value={state}>{state}</option>
+            ))}
+          </select>
+        </>
+      )}
 
-          <Button onClick={handleSave}>保存</Button>
-        </CardContent>
-      </Card>
-    </div>
-  )
-}
+      {region === 'Japan' && (
+        <>
+          <label>Income Bracket:</label>
+          <select value={incomeBracket} onChange={e => setIncomeBracket(e.target.value)}>
+            <option value="">Select Income Bracket</option>
+            <option value="Below 8 million JPY">Below 8 million JPY</option>
+            <option value="Above 8 million JPY">Above 8 million JPY</option>
+          </select>
+        </>
+      )}
+
+      <button type="submit">Save Profile</button>
+    </form>
+  );
+};
+
+export default Profile;
