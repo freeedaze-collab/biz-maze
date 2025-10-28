@@ -14,7 +14,7 @@ export default function ProfilePage() {
   const [message, setMessage] = useState('')
 
   useEffect(() => {
-    if (!user) return
+    if (!user || !user.id) return
     const fetchProfile = async () => {
       setLoading(true)
       const { data, error } = await supabase
@@ -26,13 +26,13 @@ export default function ProfilePage() {
         .single()
 
       if (error) {
-        console.error('Fetch profile error:', error.message)
+        console.warn('Fetch profile error:', error.message)
       } else if (data) {
-        setCountry(data.country || '')
-        setUserType(data.user_type || '')
-        setIncomeCategory(data.income_category || '')
-        setEntityType(data.entity_type || '')
-        setStateOfIncorporation(data.state_of_incorporation || '')
+        setCountry(data.country ?? '')
+        setUserType(data.user_type ?? '')
+        setIncomeCategory(data.income_category ?? '')
+        setEntityType(data.entity_type ?? '')
+        setStateOfIncorporation(data.state_of_incorporation ?? '')
       }
       setLoading(false)
     }
@@ -40,13 +40,18 @@ export default function ProfilePage() {
   }, [user])
 
   const handleSave = async () => {
+    if (!user || !user.id) {
+      setMessage('ユーザー情報が読み込めていません')
+      return
+    }
+
     setLoading(true)
     setMessage('')
     const updates = {
-      id: user?.id,
-      country,
-      user_type: userType,
-      income_category: incomeCategory,
+      id: user.id,
+      country: country || null,
+      user_type: userType || null,
+      income_category: incomeCategory || null,
       entity_type: entityType || null,
       state_of_incorporation: stateOfIncorporation || null,
       updated_at: new Date(),
@@ -61,6 +66,10 @@ export default function ProfilePage() {
       setMessage('保存しました。')
     }
     setLoading(false)
+  }
+
+  if (!user || loading) {
+    return <p className="p-4">読み込み中...</p>
   }
 
   return (
@@ -106,7 +115,7 @@ export default function ProfilePage() {
 
       {(country === 'usa' && userType === 'corporate') && (
         <>
-          <label className="block mb-2">法人形態 (Entity Type):</label>
+          <label className="block mb-2">法人形態:</label>
           <select
             className="w-full border p-2 mb-4"
             value={entityType}
@@ -121,7 +130,7 @@ export default function ProfilePage() {
             <option value="PBC">Public Benefit Corporation</option>
           </select>
 
-          <label className="block mb-2">所在州 (State of Incorporation):</label>
+          <label className="block mb-2">法人州:</label>
           <select
             className="w-full border p-2 mb-4"
             value={stateOfIncorporation}
@@ -130,13 +139,15 @@ export default function ProfilePage() {
             <option value="">選択してください</option>
             {[
               'Alabama', 'Alaska', 'Arizona', 'Arkansas', 'California', 'Colorado',
-              'Connecticut', 'Delaware', 'Florida', 'Georgia', 'Hawaii', 'Idaho', 'Illinois',
-              'Indiana', 'Iowa', 'Kansas', 'Kentucky', 'Louisiana', 'Maine', 'Maryland',
-              'Massachusetts', 'Michigan', 'Minnesota', 'Mississippi', 'Missouri', 'Montana',
-              'Nebraska', 'Nevada', 'New Hampshire', 'New Jersey', 'New Mexico', 'New York',
-              'North Carolina', 'North Dakota', 'Ohio', 'Oklahoma', 'Oregon', 'Pennsylvania',
-              'Rhode Island', 'South Carolina', 'South Dakota', 'Tennessee', 'Texas', 'Utah',
-              'Vermont', 'Virginia', 'Washington', 'West Virginia', 'Wisconsin', 'Wyoming'
+              'Connecticut', 'Delaware', 'Florida', 'Georgia', 'Hawaii', 'Idaho',
+              'Illinois', 'Indiana', 'Iowa', 'Kansas', 'Kentucky', 'Louisiana',
+              'Maine', 'Maryland', 'Massachusetts', 'Michigan', 'Minnesota',
+              'Mississippi', 'Missouri', 'Montana', 'Nebraska', 'Nevada',
+              'New Hampshire', 'New Jersey', 'New Mexico', 'New York',
+              'North Carolina', 'North Dakota', 'Ohio', 'Oklahoma', 'Oregon',
+              'Pennsylvania', 'Rhode Island', 'South Carolina', 'South Dakota',
+              'Tennessee', 'Texas', 'Utah', 'Vermont', 'Virginia', 'Washington',
+              'West Virginia', 'Wisconsin', 'Wyoming'
             ].map((state) => (
               <option key={state} value={state}>{state}</option>
             ))}
