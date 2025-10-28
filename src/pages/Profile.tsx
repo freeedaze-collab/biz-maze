@@ -1,124 +1,158 @@
-// File: src/pages/Profile.tsx
+import { useEffect, useState } from 'react'
+import { supabase } from '@/lib/supabaseClient'
+import { useUser } from '@/hooks/useUser'
 
-import React, { useEffect, useState } from 'react';
-import { supabase } from '../lib/supabaseClient';
+export default function ProfilePage() {
+  const { user } = useUser()
 
-const Profile = () => {
-  // State for fields (fetch existing profile on load)
-  const [profile, setProfile] = useState<any>({});
-  const [region, setRegion] = useState('');
-  const [accountType, setAccountType] = useState('');
-  const [entityType, setEntityType] = useState('');
-  const [stateOfIncorp, setStateOfIncorp] = useState('');
-  const [incomeBracket, setIncomeBracket] = useState('');
+  const [loading, setLoading] = useState(true)
+  const [country, setCountry] = useState('')
+  const [userType, setUserType] = useState('')
+  const [incomeCategory, setIncomeCategory] = useState('')
+  const [entityType, setEntityType] = useState('')
+  const [stateOfIncorporation, setStateOfIncorporation] = useState('')
+  const [message, setMessage] = useState('')
 
   useEffect(() => {
-    // Load profile from Supabase
-    const loadProfile = async () => {
+    if (!user) return
+    const fetchProfile = async () => {
+      setLoading(true)
       const { data, error } = await supabase
         .from('profiles')
-        .select('*')
-        .single();
-      if (error) {
-        console.error('Error loading profile:', error.message);
-        return;
-      }
-      setProfile(data);
-      setRegion(data.region);
-      setAccountType(data.account_type);
-      setEntityType(data.entity_type || '');
-      setStateOfIncorp(data.state_of_incorporation || '');
-      setIncomeBracket(data.income_bracket || '');
-    };
-    loadProfile();
-  }, []);
+        .select(
+          'country, user_type, income_category, entity_type, state_of_incorporation'
+        )
+        .eq('id', user.id)
+        .single()
 
-  const handleUpdate = async (e: React.FormEvent) => {
-    e.preventDefault();
-    // Prepare updated fields, clearing unused fields per logic
-    const updates: any = { 
-      region, 
-      account_type: accountType,
-      ...(region === 'United States' && accountType === 'Corporation' ? {
-        entity_type: entityType,
-        state_of_incorporation: stateOfIncorp,
-      } : {
-        // Clear if not applicable
-        entity_type: null,
-        state_of_incorporation: null,
-      }),
-      ...(region === 'Japan' ? { income_bracket: incomeBracket } : { income_bracket: null }),
-    };
-    const { error } = await supabase
-      .from('profiles')
-      .update(updates)
-      .match({ user_id: profile.user_id });
-    if (error) {
-      console.error('Error updating profile:', error.message);
+      if (error) {
+        console.error('Fetch profile error:', error.message)
+      } else if (data) {
+        setCountry(data.country || '')
+        setUserType(data.user_type || '')
+        setIncomeCategory(data.income_category || '')
+        setEntityType(data.entity_type || '')
+        setStateOfIncorporation(data.state_of_incorporation || '')
+      }
+      setLoading(false)
     }
-  };
+    fetchProfile()
+  }, [user])
+
+  const handleSave = async () => {
+    setLoading(true)
+    setMessage('')
+    const updates = {
+      id: user?.id,
+      country,
+      user_type: userType,
+      income_category: incomeCategory,
+      entity_type: entityType || null,
+      state_of_incorporation: stateOfIncorporation || null,
+      updated_at: new Date(),
+    }
+
+    const { error } = await supabase.from('profiles').upsert(updates)
+
+    if (error) {
+      console.error('Save error:', error.message)
+      setMessage('保存に失敗しました。')
+    } else {
+      setMessage('保存しました。')
+    }
+    setLoading(false)
+  }
 
   return (
-    <form onSubmit={handleUpdate}>
-      {/* ... display/update other profile fields ... */}
+    <div className="p-6 max-w-xl mx-auto">
+      <h1 className="text-2xl font-bold mb-4">プロフィール編集</h1>
 
-      <label>Region:</label>
-      <select value={region} onChange={e => setRegion(e.target.value)}>
-        <option value="">Select Region</option>
-        <option value="United States">United States</option>
-        <option value="Japan">Japan</option>
+      <label className="block mb-2">国:</label>
+      <select
+        className="w-full border p-2 mb-4"
+        value={country}
+        onChange={(e) => setCountry(e.target.value)}
+      >
+        <option value="">選択してください</option>
+        <option value="japan">日本</option>
+        <option value="usa">アメリカ</option>
       </select>
 
-      <label>Account Type:</label>
-      <select value={accountType} onChange={e => setAccountType(e.target.value)}>
-        <option value="Individual">Individual</option>
-        <option value="Corporation">Corporation</option>
+      <label className="block mb-2">区分:</label>
+      <select
+        className="w-full border p-2 mb-4"
+        value={userType}
+        onChange={(e) => setUserType(e.target.value)}
+      >
+        <option value="">選択してください</option>
+        <option value="individual">個人</option>
+        <option value="corporate">法人</option>
       </select>
 
-      {region === 'United States' && accountType === 'Corporation' && (
+      {(country === 'japan' && userType === 'individual') && (
         <>
-          <label>Entity Type:</label>
-          <select value={entityType} onChange={e => setEntityType(e.target.value)}>
-            <option value="">Select Entity Type</option>
-            <option value="C Corporation">C Corporation</option>
-            <option value="S Corporation">S Corporation</option>
-            <option value="LLC">LLC</option>
+          <label className="block mb-2">課税所得:</label>
+          <select
+            className="w-full border p-2 mb-4"
+            value={incomeCategory}
+            onChange={(e) => setIncomeCategory(e.target.value)}
+          >
+            <option value="">選択してください</option>
+            <option value="under800">800万円以下</option>
+            <option value="over800">800万円以上</option>
+          </select>
+        </>
+      )}
+
+      {(country === 'usa' && userType === 'corporate') && (
+        <>
+          <label className="block mb-2">法人形態 (Entity Type):</label>
+          <select
+            className="w-full border p-2 mb-4"
+            value={entityType}
+            onChange={(e) => setEntityType(e.target.value)}
+          >
+            <option value="">選択してください</option>
+            <option value="C-Corp">C Corporation</option>
+            <option value="S-Corp">S Corporation</option>
+            <option value="LLC">Limited Liability Company</option>
             <option value="Partnership">Partnership</option>
-            <option value="Professional Corporation / Professional Association">Professional Corporation / Professional Association</option>
-            <option value="Public Benefit Corporation">Public Benefit Corporation</option>
+            <option value="PC/PA">Professional Corporation / Association</option>
+            <option value="PBC">Public Benefit Corporation</option>
           </select>
 
-          <label>State of Incorporation:</label>
-          <select value={stateOfIncorp} onChange={e => setStateOfIncorp(e.target.value)}>
-            <option value="">Select State</option>
-            {/* US States list */}
+          <label className="block mb-2">所在州 (State of Incorporation):</label>
+          <select
+            className="w-full border p-2 mb-4"
+            value={stateOfIncorporation}
+            onChange={(e) => setStateOfIncorporation(e.target.value)}
+          >
+            <option value="">選択してください</option>
             {[
-              'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA',
-              'HI','ID','IL','IN','IA','KS','KY','LA','ME','MD',
-              'MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ',
-              'NM','NY','NC','ND','OH','OK','OR','PA','RI','SC',
-              'SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC'
-            ].map(state => (
+              'Alabama', 'Alaska', 'Arizona', 'Arkansas', 'California', 'Colorado',
+              'Connecticut', 'Delaware', 'Florida', 'Georgia', 'Hawaii', 'Idaho', 'Illinois',
+              'Indiana', 'Iowa', 'Kansas', 'Kentucky', 'Louisiana', 'Maine', 'Maryland',
+              'Massachusetts', 'Michigan', 'Minnesota', 'Mississippi', 'Missouri', 'Montana',
+              'Nebraska', 'Nevada', 'New Hampshire', 'New Jersey', 'New Mexico', 'New York',
+              'North Carolina', 'North Dakota', 'Ohio', 'Oklahoma', 'Oregon', 'Pennsylvania',
+              'Rhode Island', 'South Carolina', 'South Dakota', 'Tennessee', 'Texas', 'Utah',
+              'Vermont', 'Virginia', 'Washington', 'West Virginia', 'Wisconsin', 'Wyoming'
+            ].map((state) => (
               <option key={state} value={state}>{state}</option>
             ))}
           </select>
         </>
       )}
 
-      {region === 'Japan' && (
-        <>
-          <label>Income Bracket:</label>
-          <select value={incomeBracket} onChange={e => setIncomeBracket(e.target.value)}>
-            <option value="">Select Income Bracket</option>
-            <option value="Below 8 million JPY">Below 8 million JPY</option>
-            <option value="Above 8 million JPY">Above 8 million JPY</option>
-          </select>
-        </>
-      )}
+      <button
+        className="bg-blue-500 text-white py-2 px-4 rounded disabled:opacity-50"
+        onClick={handleSave}
+        disabled={loading}
+      >
+        保存
+      </button>
 
-      <button type="submit">Save Profile</button>
-    </form>
-  );
-};
-
-export default Profile;
+      {message && <p className="mt-4 text-green-600">{message}</p>}
+    </div>
+  )
+}
