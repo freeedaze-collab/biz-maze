@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabaseClient';
-
+import { useUser } from '../hooks/useUser'
 
 export default function ProfilePage() {
   const { user, loading: userLoading } = useUser()
