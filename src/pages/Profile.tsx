@@ -85,7 +85,7 @@ const updates = {
 };
 
 
-    const { error } = await supabase.from('profiles').upsert(updates)
+    const { error } = await supabase.from('profiles').update(updates).match({ user_id: user.id });
 
     if (error) {
       console.error('保存エラー:', error.message)
