@@ -74,15 +74,16 @@ const handleSave = async () => {
   }
     setLoading(true)
 
-    const updates = {
-      id: userId,
-      country: country || null,
-      user_type: userType || null,
-      income_category: incomeCategory || null,
-      entity_type: entityType || null,
-      state_of_incorporation: stateOfIncorporation || null,
-      updated_at: new Date(),
-    }
+const updates = {
+  user_id: user.id, // match対象（idではない！）
+  country,
+  user_type: userType,
+  income_bracket: incomeCategory || null,
+  us_entity_type: entityType || null,
+  us_state_of_incorporation: stateOfIncorporation || null,
+  updated_at: new Date(),
+};
+
 
     const { error } = await supabase.from('profiles').upsert(updates)
 
