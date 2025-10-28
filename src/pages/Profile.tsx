@@ -1,12 +1,13 @@
 // File: /src/pages/Profile.tsx
-
+import { useUser } from '../hooks/useUser' // または '../hooks/useUser' に置き換えて試す
 import React, { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabaseClient'
+
 
 export default function ProfilePage() {
   const [userId, setUserId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
-
+  const { user, loading: userLoading } = useUser()
   const [country, setCountry] = useState('')
   const [userType, setUserType] = useState('')
   const [incomeCategory, setIncomeCategory] = useState('')
