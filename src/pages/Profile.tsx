@@ -1,124 +1,76 @@
-// File: src/pages/Profile.tsx
+import { useState } from 'react'
+import { supabase } from '../supabaseClient'
 
-import React, { useEffect, useState } from 'react';
-import { supabase } from '../lib/supabaseClient';
+export default function Profile() {
+  const [entityType, setEntityType] = useState<string>('')
+  const [stateOfIncorp, setStateOfIncorp] = useState<string>('')
+  const [loading, setLoading] = useState(false)
+  const [errorMsg, setErrorMsg] = useState('')
 
-const Profile = () => {
-  // State for fields (fetch existing profile on load)
-  const [profile, setProfile] = useState<any>({});
-  const [region, setRegion] = useState('');
-  const [accountType, setAccountType] = useState('');
-  const [entityType, setEntityType] = useState('');
-  const [stateOfIncorp, setStateOfIncorp] = useState('');
-  const [incomeBracket, setIncomeBracket] = useState('');
-
-  useEffect(() => {
-    // Load profile from Supabase
-    const loadProfile = async () => {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .single();
-      if (error) {
-        console.error('Error loading profile:', error.message);
-        return;
-      }
-      setProfile(data);
-      setRegion(data.region);
-      setAccountType(data.account_type);
-      setEntityType(data.entity_type || '');
-      setStateOfIncorp(data.state_of_incorporation || '');
-      setIncomeBracket(data.income_bracket || '');
-    };
-    loadProfile();
-  }, []);
-
-  const handleUpdate = async (e: React.FormEvent) => {
-    e.preventDefault();
-    // Prepare updated fields, clearing unused fields per logic
-    const updates: any = { 
-      region, 
-      account_type: accountType,
-      ...(region === 'United States' && accountType === 'Corporation' ? {
-        entity_type: entityType,
-        state_of_incorporation: stateOfIncorp,
-      } : {
-        // Clear if not applicable
-        entity_type: null,
-        state_of_incorporation: null,
-      }),
-      ...(region === 'Japan' ? { income_bracket: incomeBracket } : { income_bracket: null }),
-    };
+  // プロフィールを保存する関数
+  async function handleSaveProfile(event: React.FormEvent) {
+    event.preventDefault()
+    setLoading(true)
+    setErrorMsg('')
+    // 現在のユーザーIDを取得
+    const { data: { session } } = await supabase.auth.getSession()
+    const user = session?.user
+    if (!user) {
+      setErrorMsg('ユーザーが見つかりません')
+      setLoading(false)
+      return
+    }
+    // upsert 用のオブジェクト（idを含める）
+    const updates = {
+      id: user.id,
+      us_entity_type: entityType,
+      us_state_of_incorporation: stateOfIncorp,
+      updated_at: new Date().toISOString(),
+    }
+    // profiles テーブルへ upsert 実行
     const { error } = await supabase
       .from('profiles')
-      .update(updates)
-      .match({ user_id: profile.user_id });
+      .upsert(updates)
     if (error) {
-      console.error('Error updating profile:', error.message);
+      // エラー表示（Supabase公式例では alert で表示）:contentReference[oaicite:1]{index=1}
+      setErrorMsg(error.message)
+      console.error('Profile update error:', error)
+    } else {
+      // 保存成功時は必要に応じてメッセージ等を表示
+      console.log('Profile updated successfully')
     }
-  };
+    setLoading(false)
+  }
 
   return (
-    <form onSubmit={handleUpdate}>
-      {/* ... display/update other profile fields ... */}
-
-      <label>Region:</label>
-      <select value={region} onChange={e => setRegion(e.target.value)}>
-        <option value="">Select Region</option>
-        <option value="United States">United States</option>
-        <option value="Japan">Japan</option>
-      </select>
-
-      <label>Account Type:</label>
-      <select value={accountType} onChange={e => setAccountType(e.target.value)}>
-        <option value="Individual">Individual</option>
-        <option value="Corporation">Corporation</option>
-      </select>
-
-      {region === 'United States' && accountType === 'Corporation' && (
-        <>
-          <label>Entity Type:</label>
-          <select value={entityType} onChange={e => setEntityType(e.target.value)}>
-            <option value="">Select Entity Type</option>
-            <option value="C Corporation">C Corporation</option>
-            <option value="S Corporation">S Corporation</option>
-            <option value="LLC">LLC</option>
-            <option value="Partnership">Partnership</option>
-            <option value="Professional Corporation / Professional Association">Professional Corporation / Professional Association</option>
-            <option value="Public Benefit Corporation">Public Benefit Corporation</option>
-          </select>
-
-          <label>State of Incorporation:</label>
-          <select value={stateOfIncorp} onChange={e => setStateOfIncorp(e.target.value)}>
-            <option value="">Select State</option>
-            {/* US States list */}
-            {[
-              'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA',
-              'HI','ID','IL','IN','IA','KS','KY','LA','ME','MD',
-              'MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ',
-              'NM','NY','NC','ND','OH','OK','OR','PA','RI','SC',
-              'SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC'
-            ].map(state => (
-              <option key={state} value={state}>{state}</option>
-            ))}
-          </select>
-        </>
-      )}
-
-      {region === 'Japan' && (
-        <>
-          <label>Income Bracket:</label>
-          <select value={incomeBracket} onChange={e => setIncomeBracket(e.target.value)}>
-            <option value="">Select Income Bracket</option>
-            <option value="Below 8 million JPY">Below 8 million JPY</option>
-            <option value="Above 8 million JPY">Above 8 million JPY</option>
-          </select>
-        </>
-      )}
-
-      <button type="submit">Save Profile</button>
+    <form onSubmit={handleSaveProfile}>
+      <div>
+        <label htmlFor="entityType">Entity Type</label>
+        <input
+          id="entityType"
+          type="text"
+          placeholder="Enter entity type"
+          value={entityType}
+          onChange={(e) => setEntityType(e.target.value)}
+        />
+      </div>
+      <div>
+        <label htmlFor="stateOfIncorp">State of Incorporation</label>
+        <input
+          id="stateOfIncorp"
+          type="text"
+          placeholder="Enter state of incorporation"
+          value={stateOfIncorp}
+          onChange={(e) => setStateOfIncorp(e.target.value)}
+        />
+      </div>
+      <div>
+        <button type="submit" disabled={loading}>
+          {loading ? '保存中...' : '保存'}
+        </button>
+      </div>
+      {/* エラーがある場合は画面に表示 */}
+      {errorMsg && <p className="error">エラー: {errorMsg}</p>}
     </form>
-  );
-};
-
-export default Profile;
+  )
+}
