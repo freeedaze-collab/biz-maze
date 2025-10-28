@@ -3,9 +3,9 @@ import { supabase } from '@/lib/supabaseClient'
 import { useUser } from '@/hooks/useUser'
 
 export default function ProfilePage() {
-  const { user } = useUser()
-
+  const { user, loading: userLoading } = useUser()
   const [loading, setLoading] = useState(true)
+
   const [country, setCountry] = useState('')
   const [userType, setUserType] = useState('')
   const [incomeCategory, setIncomeCategory] = useState('')
@@ -14,7 +14,8 @@ export default function ProfilePage() {
   const [message, setMessage] = useState('')
 
   useEffect(() => {
-    if (!user || !user.id) return
+    if (userLoading || !user?.id) return
+
     const fetchProfile = async () => {
       setLoading(true)
       const { data, error } = await supabase
@@ -26,7 +27,7 @@ export default function ProfilePage() {
         .single()
 
       if (error) {
-        console.warn('Fetch profile error:', error.message)
+        console.warn('プロフィール読み込み失敗:', error.message)
       } else if (data) {
         setCountry(data.country ?? '')
         setUserType(data.user_type ?? '')
@@ -36,17 +37,17 @@ export default function ProfilePage() {
       }
       setLoading(false)
     }
+
     fetchProfile()
-  }, [user])
+  }, [user, userLoading])
 
   const handleSave = async () => {
-    if (!user || !user.id) {
-      setMessage('ユーザー情報が読み込めていません')
+    if (!user?.id) {
+      setMessage('ユーザーIDが取得できません')
       return
     }
 
     setLoading(true)
-    setMessage('')
     const updates = {
       id: user.id,
       country: country || null,
@@ -58,9 +59,8 @@ export default function ProfilePage() {
     }
 
     const { error } = await supabase.from('profiles').upsert(updates)
-
     if (error) {
-      console.error('Save error:', error.message)
+      console.error('保存失敗:', error.message)
       setMessage('保存に失敗しました。')
     } else {
       setMessage('保存しました。')
@@ -68,8 +68,12 @@ export default function ProfilePage() {
     setLoading(false)
   }
 
-  if (!user || loading) {
-    return <p className="p-4">読み込み中...</p>
+  if (userLoading || loading) {
+    return <div className="p-4">読み込み中...</div>
+  }
+
+  if (!user?.id) {
+    return <div className="p-4 text-red-500">ユーザー情報が取得できません</div>
   }
 
   return (
@@ -77,35 +81,23 @@ export default function ProfilePage() {
       <h1 className="text-2xl font-bold mb-4">プロフィール編集</h1>
 
       <label className="block mb-2">国:</label>
-      <select
-        className="w-full border p-2 mb-4"
-        value={country}
-        onChange={(e) => setCountry(e.target.value)}
-      >
+      <select className="w-full border p-2 mb-4" value={country} onChange={(e) => setCountry(e.target.value)}>
         <option value="">選択してください</option>
         <option value="japan">日本</option>
         <option value="usa">アメリカ</option>
       </select>
 
-      <label className="block mb-2">区分:</label>
-      <select
-        className="w-full border p-2 mb-4"
-        value={userType}
-        onChange={(e) => setUserType(e.target.value)}
-      >
+      <label className="block mb-2">ユーザー種別:</label>
+      <select className="w-full border p-2 mb-4" value={userType} onChange={(e) => setUserType(e.target.value)}>
         <option value="">選択してください</option>
         <option value="individual">個人</option>
         <option value="corporate">法人</option>
       </select>
 
-      {(country === 'japan' && userType === 'individual') && (
+      {country === 'japan' && userType === 'individual' && (
         <>
           <label className="block mb-2">課税所得:</label>
-          <select
-            className="w-full border p-2 mb-4"
-            value={incomeCategory}
-            onChange={(e) => setIncomeCategory(e.target.value)}
-          >
+          <select className="w-full border p-2 mb-4" value={incomeCategory} onChange={(e) => setIncomeCategory(e.target.value)}>
             <option value="">選択してください</option>
             <option value="under800">800万円以下</option>
             <option value="over800">800万円以上</option>
@@ -113,14 +105,10 @@ export default function ProfilePage() {
         </>
       )}
 
-      {(country === 'usa' && userType === 'corporate') && (
+      {country === 'usa' && userType === 'corporate' && (
         <>
           <label className="block mb-2">法人形態:</label>
-          <select
-            className="w-full border p-2 mb-4"
-            value={entityType}
-            onChange={(e) => setEntityType(e.target.value)}
-          >
+          <select className="w-full border p-2 mb-4" value={entityType} onChange={(e) => setEntityType(e.target.value)}>
             <option value="">選択してください</option>
             <option value="C-Corp">C Corporation</option>
             <option value="S-Corp">S Corporation</option>
@@ -131,11 +119,7 @@ export default function ProfilePage() {
           </select>
 
           <label className="block mb-2">法人州:</label>
-          <select
-            className="w-full border p-2 mb-4"
-            value={stateOfIncorporation}
-            onChange={(e) => setStateOfIncorporation(e.target.value)}
-          >
+          <select className="w-full border p-2 mb-4" value={stateOfIncorporation} onChange={(e) => setStateOfIncorporation(e.target.value)}>
             <option value="">選択してください</option>
             {[
               'Alabama', 'Alaska', 'Arizona', 'Arkansas', 'California', 'Colorado',
@@ -155,15 +139,10 @@ export default function ProfilePage() {
         </>
       )}
 
-      <button
-        className="bg-blue-500 text-white py-2 px-4 rounded disabled:opacity-50"
-        onClick={handleSave}
-        disabled={loading}
-      >
+      <button className="bg-blue-600 text-white px-4 py-2 rounded" onClick={handleSave} disabled={loading}>
         保存
       </button>
-
-      {message && <p className="mt-4 text-green-600">{message}</p>}
+      {message && <div className="mt-4 text-green-600">{message}</div>}
     </div>
   )
 }
