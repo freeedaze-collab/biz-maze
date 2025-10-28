@@ -1,86 +1,66 @@
-// 修正済み: ファイル名を小文字の "profile.tsx" にリネーム
-// 修正済み: useEffectに明示的なローディング管理とログ出力を追加
-// 修正済み: 保存ボタンを押した後、成功 or エラーの表示を追加
+// File: src/pages/Profile.tsx
 
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabaseClient';
 
 const Profile = () => {
+  // State for fields (fetch existing profile on load)
   const [profile, setProfile] = useState<any>({});
   const [region, setRegion] = useState('');
   const [accountType, setAccountType] = useState('');
   const [entityType, setEntityType] = useState('');
   const [stateOfIncorp, setStateOfIncorp] = useState('');
   const [incomeBracket, setIncomeBracket] = useState('');
-  const [message, setMessage] = useState('');
-  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    // Load profile from Supabase
     const loadProfile = async () => {
-      setLoading(true);
       const { data, error } = await supabase
         .from('profiles')
         .select('*')
         .single();
       if (error) {
         console.error('Error loading profile:', error.message);
-        setMessage('Failed to load profile.');
-        setLoading(false);
         return;
       }
       setProfile(data);
-      setRegion(data.region || '');
-      setAccountType(data.account_type || '');
+      setRegion(data.region);
+      setAccountType(data.account_type);
       setEntityType(data.entity_type || '');
       setStateOfIncorp(data.state_of_incorporation || '');
       setIncomeBracket(data.income_bracket || '');
-      setLoading(false);
     };
     loadProfile();
   }, []);
 
   const handleUpdate = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!profile.user_id) {
-      setMessage('User ID not found');
-      return;
-    }
-
-    const updates: any = {
-      region,
+    // Prepare updated fields, clearing unused fields per logic
+    const updates: any = { 
+      region, 
       account_type: accountType,
-      ...(region === 'United States' && accountType === 'Corporation'
-        ? {
-            entity_type: entityType,
-            state_of_incorporation: stateOfIncorp,
-          }
-        : {
-            entity_type: null,
-            state_of_incorporation: null,
-          }),
-      ...(region === 'Japan'
-        ? { income_bracket: incomeBracket }
-        : { income_bracket: null }),
+      ...(region === 'United States' && accountType === 'Corporation' ? {
+        entity_type: entityType,
+        state_of_incorporation: stateOfIncorp,
+      } : {
+        // Clear if not applicable
+        entity_type: null,
+        state_of_incorporation: null,
+      }),
+      ...(region === 'Japan' ? { income_bracket: incomeBracket } : { income_bracket: null }),
     };
-
     const { error } = await supabase
       .from('profiles')
       .update(updates)
       .match({ user_id: profile.user_id });
-
     if (error) {
       console.error('Error updating profile:', error.message);
-      setMessage('Failed to save.');
-    } else {
-      setMessage('Profile saved!');
     }
   };
 
-  if (loading) return <div>Loading...</div>;
-
   return (
-    <form onSubmit={handleUpdate} className="p-4 space-y-4 max-w-lg mx-auto">
-      <h1 className="text-xl font-bold">Edit Profile</h1>
+    <form onSubmit={handleUpdate}>
+      {/* ... display/update other profile fields ... */}
 
       <label>Region:</label>
       <select value={region} onChange={e => setRegion(e.target.value)}>
@@ -91,7 +71,6 @@ const Profile = () => {
 
       <label>Account Type:</label>
       <select value={accountType} onChange={e => setAccountType(e.target.value)}>
-        <option value="">Select Type</option>
         <option value="Individual">Individual</option>
         <option value="Corporation">Corporation</option>
       </select>
@@ -112,6 +91,7 @@ const Profile = () => {
           <label>State of Incorporation:</label>
           <select value={stateOfIncorp} onChange={e => setStateOfIncorp(e.target.value)}>
             <option value="">Select State</option>
+            {/* US States list */}
             {[
               'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA',
               'HI','ID','IL','IN','IA','KS','KY','LA','ME','MD',
@@ -129,7 +109,7 @@ const Profile = () => {
         <>
           <label>Income Bracket:</label>
           <select value={incomeBracket} onChange={e => setIncomeBracket(e.target.value)}>
-            <option value="">Select Bracket</option>
+            <option value="">Select Income Bracket</option>
             <option value="Below 8 million JPY">Below 8 million JPY</option>
             <option value="Above 8 million JPY">Above 8 million JPY</option>
           </select>
@@ -137,7 +117,6 @@ const Profile = () => {
       )}
 
       <button type="submit">Save Profile</button>
-      {message && <div className="text-sm mt-2 text-blue-700">{message}</div>}
     </form>
   );
 };
