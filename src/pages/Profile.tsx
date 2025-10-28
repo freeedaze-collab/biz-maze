@@ -1,53 +1,60 @@
+// File: /src/pages/Profile.tsx
+
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabaseClient';
-import { useUser } from '../hooks/useUser'
 
 export default function ProfilePage() {
-  const { user, loading: userLoading } = useUser()
-  const [loading, setLoading] = useState(true)
+  const [user, setUser] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
 
-  const [country, setCountry] = useState('')
-  const [userType, setUserType] = useState('')
-  const [incomeCategory, setIncomeCategory] = useState('')
-  const [entityType, setEntityType] = useState('')
-  const [stateOfIncorporation, setStateOfIncorporation] = useState('')
-  const [message, setMessage] = useState('')
+  const [country, setCountry] = useState('');
+  const [userType, setUserType] = useState('');
+  const [incomeCategory, setIncomeCategory] = useState('');
+  const [entityType, setEntityType] = useState('');
+  const [stateOfIncorporation, setStateOfIncorporation] = useState('');
+  const [message, setMessage] = useState('');
 
   useEffect(() => {
-    if (userLoading || !user?.id) return
+    const init = async () => {
+      const { data, error } = await supabase.auth.getUser();
+      if (error || !data?.user) {
+        console.error('ユーザー取得エラー:', error?.message);
+        return;
+      }
+      setUser(data.user);
 
-    const fetchProfile = async () => {
-      setLoading(true)
-      const { data, error } = await supabase
+      const { data: profile, error: profileError } = await supabase
         .from('profiles')
         .select(
           'country, user_type, income_category, entity_type, state_of_incorporation'
         )
-        .eq('id', user.id)
-        .single()
+        .eq('id', data.user.id)
+        .single();
 
-      if (error) {
-        console.warn('プロフィール読み込み失敗:', error.message)
-      } else if (data) {
-        setCountry(data.country ?? '')
-        setUserType(data.user_type ?? '')
-        setIncomeCategory(data.income_category ?? '')
-        setEntityType(data.entity_type ?? '')
-        setStateOfIncorporation(data.state_of_incorporation ?? '')
+      if (profileError) {
+        console.warn('プロフィール読み込み失敗:', profileError.message);
+      } else if (profile) {
+        setCountry(profile.country ?? '');
+        setUserType(profile.user_type ?? '');
+        setIncomeCategory(profile.income_category ?? '');
+        setEntityType(profile.entity_type ?? '');
+        setStateOfIncorporation(profile.state_of_incorporation ?? '');
       }
-      setLoading(false)
-    }
 
-    fetchProfile()
-  }, [user, userLoading])
+      setLoading(false);
+    };
+
+    init();
+  }, []);
 
   const handleSave = async () => {
     if (!user?.id) {
-      setMessage('ユーザーIDが取得できません')
-      return
+      setMessage('ユーザーIDが取得できません');
+      return;
     }
 
-    setLoading(true)
+    setLoading(true);
+
     const updates = {
       id: user.id,
       country: country || null,
@@ -56,25 +63,21 @@ export default function ProfilePage() {
       entity_type: entityType || null,
       state_of_incorporation: stateOfIncorporation || null,
       updated_at: new Date(),
-    }
+    };
 
-    const { error } = await supabase.from('profiles').upsert(updates)
+    const { error } = await supabase.from('profiles').upsert(updates);
     if (error) {
-      console.error('保存失敗:', error.message)
-      setMessage('保存に失敗しました。')
+      console.error('保存失敗:', error.message);
+      setMessage('保存に失敗しました。');
     } else {
-      setMessage('保存しました。')
+      setMessage('保存しました。');
     }
-    setLoading(false)
-  }
 
-  if (userLoading || loading) {
-    return <div className="p-4">読み込み中...</div>
-  }
+    setLoading(false);
+  };
 
-  if (!user?.id) {
-    return <div className="p-4 text-red-500">ユーザー情報が取得できません</div>
-  }
+  if (loading) return <div className="p-4">読み込み中...</div>;
+  if (!user?.id) return <div className="p-4 text-red-500">ユーザー情報が取得できません</div>;
 
   return (
     <div className="p-6 max-w-xl mx-auto">
@@ -122,16 +125,13 @@ export default function ProfilePage() {
           <select className="w-full border p-2 mb-4" value={stateOfIncorporation} onChange={(e) => setStateOfIncorporation(e.target.value)}>
             <option value="">選択してください</option>
             {[
-              'Alabama', 'Alaska', 'Arizona', 'Arkansas', 'California', 'Colorado',
-              'Connecticut', 'Delaware', 'Florida', 'Georgia', 'Hawaii', 'Idaho',
-              'Illinois', 'Indiana', 'Iowa', 'Kansas', 'Kentucky', 'Louisiana',
-              'Maine', 'Maryland', 'Massachusetts', 'Michigan', 'Minnesota',
-              'Mississippi', 'Missouri', 'Montana', 'Nebraska', 'Nevada',
-              'New Hampshire', 'New Jersey', 'New Mexico', 'New York',
-              'North Carolina', 'North Dakota', 'Ohio', 'Oklahoma', 'Oregon',
-              'Pennsylvania', 'Rhode Island', 'South Carolina', 'South Dakota',
-              'Tennessee', 'Texas', 'Utah', 'Vermont', 'Virginia', 'Washington',
-              'West Virginia', 'Wisconsin', 'Wyoming'
+              'Alabama','Alaska','Arizona','Arkansas','California','Colorado','Connecticut','Delaware',
+              'Florida','Georgia','Hawaii','Idaho','Illinois','Indiana','Iowa','Kansas','Kentucky',
+              'Louisiana','Maine','Maryland','Massachusetts','Michigan','Minnesota','Mississippi',
+              'Missouri','Montana','Nebraska','Nevada','New Hampshire','New Jersey','New Mexico',
+              'New York','North Carolina','North Dakota','Ohio','Oklahoma','Oregon','Pennsylvania',
+              'Rhode Island','South Carolina','South Dakota','Tennessee','Texas','Utah','Vermont',
+              'Virginia','Washington','West Virginia','Wisconsin','Wyoming'
             ].map((state) => (
               <option key={state} value={state}>{state}</option>
             ))}
@@ -144,5 +144,5 @@ export default function ProfilePage() {
       </button>
       {message && <div className="mt-4 text-green-600">{message}</div>}
     </div>
-  )
+  );
 }
