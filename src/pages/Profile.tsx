@@ -65,11 +65,22 @@ export default function ProfilePage() {
   }, [userId])
 
   // 3. 保存処理
-  const handleSave = async () => {
-    if (!userId) {
-      setMessage('ユーザーが取得できていません')
-      return
-    }
+const handleSave = async () => {
+  console.log("user.id:", user?.id); // ← デバッグログ追加
+
+  if (!user?.id) {
+    setMessage('ユーザーが取得できていません');
+    return;
+  }
+
+  const updates = {
+    id: user.id,
+    // 以下略
+  };
+
+  // 保存処理へ続く…
+};
+
 
     setLoading(true)
 
