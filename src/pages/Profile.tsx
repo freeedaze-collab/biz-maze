@@ -14,7 +14,6 @@ export default function Profile() {
   const [stateOfIncorp, setStateOfIncorp] = useState('')   // 50州＋DC
   const [message, setMessage] = useState<string>('')
 
-  // 追加項目の出し分け
   const showIncomeBracket = useMemo(
     () => country === 'japan' && userType === 'individual',
     [country, userType]
@@ -24,7 +23,7 @@ export default function Profile() {
     [country, userType]
   )
 
-  // 初回ロード: user_id 基準で取得（RLSにより自分の1行のみ返る）
+  // 初回ロード: user_id 基準で取得（RLSにより自分の行のみ返る）
   useEffect(() => {
     if (userLoading) return
     if (!user?.id) {
@@ -39,11 +38,17 @@ export default function Profile() {
 
       const { data, error } = await supabase
         .from('profiles')
-        .select(
-          'country, account_type, income_bracket, entity_type, state_of_incorporation'
-        )
-        .eq('user_id', user.id)    // ← 取得条件を user_id に統一
-        .maybeSingle()             // ← 0件でもエラーにしない
+        .select(`
+          country,
+          account_type,
+          income_bracket,
+          entity_type,
+          us_entity_type,
+          state_of_incorporation,
+          us_state_of_incorporation
+        `)
+        .eq('user_id', user.id)
+        .maybeSingle()
 
       if (error) {
         console.warn('[Profile] load error:', error.message)
@@ -51,8 +56,9 @@ export default function Profile() {
         setCountry(data.country ?? '')
         setUserType(data.account_type ?? '')
         setIncomeBracket(data.income_bracket ?? '')
-        setEntityType(data.entity_type ?? '')
-        setStateOfIncorp(data.state_of_incorporation ?? '')
+        // 互換: us_* があれば優先、無ければ非us_* を採用
+        setEntityType(data.us_entity_type ?? data.entity_type ?? '')
+        setStateOfIncorp(data.us_state_of_incorporation ?? data.state_of_incorporation ?? '')
       }
 
       setLoading(false)
@@ -63,7 +69,6 @@ export default function Profile() {
 
   // 保存
   const handleSave = async () => {
-    // 保存直前に再取得（セッション揺れ対応）
     const { data: { user: freshUser }, error: uErr } = await supabase.auth.getUser()
     if (uErr || !freshUser?.id) {
       setMessage('ユーザーが取得できません。ログインし直してください。')
@@ -73,26 +78,29 @@ export default function Profile() {
     setLoading(true)
     setMessage('')
 
-    // 組み合わせに応じて不要フィールドは null に
     const normalized = {
       country: country || null,
       account_type: userType || null,
       income_bracket: showIncomeBracket ? (incomeBracket || null) : null,
+
+      // 互換のため、両系統に同値を書き込む
       entity_type: showUsCorpExtras ? (entityType || null) : null,
+      us_entity_type: showUsCorpExtras ? (entityType || null) : null,
+
       state_of_incorporation: showUsCorpExtras ? (stateOfIncorp || null) : null,
+      us_state_of_incorporation: showUsCorpExtras ? (stateOfIncorp || null) : null,
+
       updated_at: new Date().toISOString(),
     }
 
-    // 重要：RLS/NOT NULL 対応のため、id と user_id を同値で upsert
     const payload = {
       id: freshUser.id,
       user_id: freshUser.id,
       ...normalized,
     }
 
-    // 重複排除のキーは user_id に統一（DB側でも unique 制約を付与済み）
     const { error } = await supabase.from('profiles').upsert(payload, {
-      onConflict: 'user_id',
+      onConflict: 'user_id',   // ← user_id を一意キーとして扱う
     })
 
     if (error) {
