@@ -46,12 +46,37 @@ export default function TransactionHistory() {
     setLoading(false);
   };
 
-  useEffect(() => { load(); }, [user?.id]);
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
 
+  // 認証付きで Edge Function を呼ぶ（Bearer 必須）
   const sync = async () => {
     setSyncing(true);
     try {
-      await fetch("/functions/v1/sync-wallet-transactions", { method: "POST" });
+      // 最新のセッションを都度取得（トークン切れ・未ログインを検知）
+      const { data: { session }, error: sErr } = await supabase.auth.getSession();
+      if (sErr || !session?.access_token) {
+        console.warn("No session/access token. Please login first.", sErr);
+        return;
+      }
+
+      const res = await fetch("/functions/v1/sync-wallet-transactions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${session.access_token}`,
+          "Content-Type": "application/json",
+        },
+        // 必要に応じてパラメータを渡す（例）
+        // body: JSON.stringify({ walletAddress, since, limit })
+        body: JSON.stringify({}),
+      });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        console.warn("sync-wallet-transactions failed:", res.status, text);
+      }
     } catch (e) {
       console.warn("sync error:", e);
     } finally {
@@ -70,8 +95,8 @@ export default function TransactionHistory() {
               <h1 className="text-4xl font-bold mb-2">Transaction History</h1>
               <p className="text-primary-foreground/90">View all your blockchain transactions</p>
             </div>
-            <Button 
-              onClick={sync} 
+            <Button
+              onClick={sync}
               disabled={syncing}
               variant="secondary"
               size="lg"
@@ -110,16 +135,16 @@ export default function TransactionHistory() {
             ) : (
               <div className="space-y-3">
                 {rows.map((r) => (
-                  <div 
-                    key={r.id} 
+                  <div
+                    key={r.id}
                     className="group border-2 rounded-xl p-4 hover:border-primary/50 hover:shadow-md transition-all duration-300 bg-gradient-to-r from-card to-muted/20"
                   >
                     <div className="flex items-center justify-between gap-4">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-2">
                           <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                            r.direction === 'in' 
-                              ? 'bg-success/10 text-success' 
+                            r.direction === 'in'
+                              ? 'bg-success/10 text-success'
                               : r.direction === 'out'
                               ? 'bg-destructive/10 text-destructive'
                               : 'bg-muted text-muted-foreground'
