@@ -1,108 +1,116 @@
-// File: /src/pages/Profile.tsx
+import React, { useEffect, useMemo, useState } from 'react'
+import { supabase } from '@/lib/supabaseClient'
+import { useUser } from '@/hooks/useUser'
 
-import React, { useEffect, useState } from 'react'
-import { supabase } from '../lib/supabaseClient'
-
-export default function ProfilePage() {
-  const [userId, setUserId] = useState<string | null>(null)
+export default function Profile() {
+  const { user, loading: userLoading } = useUser()
   const [loading, setLoading] = useState(true)
 
-  const [country, setCountry] = useState('')
-  const [userType, setUserType] = useState('')
-  const [incomeCategory, setIncomeCategory] = useState('')
-  const [entityType, setEntityType] = useState('')
-  const [stateOfIncorporation, setStateOfIncorporation] = useState('')
-  const [message, setMessage] = useState('')
+  // UI state
+  const [country, setCountry] = useState('')               // 'japan' | 'usa' | ''
+  const [userType, setUserType] = useState('')             // 'individual' | 'corporate' | ''
+  const [incomeBracket, setIncomeBracket] = useState('')   // 'under800' | 'over800' | ''
+  const [entityType, setEntityType] = useState('')         // 'C-Corp' | 'S-Corp' | 'LLC' | 'Partnership' | 'PC/PA' | 'PBC'
+  const [stateOfIncorp, setStateOfIncorp] = useState('')   // 50州＋DC
+  const [message, setMessage] = useState<string>('')
 
-  // 1. ユーザー情報取得（useUserを避けて Supabase API で直接取得）
+  // 追加項目の出し分け
+  const showIncomeBracket = useMemo(
+    () => country === 'japan' && userType === 'individual',
+    [country, userType]
+  )
+  const showUsCorpExtras = useMemo(
+    () => country === 'usa' && userType === 'corporate',
+    [country, userType]
+  )
+
+  // 初回ロード
   useEffect(() => {
-    const fetchUser = async () => {
-      const {
-        data: { user },
-        error,
-      } = await supabase.auth.getUser()
+    if (userLoading) return
+    if (!user?.id) {
+      setMessage('ログイン情報が取得できませんでした')
+      setLoading(false)
+      return
+    }
 
-      if (error || !user) {
-        console.error('ユーザー取得失敗:', error?.message)
-        setUserId(null)
+    const load = async () => {
+      setLoading(true)
+      setMessage('')
+      // id（= auth.uid）で1件取得
+      const { data, error } = await supabase
+        .from('profiles')
+        .select(
+          'country, account_type, income_bracket, entity_type, state_of_incorporation'
+        )
+        .eq('id', user.id)
+        .single()
+
+      if (error) {
+        console.warn('[Profile] load error:', error.message)
+        // プロファイルが未作成なら、UIは空のまま開始
         setLoading(false)
         return
       }
 
-      setUserId(user.id)
-    }
-
-    fetchUser()
-  }, [])
-
-  // 2. プロファイル情報の取得
-  useEffect(() => {
-    if (!userId) return
-
-    const fetchProfile = async () => {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select(
-          'country, user_type, income_category, entity_type, state_of_incorporation'
-        )
-        .eq('id', userId)
-        .single()
-
-      if (error) {
-        console.warn('プロフィール読み込み失敗:', error.message)
-      } else if (data) {
-        setCountry(data.country ?? '')
-        setUserType(data.user_type ?? '')
-        setIncomeCategory(data.income_category ?? '')
-        setEntityType(data.entity_type ?? '')
-        setStateOfIncorporation(data.state_of_incorporation ?? '')
-      }
+      setCountry(data?.country ?? '')
+      setUserType(data?.account_type ?? '')
+      setIncomeBracket(data?.income_bracket ?? '')
+      setEntityType(data?.entity_type ?? '')
+      setStateOfIncorp(data?.state_of_incorporation ?? '')
 
       setLoading(false)
     }
 
-    fetchProfile()
-  }, [userId])
+    load()
+  }, [userLoading, user?.id])
 
-  // 3. 保存処理
-const handleSave = async () => {
-  console.log("user.id:", user?.id); // ← デバッグログ追加
+  // 保存
+  const handleSave = async () => {
+    if (!user?.id) {
+      setMessage('ユーザーが取得できていません')
+      return
+    }
 
-  if (!user?.id) {
-    setMessage('ユーザーが取得できていません');
-    return;
-  }
     setLoading(true)
+    setMessage('')
 
-const updates = {
-  user_id: user.id, // match対象（idではない！）
-  country,
-  user_type: userType,
-  income_bracket: incomeCategory || null,
-  us_entity_type: entityType || null,
-  us_state_of_incorporation: stateOfIncorporation || null,
-  updated_at: new Date(),
-};
+    // 組み合わせに応じて不要フィールドは null に
+    const normalized = {
+      country: country || null,
+      account_type: userType || null,
+      income_bracket: showIncomeBracket ? (incomeBracket || null) : null,
+      entity_type: showUsCorpExtras ? (entityType || null) : null,
+      state_of_incorporation: showUsCorpExtras ? (stateOfIncorp || null) : null,
+      updated_at: new Date().toISOString(),
+    }
 
+    // 重要：RLS/NOT NULL 対応のため、id と user_id を同値で upsert
+    const payload = {
+      id: user.id,
+      user_id: user.id,
+      ...normalized,
+    }
 
-    const { error } = await supabase.from('profiles').upsert(updates)
+    // upsert（id 衝突時は更新）
+    const { error } = await supabase.from('profiles').upsert(payload, {
+      onConflict: 'id',
+    })
 
     if (error) {
-      console.error('保存エラー:', error.message)
-      setMessage('保存に失敗しました。')
+      console.error('[Profile] save error:', error)
+      setMessage('保存に失敗しました。設定や権限をご確認ください。')
     } else {
       setMessage('保存しました。')
     }
-
     setLoading(false)
   }
 
-  if (loading) {
+  if (userLoading || loading) {
     return <div className="p-4">読み込み中...</div>
   }
 
-  if (!userId) {
-    return <div className="p-4 text-red-600">ログインユーザーが確認できません</div>
+  if (!user?.id) {
+    return <div className="p-4 text-red-500">ユーザー情報が取得できません</div>
   }
 
   return (
@@ -131,13 +139,14 @@ const updates = {
         <option value="corporate">法人</option>
       </select>
 
-      {country === 'japan' && userType === 'individual' && (
+      {/* 日本×個人 → 課税所得区分 */}
+      {showIncomeBracket && (
         <>
           <label className="block mb-2">課税所得:</label>
           <select
             className="w-full border p-2 mb-4"
-            value={incomeCategory}
-            onChange={(e) => setIncomeCategory(e.target.value)}
+            value={incomeBracket}
+            onChange={(e) => setIncomeBracket(e.target.value)}
           >
             <option value="">選択してください</option>
             <option value="under800">800万円以下</option>
@@ -146,7 +155,8 @@ const updates = {
         </>
       )}
 
-      {country === 'usa' && userType === 'corporate' && (
+      {/* 米国×法人 → 法人形態 & 州 */}
+      {showUsCorpExtras && (
         <>
           <label className="block mb-2">法人形態:</label>
           <select
@@ -157,7 +167,7 @@ const updates = {
             <option value="">選択してください</option>
             <option value="C-Corp">C Corporation</option>
             <option value="S-Corp">S Corporation</option>
-            <option value="LLC">LLC</option>
+            <option value="LLC">Limited Liability Company</option>
             <option value="Partnership">Partnership</option>
             <option value="PC/PA">Professional Corporation / Association</option>
             <option value="PBC">Public Benefit Corporation</option>
@@ -166,20 +176,21 @@ const updates = {
           <label className="block mb-2">法人州:</label>
           <select
             className="w-full border p-2 mb-4"
-            value={stateOfIncorporation}
-            onChange={(e) => setStateOfIncorporation(e.target.value)}
+            value={stateOfIncorp}
+            onChange={(e) => setStateOfIncorp(e.target.value)}
           >
             <option value="">選択してください</option>
             {[
               'Alabama','Alaska','Arizona','Arkansas','California','Colorado',
               'Connecticut','Delaware','Florida','Georgia','Hawaii','Idaho',
-              'Illinois','Indiana','Iowa','Kansas','Kentucky','Louisiana','Maine',
-              'Maryland','Massachusetts','Michigan','Minnesota','Mississippi',
-              'Missouri','Montana','Nebraska','Nevada','New Hampshire','New Jersey',
-              'New Mexico','New York','North Carolina','North Dakota','Ohio',
-              'Oklahoma','Oregon','Pennsylvania','Rhode Island','South Carolina',
-              'South Dakota','Tennessee','Texas','Utah','Vermont','Virginia',
-              'Washington','West Virginia','Wisconsin','Wyoming'
+              'Illinois','Indiana','Iowa','Kansas','Kentucky','Louisiana',
+              'Maine','Maryland','Massachusetts','Michigan','Minnesota',
+              'Mississippi','Missouri','Montana','Nebraska','Nevada',
+              'New Hampshire','New Jersey','New Mexico','New York',
+              'North Carolina','North Dakota','Ohio','Oklahoma','Oregon',
+              'Pennsylvania','Rhode Island','South Carolina','South Dakota',
+              'Tennessee','Texas','Utah','Vermont','Virginia','Washington',
+              'West Virginia','Wisconsin','Wyoming','District of Columbia'
             ].map((state) => (
               <option key={state} value={state}>{state}</option>
             ))}
@@ -195,7 +206,7 @@ const updates = {
         保存
       </button>
 
-      {message && <div className="mt-4 text-green-600">{message}</div>}
+      {message && <div className="mt-4">{message}</div>}
     </div>
   )
 }
