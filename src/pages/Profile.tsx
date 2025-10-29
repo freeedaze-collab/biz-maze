@@ -24,7 +24,7 @@ export default function Profile() {
     [country, userType]
   )
 
-  // 初回ロード
+  // 初回ロード: user_id 基準で取得（RLSにより自分の1行のみ返る）
   useEffect(() => {
     if (userLoading) return
     if (!user?.id) {
@@ -36,27 +36,24 @@ export default function Profile() {
     const load = async () => {
       setLoading(true)
       setMessage('')
-      // id（= auth.uid）で1件取得
+
       const { data, error } = await supabase
         .from('profiles')
         .select(
           'country, account_type, income_bracket, entity_type, state_of_incorporation'
         )
-        .eq('id', user.id)
-        .single()
+        .eq('user_id', user.id)    // ← 取得条件を user_id に統一
+        .maybeSingle()             // ← 0件でもエラーにしない
 
       if (error) {
         console.warn('[Profile] load error:', error.message)
-        // プロファイルが未作成なら、UIは空のまま開始
-        setLoading(false)
-        return
+      } else if (data) {
+        setCountry(data.country ?? '')
+        setUserType(data.account_type ?? '')
+        setIncomeBracket(data.income_bracket ?? '')
+        setEntityType(data.entity_type ?? '')
+        setStateOfIncorp(data.state_of_incorporation ?? '')
       }
-
-      setCountry(data?.country ?? '')
-      setUserType(data?.account_type ?? '')
-      setIncomeBracket(data?.income_bracket ?? '')
-      setEntityType(data?.entity_type ?? '')
-      setStateOfIncorp(data?.state_of_incorporation ?? '')
 
       setLoading(false)
     }
@@ -66,7 +63,7 @@ export default function Profile() {
 
   // 保存
   const handleSave = async () => {
-    // useUser の状態に依存せず、保存直前に再取得してセッション揺れを回避
+    // 保存直前に再取得（セッション揺れ対応）
     const { data: { user: freshUser }, error: uErr } = await supabase.auth.getUser()
     if (uErr || !freshUser?.id) {
       setMessage('ユーザーが取得できません。ログインし直してください。')
@@ -93,9 +90,9 @@ export default function Profile() {
       ...normalized,
     }
 
-    // upsert（id 衝突時は更新）
+    // 重複排除のキーは user_id に統一（DB側でも unique 制約を付与済み）
     const { error } = await supabase.from('profiles').upsert(payload, {
-      onConflict: 'id',
+      onConflict: 'user_id',
     })
 
     if (error) {
