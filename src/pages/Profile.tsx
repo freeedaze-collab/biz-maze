@@ -66,8 +66,10 @@ export default function Profile() {
 
   // 保存
   const handleSave = async () => {
-    if (!user?.id) {
-      setMessage('ユーザーが取得できていません')
+    // useUser の状態に依存せず、保存直前に再取得してセッション揺れを回避
+    const { data: { user: freshUser }, error: uErr } = await supabase.auth.getUser()
+    if (uErr || !freshUser?.id) {
+      setMessage('ユーザーが取得できません。ログインし直してください。')
       return
     }
 
@@ -86,8 +88,8 @@ export default function Profile() {
 
     // 重要：RLS/NOT NULL 対応のため、id と user_id を同値で upsert
     const payload = {
-      id: user.id,
-      user_id: user.id,
+      id: freshUser.id,
+      user_id: freshUser.id,
       ...normalized,
     }
 
