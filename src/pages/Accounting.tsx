@@ -1,6 +1,6 @@
 // src/pages/Accounting.tsx
 import { useEffect, useState } from "react";
-import { supabase } from "@/lib/supabaseClient"; // プロジェクトの実パスに合わせてください
+import { supabase } from "@/integrations/supabaseClient"; // プロジェクトの実パスに合わせてください
 
 type Statement = {
   pl: { lines: { account_code: string; amount: number }[]; net_income: number };
