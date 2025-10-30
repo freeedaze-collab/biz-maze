@@ -1,7 +1,7 @@
 // File: src/pages/auth/Register.tsx
 
 import React, { useState } from 'react';
-import { supabase } from '../../lib/supabaseClient';
+import { supabase } from '@/integrations/supabase/client';
 
 const Register = () => {
   // State for region (country) and account type (Individual/Corporation)
