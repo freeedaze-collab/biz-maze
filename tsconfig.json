@@ -1,6 +1,6 @@
 {
   "compilerOptions": {
-    /* 基本設定 */
+    // ---- 基本設定 ----
     "target": "ES2020",
     "lib": ["ES2020", "DOM", "DOM.Iterable"],
     "module": "ESNext",
@@ -14,18 +14,16 @@
     "allowSyntheticDefaultImports": true,
     "forceConsistentCasingInFileNames": true,
 
-    /* パスエイリアス（Lovable でも落ちないように相対ルートを明示） */
-    "baseUrl": "./src",
+    // ---- パスエイリアス ----
+    // baseUrl はプロジェクトルートに。paths は src 配下を指す
+    "baseUrl": ".",
     "paths": {
-      "@/*": ["./*"]
+      "@/*": ["src/*"]
     },
 
-    /* Vite / TS での型補完 */
+    // ---- 型補完 ----
     "types": ["vite/client"]
   },
-  "include": [
-    "src",
-    "vite-env.d.ts"
-  ],
+  "include": ["src", "vite-env.d.ts"],
   "exclude": ["node_modules", "dist"]
 }
