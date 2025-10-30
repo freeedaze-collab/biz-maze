@@ -47,6 +47,8 @@ import InvoiceEditor from "@/pages/invoice/InvoiceEditor";
 // ====== Accounting / Payments ======
 import AccountingTaxScreen1 from "@/pages/accounting/AccountingTaxScreen1";
 import PaymentGateway from "@/pages/PaymentGateway";
+import Accounting from "@/pages/Accounting";
+
 
 // ====== Misc ======
 import NotFound from "@/pages/NotFound";
@@ -54,6 +56,7 @@ import Navigation from "@/components/Navigation";
 import { AuthGuard } from "@/components/AuthGuard";
 import DevAuthPanel from "@/components/DevAuthPanel";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+
 
 // ---- Layout with top navigation (for authenticated areas) ----
 const WithNav: React.FC<React.PropsWithChildren> = ({ children }) => (
@@ -75,7 +78,7 @@ export default function App() {
             <Route path="/auth/register" element={<Register />} />
             {/* Pricing はマーケ/プラン確認用として公開。ログイン後はメニューからも遷移可能 */}
             <Route path="/pricing" element={<Pricing />} />
-
+            <Route path="/accounting" element={<Accounting />} />
             {/* ===== Authenticated routes (guard + nav) ===== */}
             <Route
               path="/dashboard"
