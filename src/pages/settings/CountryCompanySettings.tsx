@@ -1,7 +1,7 @@
 // @ts-nocheck
 // src/pages/settings/CountryCompanySettings.tsx
 import React, { useEffect, useState } from 'react'
-import { supabase, type Profile } from '@/lib/supabaseClient'
+import { supabase, type Profile } from '@/integrations/supabase/client'
 
 export default function CountryCompanySettings() {
   const [profile, setProfile] = useState<Profile | null>(null)
