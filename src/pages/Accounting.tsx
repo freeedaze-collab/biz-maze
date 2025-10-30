@@ -1,6 +1,6 @@
 // src/pages/Accounting.tsx
 import { useEffect, useState } from "react";
-import { supabase } from "@/integrations/supabaseClient"; // プロジェクトの実パスに合わせてください
+import { supabase } from "@/integrations/supabase/client"; // ← 統一インポート
 
 type Statement = {
   pl: { lines: { account_code: string; amount: number }[]; net_income: number };
@@ -17,36 +17,24 @@ export default function Accounting() {
     const run = async () => {
       setLoading(true);
       setErrorMsg("");
+
       try {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (!session?.access_token) {
-          setErrorMsg("No session. Please login again.");
-          setLoading(false);
-          return;
-        }
-        const res = await fetch("/functions/v1/build-statements?period=this_month", {
-          headers: { Authorization: `Bearer ${session.access_token}` }
+        // ✅ Edge Function は invoke を使う（相対パス fetch をやめる）
+        const { data, error } = await supabase.functions.invoke("build-statements", {
+          // GET パラメータが必要なら body なしで query を実装側に寄せるか、
+          // body に period 等を渡す（今回は body を使わず関数側で30日集計）
+          // body: { period: "this_month" },
         });
 
-        const ctype = res.headers.get("content-type") || "";
-        if (!res.ok) {
-          // Supabase側で404/500の可能性 → テキストを拾って可視化
-          const text = await res.text();
-          setErrorMsg(`Edge Function error (${res.status}): ${text.slice(0, 200)}`);
-          setLoading(false);
-          return;
+        if (error) {
+          setErrorMsg(`Edge Function error: ${error.message ?? error}`);
+        } else if (!data) {
+          setErrorMsg("No data returned from build-statements.");
+        } else {
+          setData(data as Statement);
         }
-        if (!ctype.includes("application/json")) {
-          const text = await res.text();
-          setErrorMsg(`Unexpected response (not JSON). Did you deploy "build-statements"? First bytes: ${text.slice(0, 80)}`);
-          setLoading(false);
-          return;
-        }
-
-        const json = await res.json();
-        setData(json);
       } catch (e: any) {
-        setErrorMsg(`Fetch failed: ${e?.message || e}`);
+        setErrorMsg(`Invoke failed: ${e?.message || String(e)}`);
       } finally {
         setLoading(false);
       }
