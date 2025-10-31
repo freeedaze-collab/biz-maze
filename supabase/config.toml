@@ -11,3 +11,11 @@ verify_jwt = false
 
 [functions.calculate-us-tax]
 verify_jwt = false
+
+# 既存の [functions] セクションはそのまま残す
+
+[functions."build-statements"]
+verify_jwt = false
+
+[functions."classify-usage"]
+verify_jwt = false
