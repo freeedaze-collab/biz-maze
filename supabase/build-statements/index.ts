@@ -1,4 +1,3 @@
-// supabase/functions/build-statements/index.ts
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { handleOptions, jsonHeaders } from "../_shared/cors.ts";
 
@@ -7,7 +6,6 @@ serve(async (req: Request) => {
   if (opt) return opt;
 
   try {
-    // TODO: ここにPL/BS/CFの実集計ロジックを実装
     const resp = {
       pl: { lines: [{ account_code: "sales", amount: 0 }], net_income: 0 },
       bs: { lines: [{ account_code: "cash", amount: 0 }] },
