@@ -1,111 +1,78 @@
 // src/pages/Accounting.tsx
 import { useEffect, useState } from "react";
-import { supabase } from "@/integrations/supabase/client"; // ← 統一インポート
+import { supabase } from "@/integrations/supabase/client";
 
-type Statement = {
-  pl: { lines: { account_code: string; amount: number }[]; net_income: number };
-  bs: { lines: { account_code: string; amount: number }[] };
-  cf: { method: "indirect"; operating: number; adjustments: number };
+type BuildResult = {
+  pl: any;
+  bs: any;
+  cf: any;
 };
 
 export default function Accounting() {
-  const [data, setData] = useState<Statement | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [errorMsg, setErrorMsg] = useState<string>("");
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [data, setData] = useState<BuildResult | null>(null);
+
+  const run = async () => {
+    setLoading(true);
+    setErr(null);
+    setData(null);
+    try {
+      // fetch ではなく supabase.functions.invoke を使用
+      const { data, error } = await supabase.functions.invoke("build-statements", {
+        body: {}, // 必要になれば期間などを渡す
+      });
+
+      if (error) {
+        // supabase-js 由来のエラー（CORS/401 含む）はここに乗る
+        console.error("[build-statements] invoke error:", error);
+        setErr(error.message ?? String(error));
+        return;
+      }
+
+      // 非JSONなどが返った場合も拾う（data は any）
+      if (!data || typeof data !== "object") {
+        console.error("[build-statements] unexpected payload:", data);
+        setErr("Unexpected response (not JSON?)");
+        return;
+      }
+
+      setData(data as BuildResult);
+    } catch (e: any) {
+      console.error("[build-statements] exception:", e);
+      setErr(e?.message ?? String(e));
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const run = async () => {
-      setLoading(true);
-      setErrorMsg("");
-
-      try {
-        // ✅ Edge Function は invoke を使う（相対パス fetch をやめる）
-        const { data, error } = await supabase.functions.invoke("build-statements", {
-          // GET パラメータが必要なら body なしで query を実装側に寄せるか、
-          // body に period 等を渡す（今回は body を使わず関数側で30日集計）
-          // body: { period: "this_month" },
-        });
-
-        if (error) {
-          setErrorMsg(`Edge Function error: ${error.message ?? error}`);
-        } else if (!data) {
-          setErrorMsg("No data returned from build-statements.");
-        } else {
-          setData(data as Statement);
-        }
-      } catch (e: any) {
-        setErrorMsg(`Invoke failed: ${e?.message || String(e)}`);
-      } finally {
-        setLoading(false);
-      }
-    };
+    // 初回自動実行
     run();
   }, []);
 
-  if (loading) return <div className="p-6">Loading statements...</div>;
-  if (errorMsg) return <div className="p-6 text-red-600 whitespace-pre-wrap">{errorMsg}</div>;
-
   return (
-    <div className="p-6 max-w-5xl mx-auto space-y-8">
-      <h1 className="text-2xl font-bold">Financial Statements</h1>
+    <div className="p-6">
+      <h1 className="text-2xl font-bold mb-4">Accounting / Tax</h1>
+      <button
+        className="bg-blue-600 text-white px-4 py-2 rounded"
+        onClick={run}
+        disabled={loading}
+      >
+        {loading ? "Building..." : "Build Statements"}
+      </button>
 
-      <section>
-        <h2 className="text-xl font-semibold mb-2">P/L</h2>
-        <table className="w-full border">
-          <thead>
-            <tr><th className="p-2 border">Account</th><th className="p-2 border text-right">Amount</th></tr>
-          </thead>
-          <tbody>
-            {data?.pl.lines.map((l, i) => (
-              <tr key={i}>
-                <td className="p-2 border">{l.account_code}</td>
-                <td className="p-2 border text-right">{l.amount.toFixed(2)}</td>
-              </tr>
-            ))}
-            <tr>
-              <td className="p-2 border font-bold">Net Income</td>
-              <td className="p-2 border text-right font-bold">{data?.pl.net_income.toFixed(2)}</td>
-            </tr>
-          </tbody>
-        </table>
-      </section>
+      {err && (
+        <div className="mt-4 text-red-600 whitespace-pre-wrap">
+          Edge Function error: {err}
+        </div>
+      )}
 
-      <section>
-        <h2 className="text-xl font-semibold mb-2">B/S</h2>
-        <table className="w-full border">
-          <thead>
-            <tr><th className="p-2 border">Account</th><th className="p-2 border text-right">Balance</th></tr>
-          </thead>
-          <tbody>
-            {data?.bs.lines.map((l, i) => (
-              <tr key={i}>
-                <td className="p-2 border">{l.account_code}</td>
-                <td className="p-2 border text-right">{l.amount.toFixed(2)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </section>
-
-      <section>
-        <h2 className="text-xl font-semibold mb-2">Cash Flow (Indirect)</h2>
-        <table className="w-full border">
-          <tbody>
-            <tr>
-              <td className="p-2 border">Net Income</td>
-              <td className="p-2 border text-right">{data?.pl.net_income.toFixed(2)}</td>
-            </tr>
-            <tr>
-              <td className="p-2 border">Non-cash Adjustments</td>
-              <td className="p-2 border text-right">{data?.cf.adjustments.toFixed(2)}</td>
-            </tr>
-            <tr>
-              <td className="p-2 border font-bold">Operating Cash Flow</td>
-              <td className="p-2 border text-right font-bold">{data?.cf.operating.toFixed(2)}</td>
-            </tr>
-          </tbody>
-        </table>
-      </section>
+      {data && (
+        <pre className="mt-4 text-sm bg-muted p-4 rounded">
+          {JSON.stringify(data, null, 2)}
+        </pre>
+      )}
     </div>
   );
 }
