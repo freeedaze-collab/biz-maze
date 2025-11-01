@@ -23,6 +23,7 @@ serve(async (req: Request) => {
   if (opt) return opt;
 
   try {
+    // 疎通確認：OKだけ返す
     return new Response(JSON.stringify({ ok: true }), {
       headers: jsonHeaders(),
     });
