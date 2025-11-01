@@ -1,9 +1,9 @@
 // supabase/functions/build-statements/index.ts
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 
-// 共有モジュールを使わず、関数ファイル内に直書き
+// CORS を関数内に直書き（共有モジュールを使わない）
 const corsHeaders: Record<string, string> = {
-  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Origin": "*", // 動作確認優先。後で本番ドメインに絞ってOK
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
 };
@@ -24,7 +24,7 @@ serve(async (req: Request) => {
   if (opt) return opt;
 
   try {
-    // 配線確認用のダミー応答
+    // まずは疎通確認用のダミー応答
     const resp = {
       pl: { lines: [{ account_code: "sales", amount: 0 }], net_income: 0 },
       bs: { lines: [{ account_code: "cash", amount: 0 }] },
