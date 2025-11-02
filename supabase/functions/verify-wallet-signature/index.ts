@@ -1,126 +1,122 @@
 // supabase/functions/verify-wallet-signature/index.ts
-// Deno runtime
+// 署名ワークフロー：
+// 1) { action: 'nonce' }        → プロファイルに nonce を保存して返す
+// 2) { action: 'verify', address, signature, nonce }
+//    → 署名検証OKなら wallets に upsert、profiles.verify_nonce をクリア
+
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { verifyMessage, getAddress } from "npm:viem";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { isAddress, hashMessage, recoverAddress } from "https://esm.sh/viem@2";
 
-type Json = Record<string, unknown>;
+const corsHeaders: Record<string, string> = {
+  "Access-Control-Allow-Origin": "*", // 動作優先。必要に応じて本番ドメインへ絞ってください
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
 
-function corsHeaders(origin?: string): HeadersInit {
-  return {
-    "access-control-allow-origin": origin ?? "*",
-    "access-control-allow-headers": "authorization, x-client-info, apikey, content-type",
-    "access-control-allow-methods": "GET,POST,OPTIONS",
-    "content-type": "application/json; charset=utf-8",
-  };
+const handleOptions = (req: Request) =>
+  req.method === "OPTIONS" ? new Response("ok", { headers: corsHeaders }) : null;
+
+function jsonHeaders(extra: Record<string,string> = {}) {
+  return { ...corsHeaders, "Content-Type": "application/json", ...extra };
 }
 
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
+function getSupabaseClientWithAuth(req: Request) {
+  const url = Deno.env.get("SUPABASE_URL")!;
+  const anon = Deno.env.get("SUPABASE_ANON_KEY")!;
+  const auth = req.headers.get("authorization") ?? "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : undefined;
 
-serve(async (req) => {
-  const origin = req.headers.get("origin") ?? "*";
-  if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders(origin) });
+  // RLS を “呼び出しユーザーの権限” で通す
+  return createClient(url, anon, token ? { global: { headers: { Authorization: `Bearer ${token}` } } } : undefined);
+}
+
+serve(async (req: Request) => {
+  const opt = handleOptions(req);
+  if (opt) return opt;
+
+  if (req.method !== "POST") {
+    return new Response(JSON.stringify({ error: "Method not allowed" }), { status: 405, headers: jsonHeaders() });
   }
 
   try {
-    // auth (user is optional for GET, required for POST)
-    const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-      global: { headers: { Authorization: req.headers.get("authorization") ?? "" } },
-    });
-
-    // ---------- GET: return message to sign (deterministic)
-    if (req.method === "GET") {
-      const url = new URL(req.url);
-      const addr = (url.searchParams.get("address") || "").toLowerCase();
-      if (!/^0x[a-f0-9]{40}$/.test(addr)) {
-        return new Response(JSON.stringify({ error: "Invalid address" }), {
-          status: 400,
-          headers: corsHeaders(origin),
-        });
-      }
-      const { data: userRes } = await supabase.auth.getUser();
-      const uid = userRes.user?.id || "anonymous";
-
-      const nonce = crypto.randomUUID().replace(/-/g, ""); // 32 hex
-      const message =
-        `BizMaze Wallet Linking\n` +
-        `User: ${uid}\n` +
-        `Address: ${addr}\n` +
-        `Nonce: ${nonce}\n` +
-        `Timestamp: ${Date.now()}`;
-
-      return new Response(JSON.stringify({ message }), { headers: corsHeaders(origin) });
+    const supabase = getSupabaseClientWithAuth(req);
+    const { data: userResp, error: userErr } = await supabase.auth.getUser();
+    if (userErr || !userResp?.user?.id) {
+      return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: jsonHeaders() });
     }
+    const userId = userResp.user.id;
 
-    // ---------- POST: verify signed message
-    if (req.method === "POST") {
-      const { data: userRes } = await supabase.auth.getUser();
-      const uid = userRes.user?.id;
-      if (!uid) {
-        return new Response(JSON.stringify({ error: "Unauthorized" }), {
-          status: 401,
-          headers: corsHeaders(origin),
-        });
-      }
+    const body = await req.json().catch(() => ({}));
+    const action = body?.action as "nonce" | "verify" | undefined;
 
-      const { address, signature, message } = (await req.json().catch(() => ({}))) as {
-        address?: string;
-        signature?: `0x${string}`;
-        message?: string;
-      };
-
-      if (!address || !signature || !message) {
-        return new Response(JSON.stringify({ error: "Missing fields" }), {
-          status: 400,
-          headers: corsHeaders(origin),
-        });
-      }
-
-      // Normalize to checksum
-      const inputChecksum = getAddress(address);
-
-      // viem の verifyMessage は boolean を返す（EIP-191 Prefix含め内部でよしなにやってくれます）
-      const ok = await verifyMessage({
-        address: inputChecksum,
-        message,
-        signature,
-      });
-
-      if (!ok) {
-        return new Response(JSON.stringify({ ok: false, error: "Signature does not match the address" }), {
-          status: 400,
-          headers: corsHeaders(origin),
-        });
-      }
-
-      // ここで DB 保存（profiles.primary_wallet でも wallets テーブルでも可）
-      // 例: profiles.primary_wallet を更新
-      const update = await supabase
+    if (action === "nonce") {
+      // 1) ノンス発行 → profiles.verify_nonce に保存
+      const nonce = crypto.randomUUID().replace(/-/g, "");
+      const { error: upErr } = await supabase
         .from("profiles")
-        .update({ primary_wallet: inputChecksum })
-        .eq("user_id", uid);
-      if (update.error) {
-        return new Response(JSON.stringify({ ok: false, error: update.error.message }), {
-          status: 500,
-          headers: corsHeaders(origin),
-        });
+        .update({ verify_nonce: nonce, updated_at: new Date().toISOString() })
+        .eq("id", userId);
+      if (upErr) {
+        return new Response(JSON.stringify({ error: upErr.message }), { status: 400, headers: jsonHeaders() });
       }
-
-      return new Response(JSON.stringify({ ok: true, address: inputChecksum }), {
-        headers: corsHeaders(origin),
-      });
+      return new Response(JSON.stringify({ nonce }), { headers: jsonHeaders() });
     }
 
-    return new Response(JSON.stringify({ error: "Method not allowed" }), {
-      status: 405,
-      headers: corsHeaders(origin),
-    });
+    if (action === "verify") {
+      const address = String(body?.address ?? "");
+      const signature = String(body?.signature ?? "");
+      const nonce = String(body?.nonce ?? "");
+
+      // 入力検証
+      if (!isAddress(address) || !signature || !nonce) {
+        return new Response(JSON.stringify({ error: "Bad request" }), { status: 400, headers: jsonHeaders() });
+      }
+
+      // DB から最新の nonce を取得
+      const { data: prof, error: pErr } = await supabase
+        .from("profiles")
+        .select("verify_nonce")
+        .eq("id", userId)
+        .single();
+      if (pErr) {
+        return new Response(JSON.stringify({ error: pErr.message }), { status: 400, headers: jsonHeaders() });
+      }
+      if (!prof?.verify_nonce || prof.verify_nonce !== nonce) {
+        return new Response(JSON.stringify({ error: "Nonce mismatch/expired" }), { status: 400, headers: jsonHeaders() });
+      }
+
+      // EIP-191（personal_sign）方式で検証（整形しない）
+      const recovered = await recoverAddress({ hash: hashMessage(nonce), signature });
+
+      // 大文字小文字の揺れを吸収して比較
+      if (recovered.toLowerCase() !== address.toLowerCase()) {
+        console.log("recover mismatch", { input: address, recovered });
+        return new Response(JSON.stringify({ error: "Signature mismatch" }), { status: 400, headers: jsonHeaders() });
+      }
+
+      // wallets へ upsert（user_id+address unique を想定）
+      const { error: wErr } = await supabase
+        .from("wallets")
+        .upsert({
+          user_id: userId,
+          address: address.toLowerCase(),
+          verified_at: new Date().toISOString(),
+        }, { onConflict: "user_id,address" });
+
+      if (wErr) {
+        return new Response(JSON.stringify({ error: wErr.message }), { status: 400, headers: jsonHeaders() });
+      }
+
+      // 使い終わった nonce をクリア
+      await supabase.from("profiles").update({ verify_nonce: null }).eq("id", userId);
+
+      return new Response(JSON.stringify({ ok: true, recovered }), { headers: jsonHeaders() });
+    }
+
+    return new Response(JSON.stringify({ error: "Unknown action" }), { status: 400, headers: jsonHeaders() });
   } catch (e) {
-    return new Response(JSON.stringify({ error: String(e?.message || e) }), {
-      status: 500,
-      headers: corsHeaders(),
-    });
+    const msg = e instanceof Error ? e.message : String(e);
+    return new Response(JSON.stringify({ error: msg }), { status: 500, headers: jsonHeaders() });
   }
 });
