@@ -19,3 +19,6 @@ verify_jwt = false
 
 [functions."classify-usage"]
 verify_jwt = false
+
+[functions."verify-wallet-signature"]
+verify_jwt = true   # 本人だけが実行できるよう JWT 必須推奨
