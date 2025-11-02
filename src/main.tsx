@@ -3,10 +3,10 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 
-// Supabase クライアント（プロジェクト標準パス）
+// Supabase standard client (keep as-is in your project)
 import { supabase } from "@/integrations/supabase/client";
 
-// wagmi / React Query / Router
+// wagmi / query / router
 import { WagmiProvider } from "wagmi";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createHashRouter, createBrowserRouter, RouterProvider } from "react-router-dom";
@@ -17,7 +17,7 @@ import { AuthProvider } from "@/hooks/useAuth";
 
 const qc = new QueryClient();
 
-// プレビュー（静的）では HashRouter、本番でリライト可能なら BrowserRouter に自動切替
+// 静的プレビュー（preview--）では HashRouter、本番でリライト可なら BrowserRouter
 const useHash =
   typeof window !== "undefined" &&
   (window.location.host.startsWith("preview--") ||
