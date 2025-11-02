@@ -1,42 +1,38 @@
 // src/main.tsx
-import React from 'react'
-import ReactDOM from 'react-dom/client'
-import { BrowserRouter, HashRouter } from 'react-router-dom'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { WagmiProvider } from 'wagmi'
-import { wagmiConfig } from './config/wagmi'
-import { AuthProvider } from './hooks/useAuth'
-import { supabase } from "./integrations/supabase/client";
-import App from './App'
+import React from "react";
+import ReactDOM from "react-dom/client";
+import App from "./App";
 
-/**
- * Preview/CDN でも落ちないための自動フォールバック:
- *  - default: BrowserRouter
- *  - preview--*.lovable.app / file:// / VITE_FORCE_HASH="1" は HashRouter
- */
-function shouldUseHashRouter(): boolean {
-  const force = import.meta.env.VITE_FORCE_HASH === '1'
-  const host = typeof window !== 'undefined' ? window.location.hostname : ''
-  const isPreview = host.startsWith('preview--')
-  const isFile = typeof window !== 'undefined' && window.location.protocol === 'file:'
-  return force || isPreview || isFile
-}
-const Router = shouldUseHashRouter() ? HashRouter : BrowserRouter
-const qc = new QueryClient()
+// あなたのプロジェクトの実体に合わせて import してください
+import { supabase } from "@/integrations/supabase/client";
 
-window.supabase = supabase;
+// wagmi v2
+import { WagmiProvider } from "wagmi";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { createHashRouter, createBrowserRouter, RouterProvider } from "react-router-dom";
+import { wagmiConfig } from "@/wagmi/config"; // 下のファイルを作成します
+import { AuthProvider } from "@/hooks/useAuth"; // 既存の AuthProvider を想定
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
+const qc = new QueryClient();
+
+// プレビュー（静的）では HashRouter、本番でリライト可能なら BrowserRouter
+const useHash = typeof window !== "undefined" && (
+  window.location.host.startsWith("preview--") ||
+  import.meta.env.VITE_FORCE_HASH === "1"
+);
+
+const router = useHash
+  ? createHashRouter([{ path: "/*", element: <App /> }])
+  : createBrowserRouter([{ path: "/*", element: <App /> }]);
+
+ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    {/* ✅ あなたの順序に統一 */}
     <AuthProvider>
       <WagmiProvider config={wagmiConfig}>
         <QueryClientProvider client={qc}>
-          <Router>
-            <App />
-          </Router>
+          <RouterProvider router={router} />
         </QueryClientProvider>
       </WagmiProvider>
     </AuthProvider>
   </React.StrictMode>
-)
+);
