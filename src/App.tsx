@@ -1,32 +1,32 @@
 // src/App.tsx
-import { HashRouter, Routes, Route, Navigate } from "react-router-dom";
-import EmailSignUp from "@/pages/auth/EmailSignUp";
-import Confirm from "@/pages/auth/Confirm";
+import { Routes, Route, Navigate } from "react-router-dom";
 
-// 既存ページの import（必要に応じて実プロジェクトに合わせてください）
+// 既存のページ群（実プロジェクトのパスに合わせてください）
 import TransactionHistory from "@/pages/TransactionHistory";
 import Accounting from "@/pages/Accounting";
 import Profile from "@/pages/Profile";
-// ...他のページもここに
+import Wallets from "@/pages/Wallets";
+
+// 先日お渡ししたサインアップフロー（作っていれば有効）
+import EmailSignUp from "@/pages/auth/EmailSignUp";
+import Confirm from "@/pages/auth/Confirm";
 
 export default function App() {
   return (
-    <HashRouter>
-      <Routes>
-        {/* 新規: サインアップ */}
-        <Route path="/auth/register" element={<EmailSignUp />} />
-        {/* 新規: メールリンク着地（セッション確立→/profileへ） */}
-        <Route path="/auth/confirm" element={<Confirm />} />
+    <Routes>
+      {/* 認証前導線（メールサインアップ） */}
+      <Route path="/auth/register" element={<EmailSignUp />} />
+      <Route path="/auth/confirm" element={<Confirm />} />
 
-        {/* 既存 */}
-        <Route path="/transactions" element={<TransactionHistory />} />
-        <Route path="/accounting" element={<Accounting />} />
-        <Route path="/profile" element={<Profile />} />
+      {/* アプリページ */}
+      <Route path="/wallets" element={<Wallets />} />
+      <Route path="/transactions" element={<TransactionHistory />} />
+      <Route path="/accounting" element={<Accounting />} />
+      <Route path="/profile" element={<Profile />} />
 
-        {/* ルートや404などは適宜調整 */}
-        <Route path="/" element={<Navigate to="/auth/register" replace />} />
-        <Route path="*" element={<div className="p-6">Not Found</div>} />
-      </Routes>
-    </HashRouter>
+      {/* ルート */}
+      <Route path="/" element={<Navigate to="/auth/register" replace />} />
+      <Route path="*" element={<div className="p-6">Not Found</div>} />
+    </Routes>
   );
 }
