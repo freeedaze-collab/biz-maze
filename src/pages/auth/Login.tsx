@@ -13,24 +13,14 @@ export default function Login() {
   const [sending, setSending] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // ログイン済みならアプリトップへ
-  if (user) {
-    nav("/transactions", { replace: true });
-  }
-
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSending(true);
     setErr(null);
     try {
-      const { error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw error;
-
-      // サインイン後は Transaction History へ
-      nav("/transactions", { replace: true });
+      nav("/transactions", { replace: true }); // ← 成功後のみ遷移
     } catch (e: any) {
       setErr(e.message ?? String(e));
     } finally {
@@ -38,16 +28,10 @@ export default function Login() {
     }
   };
 
-  const onBackHome = () => {
-    // 未ログイン時に "/" → /auth/login のまま見た目が変わらない問題に対し、
-    // Home を「公開トップ（= /auth/login 相当）」と見なして文言だけ残すか、
-    // ここでは / へ遷移（RootRedirectの仕様どおり）。
-    nav("/", { replace: true });
-  };
-
   return (
     <div className="max-w-sm mx-auto p-6 space-y-6">
       <h1 className="text-2xl font-bold">Sign in</h1>
+
       <form onSubmit={onSubmit} className="space-y-4">
         <input
           type="email"
@@ -67,7 +51,6 @@ export default function Login() {
           required
           autoComplete="current-password"
         />
-
         <button
           type="submit"
           className="w-full bg-blue-600 text-white rounded py-2 disabled:opacity-60"
@@ -80,9 +63,9 @@ export default function Login() {
       {err && <div className="text-red-600 text-sm whitespace-pre-wrap">{err}</div>}
 
       <div className="flex items-center justify-between text-sm">
-        <button onClick={onBackHome} className="underline text-muted-foreground">
+        <Link to="/" className="underline text-muted-foreground">
           Back to home
-        </button>
+        </Link>
         <Link to="/auth/register" className="text-blue-600 underline">
           Create account
         </Link>
