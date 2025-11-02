@@ -3,23 +3,24 @@ import { Routes, Route, Navigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { AuthGuard } from "@/components/AuthGuard";
 
-// 実在するアプリページ
+// 実在ページ
 import TransactionHistory from "@/pages/TransactionHistory";
 import Accounting from "@/pages/Accounting";
 import Profile from "@/pages/Profile";
-// ウォレットは pages/wallet 配下
 import WalletSelection from "@/pages/wallet/WalletSelection";
 
-// 認証フロー（実体に合わせる）
+// 認証フロー
 import Login from "@/pages/auth/Login";
-import Register from "@/pages/auth/Register";
+// 既存の Register.tsx は「プロフィール初期設定（国/種別）」として使う
+import ProfileSetup from "@/pages/auth/Register";
 import Confirm from "@/pages/auth/Confirm";
+// 新規で追加するメールサインアップ画面
+import EmailSignUp from "@/pages/auth/EmailSignUp";
 
 /**
  * ルート("/")の挙動：
- *  - ログイン済み：アプリのトップ（ここでは /transactions）へ
- *  - 未ログイン　：/auth/login へ
- * ページ“削除”で直すのではなく、条件分岐で正しく分ける。
+ *  - 未ログイン：/auth/login
+ *  - ログイン済：/transactions
  */
 function RootRedirect() {
   const { user, loading } = useAuth();
@@ -30,12 +31,16 @@ function RootRedirect() {
 export default function App() {
   return (
     <Routes>
-      {/* 認証前導線（既存ページを活かす） */}
+      {/* 認証前 */}
       <Route path="/auth/login" element={<Login />} />
-      <Route path="/auth/register" element={<Register />} />
+      {/* 「Create account」はここへ遷移（メール/パスワードで登録） */}
+      <Route path="/auth/register" element={<EmailSignUp />} />
+      {/* メールの確認リンクから戻る先。確認後はプロフィール初期設定へ誘導 */}
       <Route path="/auth/confirm" element={<Confirm />} />
+      {/* プロフィール初期設定（国/種別など）＝ 旧 Register.tsx を流用 */}
+      <Route path="/auth/profile-setup" element={<ProfileSetup />} />
 
-      {/* アプリページは AuthGuard で保護 */}
+      {/* アプリ本体（ログイン必須） */}
       <Route
         path="/wallets"
         element={
@@ -69,10 +74,10 @@ export default function App() {
         }
       />
 
-      {/* ルート：状態依存で分岐 */}
+      {/* ルート */}
       <Route path="/" element={<RootRedirect />} />
 
-      {/* 互換（/signup 等 → /auth/register）。不要なら後で削除可 */}
+      {/* 互換（/signup → /auth/register） */}
       <Route path="/signup" element={<Navigate to="/auth/register" replace />} />
 
       {/* Fallback */}
