@@ -19,6 +19,9 @@ import TransactionHistory from "@/pages/TransactionHistory";
 import Accounting from "@/pages/Accounting";
 import Profile from "@/pages/Profile";
 import WalletSelection from "@/pages/wallet/WalletSelection";
+import SendMoney from "@/pages/SendMoney";
+import CreateInvoice from "@/pages/CreateInvoice";
+
 
 export default function App() {
   return (
@@ -75,8 +78,46 @@ export default function App() {
         }
       />
 
+      <Route
+  　　　path="/send-money"
+  　　　element={
+    　　　<AuthGuard>
+      　　　<SendMoney />
+    　　　</AuthGuard>
+  　　}
+　　　/>
+      
+　　　<Route
+  　　　path="/create-invoice"
+  　　　element={
+    　　　<AuthGuard>
+      　　　<CreateInvoice />
+    　　　</AuthGuard>
+  　　　}
+　　　/>
+
+{/* ── 互換（ダッシュボタンが別パスを向いている可能性に備える）── */}
+　　　<Route
+  　　　path="/transfer"
+  　　　element={
+    　　　<AuthGuard>
+      　　　<SendMoney />
+    　　　</AuthGuard>
+  　　　}
+　　　/>
+      
+　　　<Route
+  　　　path="/invoice/create"
+  　　　element{
+    　　　<AuthGuard>
+      　　　<CreateInvoice />
+    　　　</AuthGuard>
+  　　　}
+　　　/>
+
+
       {/* Fallback */}
-      <Route path="*" element={<NotFound />} />
+     <Route path="*" element={<NotFound />} />
     </Routes>
   );
 }
