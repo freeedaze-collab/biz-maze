@@ -1,152 +1,59 @@
-// @ts-nocheck
 // src/pages/Dashboard.tsx
 import { Link } from "react-router-dom";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { ArrowLeftRight, FileText, Calculator, History, DollarSign, User, Wallet, TrendingUp } from "lucide-react";
 
 export default function Dashboard() {
-  const quickActions = [
-    {
-      icon: ArrowLeftRight,
-      title: "Send Money",
-      description: "Start manual transfer flow and confirm the payment.",
-      link: "/transfer/start",
-      variant: "default" as const,
-      color: "bg-primary/10 text-primary group-hover:bg-primary/20",
-    },
-    {
-      icon: FileText,
-      title: "Create Invoice",
-      description: "Prepare an invoice (save company/client, add line items).",
-      link: "/invoice/new",
-      variant: "secondary" as const,
-      color: "bg-success/10 text-success group-hover:bg-success/20",
-    },
-    {
-      icon: Calculator,
-      title: "Accounting / Tax",
-      description: "Generate journal entries, P/L, trial balance and US tax estimate.",
-      link: "/accounting",
-      variant: "secondary" as const,
-      color: "bg-accent/10 text-accent group-hover:bg-accent/20",
-    },
-    {
-      icon: History,
-      title: "Transactions",
-      description: "View synchronized on-chain history.",
-      link: "/transactions",
-      variant: "secondary" as const,
-      color: "bg-warning/10 text-warning group-hover:bg-warning/20",
-    },
-    {
-      icon: DollarSign,
-      title: "Pricing",
-      description: "Check your plan and metered fees.",
-      link: "/pricing",
-      variant: "secondary" as const,
-      color: "bg-secondary/10 text-secondary-foreground group-hover:bg-secondary/20",
-    },
-    {
-      icon: User,
-      title: "Profile",
-      description: "Update country and entity type.",
-      link: "/profile",
-      variant: "secondary" as const,
-      color: "bg-muted text-muted-foreground group-hover:bg-muted/80",
-    },
-  ];
-
   return (
-    <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5">
-      <div className="mx-auto max-w-7xl p-6 space-y-8">
-        {/* Hero Section */}
-        <div className="relative overflow-hidden rounded-xl bg-gradient-to-br from-primary/90 via-accent to-primary p-4 md:p-6 text-primary-foreground shadow-glow animate-fade-in">
-          <div className="relative z-10">
-            <div className="flex items-center gap-2 mb-2">
-              <div className="p-1.5 rounded-lg bg-white/20">
-                <Wallet className="h-5 w-5" />
-              </div>
-              <h1 className="text-2xl md:text-3xl font-bold">Dashboard</h1>
-            </div>
-            <p className="text-sm md:text-base text-primary-foreground/90">
-              Manage your finances and track transactions
-            </p>
+    <div className="max-w-5xl mx-auto p-6 space-y-8">
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold">Dashboard</h1>
+        <div className="text-sm text-muted-foreground">
+          Welcome back
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="border rounded-xl p-4">
+          <h2 className="font-semibold mb-2">Money</h2>
+          <div className="flex flex-col gap-2">
+            {/* ✅ Send money */}
+            <Link
+              to="/send-money"
+              className="px-3 py-2 rounded bg-blue-600 text-white text-center"
+            >
+              Send money
+            </Link>
+            {/* ✅ Create invoice */}
+            <Link
+              to="/create-invoice"
+              className="px-3 py-2 rounded border text-center"
+            >
+              Create invoice
+            </Link>
           </div>
         </div>
 
-        {/* Quick Actions Grid */}
-        <div>
-          <h2 className="text-lg font-semibold mb-3 text-foreground">Quick Actions</h2>
-          <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-            {quickActions.map((action) => {
-              const Icon = action.icon;
-              return (
-                <Card key={action.title} className="group hover:shadow-lg transition-all duration-300 border hover:border-primary/30 hover:-translate-y-1 animate-scale-in">
-                  <CardHeader className="pb-2 pt-4">
-                    <div className="flex items-center gap-2">
-                      <div className={`p-1.5 rounded-lg transition-all ${action.color}`}>
-                        <Icon className="h-4 w-4" />
-                      </div>
-                      <CardTitle className="text-base">{action.title}</CardTitle>
-                    </div>
-                  </CardHeader>
-                  <CardContent className="space-y-2 pb-4">
-                    <p className="text-xs text-muted-foreground leading-relaxed">
-                      {action.description}
-                    </p>
-                    <Button asChild variant={action.variant} size="sm" className="w-full h-8 text-xs group-hover:shadow-md transition-shadow">
-                      <Link to={action.link}>
-                        {action.variant === "default" ? "Start Now" : "Open"}
-                      </Link>
-                    </Button>
-                  </CardContent>
-                </Card>
-              );
-            })}
+        <div className="border rounded-xl p-4">
+          <h2 className="font-semibold mb-2">Records</h2>
+          <div className="flex flex-col gap-2">
+            <Link to="/transactions" className="px-3 py-2 rounded border text-center">
+              Transaction History
+            </Link>
+            <Link to="/accounting" className="px-3 py-2 rounded border text-center">
+              Accounting / Tax
+            </Link>
           </div>
         </div>
 
-        {/* Stats Overview */}
-        <div className="grid gap-4 md:grid-cols-3">
-          <Card className="bg-gradient-to-br from-card to-primary/5 border-primary/20 hover:shadow-glow transition-shadow">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">Total Balance</CardTitle>
-              <div className="p-2 rounded-lg bg-primary/10">
-                <TrendingUp className="h-4 w-4 text-primary" />
-              </div>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-foreground">$0.00</div>
-              <p className="text-xs text-muted-foreground mt-1">Connect wallet to view</p>
-            </CardContent>
-          </Card>
-
-          <Card className="bg-gradient-to-br from-card to-accent/5 border-accent/20 hover:shadow-glow transition-shadow">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">Recent Transactions</CardTitle>
-              <div className="p-2 rounded-lg bg-accent/10">
-                <History className="h-4 w-4 text-accent" />
-              </div>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-foreground">0</div>
-              <p className="text-xs text-muted-foreground mt-1">Sync to load history</p>
-            </CardContent>
-          </Card>
-
-          <Card className="bg-gradient-to-br from-card to-success/5 border-success/20 hover:shadow-glow transition-shadow">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">Pending Invoices</CardTitle>
-              <div className="p-2 rounded-lg bg-success/10">
-                <FileText className="h-4 w-4 text-success" />
-              </div>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-foreground">0</div>
-              <p className="text-xs text-muted-foreground mt-1">No pending items</p>
-            </CardContent>
-          </Card>
+        <div className="border rounded-xl p-4">
+          <h2 className="font-semibold mb-2">Account</h2>
+          <div className="flex flex-col gap-2">
+            <Link to="/profile" className="px-3 py-2 rounded border text-center">
+              Profile
+            </Link>
+            <Link to="/pricing" className="px-3 py-2 rounded border text-center">
+              Upgrade Plan
+            </Link>
+          </div>
         </div>
       </div>
     </div>
