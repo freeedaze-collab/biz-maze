@@ -16,9 +16,6 @@ export default function SendMoney() {
 
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    // 将来の実装ポイント：
-    // - ウォレット署名（SIWE）で本人性確認済み前提
-    // - Edge Function: /send-money を叩いて送金フロー実行（外部PG or 送金API）
     console.log("[SendMoney] payload", { to, network, asset, amount: Number(amount), memo });
     alert("This is a placeholder page. Submission captured in console.");
   };
@@ -27,6 +24,7 @@ export default function SendMoney() {
     <div className="max-w-2xl mx-auto p-6 space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Send money</h1>
+        {/* ✅ Back to Dashboard */}
         <Link to="/dashboard" className="text-sm underline text-muted-foreground">
           Back to Dashboard
         </Link>
