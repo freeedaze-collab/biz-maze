@@ -10,7 +10,7 @@ import NotFound from "@/pages/NotFound";
 // Auth flow
 import Login from "@/pages/auth/Login";
 import EmailSignUp from "@/pages/auth/EmailSignUp"; // /signup
-import Register from "@/pages/auth/Register";       // /signupform（初回プロファイル設定）
+import Register from "@/pages/auth/Register";       // /signupform
 import Confirm from "@/pages/auth/Confirm";
 
 // App pages
@@ -20,9 +20,10 @@ import Accounting from "@/pages/Accounting";
 import Profile from "@/pages/Profile";
 import WalletSelection from "@/pages/wallet/WalletSelection";
 
-// New pages
 import SendMoney from "@/pages/SendMoney";
 import CreateInvoice from "@/pages/CreateInvoice";
+import PaymentGateway from "@/pages/PaymentGateway";
+import Checkout from "@/pages/checkout/Checkout";
 
 export default function App() {
   return (
@@ -79,7 +80,6 @@ export default function App() {
         }
       />
 
-      {/* New routes (protected) */}
       <Route
         path="/send-money"
         element={
@@ -96,8 +96,19 @@ export default function App() {
           </AuthGuard>
         }
       />
+      <Route
+        path="/payment-gateway"
+        element={
+          <AuthGuard>
+            <PaymentGateway />
+          </AuthGuard>
+        }
+      />
 
-      {/* Compatibility aliases (protected) */}
+      {/* Hosted Checkout (public for buyers) */}
+      <Route path="/checkout/:id" element={<Checkout />} />
+
+      {/* Aliases */}
       <Route
         path="/transfer"
         element={
