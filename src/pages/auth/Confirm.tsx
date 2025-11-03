@@ -13,8 +13,8 @@ export default function Confirm() {
       const { data: { session } } = await supabase.auth.getSession();
       if (session?.user) {
         setMsg("Email confirmed. Redirecting to profile setup...");
-        // 地域/Account Type の初期設定画面へ（旧 Register.tsx）
-        nav("/auth/profile-setup", { replace: true });
+        // ✅ 初回プロフィール設定（/signupform）
+        nav("/signupform", { replace: true });
         return;
       }
       setMsg("No active session. Please sign in.");
