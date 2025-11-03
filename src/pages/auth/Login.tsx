@@ -18,9 +18,14 @@ export default function Login() {
     setSending(true);
     setErr(null);
     try {
-      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      const { error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
       if (error) throw error;
-      nav("/transactions", { replace: true }); // ← 成功後のみ遷移
+
+      // ✅ 成功時のみ dashboard へ
+      nav("/dashboard", { replace: true });
     } catch (e: any) {
       setErr(e.message ?? String(e));
     } finally {
@@ -51,6 +56,7 @@ export default function Login() {
           required
           autoComplete="current-password"
         />
+
         <button
           type="submit"
           className="w-full bg-blue-600 text-white rounded py-2 disabled:opacity-60"
@@ -66,7 +72,8 @@ export default function Login() {
         <Link to="/" className="underline text-muted-foreground">
           Back to home
         </Link>
-        <Link to="/auth/register" className="text-blue-600 underline">
+        {/* ✅ Create account は /signup */}
+        <Link to="/signup" className="text-blue-600 underline">
           Create account
         </Link>
       </div>
