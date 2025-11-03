@@ -30,8 +30,10 @@ export default function CreateInvoice() {
     return items.every((it) => it.name.trim() && it.qty > 0 && it.unitPrice >= 0);
   }, [billTo, invoiceNo, items]);
 
-  const addItem = () =>
-    setItems((prev) => [...prev, { id: crypto.randomUUID(), name: "", qty: 1, unitPrice: 0 }]);
+  const addItem = () => setItems((prev) => [
+    ...prev,
+    { id: crypto.randomUUID(), name: "", qty: 1, unitPrice: 0 },
+  ]);
 
   const removeItem = (id: string) =>
     setItems((prev) => (prev.length <= 1 ? prev : prev.filter((x) => x.id !== id)));
@@ -41,10 +43,6 @@ export default function CreateInvoice() {
 
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    // 将来の実装ポイント：
-    // - supabase.from('invoices').insert({...})
-    // - invoice_lines に items を展開して insert
-    // - PDF 作成 or メール送付の Edge Function 呼び出し
     console.log("[CreateInvoice] payload", {
       invoiceNo, billTo, currency, taxRate, items, subTotal, tax, total, notes,
     });
@@ -55,6 +53,7 @@ export default function CreateInvoice() {
     <div className="max-w-3xl mx-auto p-6 space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Create invoice</h1>
+        {/* ✅ Back to Dashboard */}
         <Link to="/dashboard" className="text-sm underline text-muted-foreground">
           Back to Dashboard
         </Link>
