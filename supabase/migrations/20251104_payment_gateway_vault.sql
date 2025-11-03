@@ -12,27 +12,24 @@ create table if not exists public.payment_vault_addresses (
 
 alter table public.payment_vault_addresses enable row level security;
 
-do $$
-begin
-  if not exists (
-    select 1 from pg_policies
-    where schemaname='public' and tablename='payment_vault_addresses' and policyname='vault_select_own'
-  ) then
-    create policy vault_select_own
-      on public.payment_vault_addresses
-      for select
-      using (user_id = auth.uid());
+drop policy if exists vault_select_own on public.payment_vault_addresses;
+drop policy if exists vault_ins_own on public.payment_vault_addresses;
+drop policy if exists vault_upd_own on public.payment_vault_addresses;
 
-    create policy vault_ins_own
-      on public.payment_vault_addresses
-      for insert
-      with check (user_id = auth.uid())
-      to authenticated;
+create policy vault_select_own
+  on public.payment_vault_addresses
+  for select
+  to authenticated
+  using (user_id = auth.uid());
 
-    create policy vault_upd_own
-      on public.payment_vault_addresses
-      for update
-      using (user_id = auth.uid())
-      to authenticated;
-  end if;
-end $$;
+create policy vault_ins_own
+  on public.payment_vault_addresses
+  for insert
+  to authenticated
+  with check (user_id = auth.uid());
+
+create policy vault_upd_own
+  on public.payment_vault_addresses
+  for update
+  to authenticated
+  using (user_id = auth.uid());
