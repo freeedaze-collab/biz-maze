@@ -29,16 +29,18 @@ export default function Index() {
           <CardContent className="py-5">
             <div className="flex flex-wrap items-center justify-center gap-2">
               <Button asChild variant="premium" size="sm">
-                <Link to="/auth/login">Get Started</Link>
-              </Button>
+                <Button asChild variant="premium" size="sm">
+                  <Link to="/signup">Get Started</Link>
+                </Button>
 
-              <Button asChild variant="outline" size="sm">
-                <Link to="/auth/login">Sign In</Link>
-              </Button>
+                <Button asChild variant="outline" size="sm">
+                 <Link to="/auth/login">Sign In</Link>
+                </Button>
 
-              <Button asChild variant="secondary" size="sm">
-                <Link to="/auth/register">Create Account</Link>
-              </Button>
+                <Button asChild variant="secondary" size="sm">
+                 <Link to="/signup">Create Account</Link>
+                </Button>
+
 
               <Button asChild variant="ghost" size="sm">
                 <Link to="/pricing">View Pricing</Link>
