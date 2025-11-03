@@ -1,225 +1,150 @@
 // src/pages/wallet/WalletSelection.tsx
-// @ts-nocheck
-import { useMemo, useState } from "react";
-import { useAccount, useBalance, useConnect, useDisconnect, useSignMessage } from "wagmi";
-import { injected } from "wagmi/connectors";
+import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
+import { useAccount, useBalance } from "wagmi";
 
-const isEthAddress = (v: string) => /^0x[a-fA-F0-9]{40}$/.test(v || "");
-
-const FUNCTIONS_BASE =
-  (import.meta.env.VITE_FUNCTION_VERIFY_WALLET as string)?.replace(/\/+$/, "") ||
-  ""; // e.g. https://<project>.supabase.co/functions/v1/verify-wallet-signature
+type WalletRow = {
+  id: number;
+  user_id: string;
+  address: string;
+  network?: string | null;
+  created_at?: string | null;
+  verified?: boolean | null;
+};
 
 export default function WalletSelection() {
   const { user } = useAuth();
+  const { address: connected } = useAccount();
+  const [rows, setRows] = useState<WalletRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [linking, setLinking] = useState(false);
 
-  // wagmi
-  const { address: connected, isConnected } = useAccount();
-  const { connect, isPending: isConnecting } = useConnect();
-  const { disconnect } = useDisconnect();
-  const { data: balance } = useBalance({ address: connected, query: { enabled: !!connected } });
-  const { signMessageAsync } = useSignMessage();
+  const short = useMemo(() => {
+    if (!connected) return "-";
+    return `${connected.slice(0, 6)}...${connected.slice(-4)}`;
+  }, [connected]);
 
-  // UI state
-  const [phase, setPhase] = useState<"idle" | "input" | "signing" | "linked">("idle");
-  const [inputAddress, setInputAddress] = useState("");
-  const [messageToSign, setMessageToSign] = useState<string>("");
-  const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState<string | null>(null);
-  const [showDebug, setShowDebug] = useState(false);
-  const debug: Record<string, any> = {};
+  const { data: balanceData } = useBalance({
+    address: connected as `0x${string}` | undefined,
+    query: { enabled: !!connected },
+  });
 
-  const valid = useMemo(() => isEthAddress(inputAddress), [inputAddress]);
-  const short = useMemo(
-    () => (connected ? `${connected.slice(0, 6)}...${connected.slice(-4)}` : "-"),
-    [connected]
-  );
+  const load = async () => {
+    if (!user?.id) return;
+    setLoading(true);
+    const { data, error } = await supabase
+      .from("wallets")
+      .select("id,user_id,address,network,created_at,verified")
+      .eq("user_id", user.id) // ← フロントでも念のため絞る
+      .order("created_at", { ascending: false });
 
-  // -------- helpers
-  async function bearer() {
-    const { data } = await supabase.auth.getSession();
-    return data.session?.access_token || "";
-  }
-
-  function assertEnv() {
-    if (!FUNCTIONS_BASE) {
-      throw new Error("VITE_FUNCTION_VERIFY_WALLET is empty. Put the full function URL.");
+    if (error) {
+      console.error("[wallets] load error:", error);
+      setRows([]);
+    } else {
+      setRows((data as WalletRow[]) ?? []);
     }
-  }
+    setLoading(false);
+  };
 
-  // -------- flow
-  async function start() {
-    setNote(null);
-    setPhase("input");
-    setMessageToSign("");
-  }
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
 
-  async function fetchMessage(addressL: string) {
-    assertEnv();
-    const token = await bearer();
-    const url = FUNCTIONS_BASE + "?address=" + addressL; // GET returns { message }
-    const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok || !j?.message) throw new Error(j?.error || "Failed to get message");
-    return j.message as string;
-  }
-
-  async function verifyAndLink() {
-    setNote(null);
-    if (!valid) {
-      setNote("Invalid address format (0x + 40 hex).");
-      return;
-    }
+  const linkWallet = async () => {
+    if (!user?.id || !connected) return;
+    setLinking(true);
     try {
-      setBusy(true);
+      // 1) ノンス取得
+      const { data: sess } = await supabase.auth.getSession();
+      const token = sess.session?.access_token ?? "";
+      const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/verify-wallet-signature`;
+      const resGet = await fetch(url, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!resGet.ok) throw new Error(await resGet.text());
+      const { nonce } = await resGet.json();
 
-      // 1) connect MetaMask if needed (wagmi v2)
-      if (!isConnected) {
-        await connect({ connector: injected() });
-      }
-      if (!connected) throw new Error("MetaMask not connected.");
+      // 2) SIWE署名
+      // wagmi v2: signMessageAsync は任意の場所のユーティリティ。ここでは window.ethereum 経由の標準ダイアログを使う簡易版。
+      const signature = await (window as any).ethereum.request({
+        method: "personal_sign",
+        params: [nonce, connected],
+      });
 
-      const inputL = inputAddress.toLowerCase();
-      const signerL = connected.toLowerCase();
-      if (inputL !== signerL) throw new Error("Entered address and MetaMask account differ.");
-
-      // 2) GET message from Edge Function
-      const message = await fetchMessage(inputL);
-      setMessageToSign(message);
-      debug.message = message;
-
-      // 3) Sign exactly that string
-      setPhase("signing");
-      const signature = await signMessageAsync({ message });
-      debug.sigLen = signature?.length || 0;
-
-      // 4) POST for verification
-      assertEnv();
-      const token = await bearer();
-      const r = await fetch(FUNCTIONS_BASE, {
+      // 3) 検証
+      const resPost = await fetch(url, {
         method: "POST",
         headers: {
-          "content-type": "application/json",
           Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
         },
-        body: JSON.stringify({ address: inputAddress, signature, message }),
+        body: JSON.stringify({ address: connected, signature, nonce }),
       });
-      const j = await r.json().catch(() => ({}));
-      debug.postStatus = r.status;
-      debug.postBody = j;
-
-      if (!r.ok || !j?.ok) {
-        throw new Error(j?.error || "Verification failed.");
+      if (!resPost.ok) {
+        const t = await resPost.text();
+        throw new Error(t);
       }
 
-      setPhase("linked");
-      setNote("Wallet linked successfully.");
+      // 4) 成功後リロード
+      await load();
     } catch (e: any) {
-      setNote(e?.message || String(e));
+      console.error("[wallets] linkWallet error:", e?.message ?? e);
+      alert(`Link failed: ${e?.message ?? e}`);
     } finally {
-      setBusy(false);
+      setLinking(false);
     }
-  }
+  };
 
-  // ---------- UI
   return (
-    <div className="p-6 max-w-xl mx-auto">
-      <h1 className="text-3xl font-bold mb-4">Wallet Creation / Linking</h1>
+    <div className="max-w-3xl mx-auto p-6 space-y-6">
+      <h1 className="text-3xl font-bold">Wallet Creation / Linking</h1>
 
-      <div className="border rounded-lg p-4 space-y-3">
+      <div className="text-sm">
+        Tip: After clicking “Verify &amp; Link”, MetaMask will open a signature window. Sign to prove ownership.
+      </div>
+
+      <div className="border rounded-xl p-4 space-y-1">
+        <div className="font-semibold">MetaMask</div>
         <div className="text-sm text-muted-foreground">
-          Tip: After clicking “Verify &amp; Link”, MetaMask will open a signature window. Sign to
-          prove ownership.
+          {connected ? "Connected" : "Not connected"}
         </div>
+        <div className="mt-2 text-sm">Account</div>
+        <div className="font-mono break-all">{connected ?? "-"}</div>
+        <div className="text-sm mt-2">Short</div>
+        <div>{short}</div>
+        <div className="text-sm mt-2">Balance</div>
+        <div>{balanceData ? balanceData.formatted + " " + balanceData.symbol : "-"}</div>
 
-        <div className="grid grid-cols-2 gap-4 text-sm">
-          <div>
-            <div className="font-semibold">MetaMask</div>
-            <div>{isConnected ? "Connected" : isConnecting ? "Connecting..." : "Disconnected"}</div>
-          </div>
-          <div>
-            <div className="font-semibold">Account</div>
-            <div className="font-mono break-all">{isConnected ? connected : "-"}</div>
-          </div>
-          <div>
-            <div className="font-semibold">Short</div>
-            <div>{short}</div>
-          </div>
-          <div>
-            <div className="font-semibold">Balance</div>
-            <div>{balance ? `${balance.formatted} ${balance.symbol}` : "-"}</div>
-          </div>
-        </div>
+        <button
+          disabled={!connected || linking}
+          onClick={linkWallet}
+          className="mt-4 px-3 py-2 rounded bg-blue-600 text-white"
+        >
+          {linking ? "Linking..." : "Link Wallet"}
+        </button>
+      </div>
 
-        {phase === "idle" && (
-          <button className="bg-primary text-primary-foreground px-4 py-2 rounded" onClick={start}>
-            Link Wallet
-          </button>
-        )}
-
-        {phase !== "idle" && (
-          <div className="space-y-3">
-            <div>
-              <label className="block text-sm font-semibold mb-1">Your wallet address</label>
-              <input
-                className={`w-full border rounded px-2 py-1 font-mono ${
-                  inputAddress && !valid ? "border-red-500" : ""
-                }`}
-                placeholder="0x..."
-                value={inputAddress}
-                onChange={(e) => setInputAddress(e.target.value.trim())}
-              />
-              {!valid && inputAddress && (
-                <div className="text-xs text-red-600 mt-1">
-                  Invalid address format (must be 0x + 40 hex chars).
+      <div className="border rounded-xl p-4">
+        <div className="font-semibold mb-2">Your Linked Wallets</div>
+        {loading ? (
+          <div>Loading...</div>
+        ) : rows.length === 0 ? (
+          <div className="text-sm text-muted-foreground">No linked wallets yet.</div>
+        ) : (
+          <ul className="space-y-2">
+            {rows.map((w) => (
+              <li key={w.id} className="border rounded p-3">
+                <div className="font-mono break-all">{w.address}</div>
+                <div className="text-xs text-muted-foreground">
+                  {w.network ?? "—"} • {w.verified ? "verified" : "unverified"}
                 </div>
-              )}
-            </div>
-
-            {!!messageToSign && (
-              <div className="text-xs break-all bg-muted/30 p-2 rounded">
-                <div className="font-semibold mb-1">Message (read-only)</div>
-                {messageToSign}
-              </div>
-            )}
-
-            <div className="flex gap-2">
-              <button
-                className="bg-green-600 text-white px-4 py-2 rounded disabled:opacity-50"
-                onClick={verifyAndLink}
-                disabled={!valid || busy}
-              >
-                {busy ? (phase === "signing" ? "Awaiting signature..." : "Verifying...") : "Verify & Link with MetaMask"}
-              </button>
-
-              <button className="px-4 py-2 rounded border" onClick={() => disconnect()} disabled={!isConnected}>
-                Disconnect MetaMask
-              </button>
-
-              <button className="px-4 py-2 rounded border" onClick={() => setShowDebug((v) => !v)}>
-                {showDebug ? "Hide debug" : "Show debug"}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {note && <div className="text-sm">{note}</div>}
-
-        {showDebug && (
-          <pre className="text-xs bg-muted/30 p-2 rounded overflow-auto">
-            {JSON.stringify(
-              {
-                FUNCTIONS_BASE: FUNCTIONS_BASE || "(empty)",
-                inputAddress,
-                messageToSign,
-                debug,
-              },
-              null,
-              2
-            )}
-          </pre>
+              </li>
+            ))}
+          </ul>
         )}
       </div>
     </div>
