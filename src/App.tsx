@@ -2,18 +2,19 @@
 import { Routes, Route } from "react-router-dom";
 import { AuthGuard } from "@/components/AuthGuard";
 
-// ---- Public pages (存在確認済み) ----
-import Index from "@/pages/Index";              // ランディング（/）
-import Home from "@/pages/Home";                // 必要なら /home でアクセス
-import Pricing from "@/pages/Pricing";          // /pricing
-import NotFound from "@/pages/NotFound";        // 最後のフォールバック
+// Public pages
+import Index from "@/pages/Index";
+import Pricing from "@/pages/Pricing";
+import NotFound from "@/pages/NotFound";
 
-// ---- Auth flow (存在確認済み) ----
-import Login from "@/pages/auth/Login";         // /auth/login
-import Register from "@/pages/auth/Register";   // /auth/register（= プロフィール初期設定の画面として残す）
-import Confirm from "@/pages/auth/Confirm";     // /auth/confirm
+// Auth flow
+import Login from "@/pages/auth/Login";
+import EmailSignUp from "@/pages/auth/EmailSignUp"; // /signup
+import Register from "@/pages/auth/Register";       // /signupform（初回プロファイル設定）
+import Confirm from "@/pages/auth/Confirm";
 
-// ---- App pages (存在確認済み) ----
+// App pages
+import Dashboard from "@/pages/Dashboard";
 import TransactionHistory from "@/pages/TransactionHistory";
 import Accounting from "@/pages/Accounting";
 import Profile from "@/pages/Profile";
@@ -24,20 +25,20 @@ export default function App() {
     <Routes>
       {/* Public */}
       <Route path="/" element={<Index />} />
-      <Route path="/home" element={<Home />} />
       <Route path="/pricing" element={<Pricing />} />
 
       {/* Auth */}
       <Route path="/auth/login" element={<Login />} />
-      <Route path="/auth/register" element={<Register />} />
+      <Route path="/signup" element={<EmailSignUp />} />
+      <Route path="/signupform" element={<Register />} />
       <Route path="/auth/confirm" element={<Confirm />} />
 
       {/* App (protected) */}
       <Route
-        path="/wallets"
+        path="/dashboard"
         element={
           <AuthGuard>
-            <WalletSelection />
+            <Dashboard />
           </AuthGuard>
         }
       />
@@ -65,8 +66,16 @@ export default function App() {
           </AuthGuard>
         }
       />
+      <Route
+        path="/wallets"
+        element={
+          <AuthGuard>
+            <WalletSelection />
+          </AuthGuard>
+        }
+      />
 
-      {/* 最後のフォールバック */}
+      {/* Fallback */}
       <Route path="*" element={<NotFound />} />
     </Routes>
   );
