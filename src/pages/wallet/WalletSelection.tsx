@@ -111,16 +111,12 @@ export default function WalletSelection() {
     setLinking(true);
     try {
       // 3) ノンス取得
-      const { data: sess } = await supabase.auth.getSession();
-      const token = sess.session?.access_token ?? "";
-      const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/verify-wallet-signature`;
-
-      const resGet = await fetch(url, {
-        method: "GET",
-        headers: { Authorization: `Bearer ${token}` },
+      const { data: nonceData, error: nonceErr } = await supabase.functions.invoke('verify-wallet-signature', {
+        body: { action: 'nonce' },
       });
-      if (!resGet.ok) throw new Error(await resGet.text());
-      const { nonce } = await resGet.json();
+      if (nonceErr) throw new Error(nonceErr.message);
+      const nonce = nonceData?.nonce;
+      if (!nonce) throw new Error("Failed to get nonce");
 
       // 4) 署名（EIP-191 personal_sign）
       const signature = await (window as any).ethereum.request({
@@ -129,19 +125,16 @@ export default function WalletSelection() {
       });
 
       // 5) 検証→DB登録（Edge Function側で recover & upsert）
-      const resPost = await fetch(url, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
+      const { data: verifyData, error: verifyErr } = await supabase.functions.invoke('verify-wallet-signature', {
+        body: {
+          action: 'verify',
           address: normalizedInput,
           signature,
           nonce,
-        }),
+        },
       });
-      if (!resPost.ok) throw new Error(await resPost.text());
+      if (verifyErr) throw new Error(verifyErr.message);
+      if (!verifyData?.ok) throw new Error("Verification failed");
 
       // 6) 完了
       setAddressInput("");
