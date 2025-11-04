@@ -1,104 +1,126 @@
 // supabase/functions/verify-wallet-signature/index.ts
-// Deno runtime / Supabase Edge Functions
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import {
-  isAddress,
-  recoverAddress,
-  hashMessage,
-} from "https://esm.sh/viem@2";
+// 署名→アドレス復元→本人一致→DB upsert（wallets）
+// CORS & OPTIONS 対応 / invoke(POST) の action=nonce,verify を両方許容
+// 「B（過去成功版）」の流儀を踏襲：viem の hashMessage/recoverAddress を使用
 
-const CORS_HEADERS: Record<string, string> = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Content-Type": "application/json",
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { isAddress, hashMessage, recoverAddress } from "https://esm.sh/viem@2";
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*", // 必要あれば preview--*.lovable.app に絞ってください
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
 };
 
-const json = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), { status, headers: CORS_HEADERS });
+function json(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      "Content-Type": "application/json",
+      ...corsHeaders,
+    },
+  });
+}
+
+function nonce() {
+  // UUIDでも十分。B版に合わせて12〜32桁程度のランダム文字列でもOK
+  const n = crypto.randomUUID().replace(/-/g, "");
+  return n;
+}
 
 Deno.serve(async (req) => {
-  // ---- CORS preflight ----
-  if (req.method === "OPTIONS") return json({ ok: true }, 204);
-
-  // ---- Supabase client (ユーザー権限を継承) ----
-  const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-  const anonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
-  const supabase = createClient(supabaseUrl, anonKey, {
-    global: { headers: { Authorization: req.headers.get("Authorization") ?? "" } },
-  });
+  // CORS preflight
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
 
   try {
+    // Supabase clients
+    const supabaseAdmin = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+    );
+
+    // 認証ユーザーを取りたい場合（verify_jwt=true の時に有効）
+    const supabaseWithAuth = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_ANON_KEY")!, // 認証ヘッダーだけ使う
+      {
+        global: {
+          headers: {
+            Authorization: req.headers.get("Authorization") || "",
+          },
+        },
+      }
+    );
+
     if (req.method === "GET") {
-      // 互換: GET でも nonce を返す
-      return json({ nonce: crypto.randomUUID().replace(/-/g, "") });
+      // GETでもノンス払い出しOKにしておく（保険）
+      return json({ nonce: nonce() });
     }
 
     if (req.method !== "POST") {
       return json({ error: "Method not allowed" }, 405);
     }
 
-    const body = await req.json().catch(() => ({}));
-    const action = body?.action;
+    let payload: any = {};
+    const ct = req.headers.get("content-type") || "";
+    if (ct.includes("application/json")) {
+      payload = await req.json().catch(() => ({}));
+    }
 
+    const action = String(payload?.action || "");
     if (action === "nonce") {
-      // 署名用ノンスを返す
-      return json({ nonce: crypto.randomUUID().replace(/-/g, "") });
+      return json({ nonce: nonce() });
     }
 
-    if (action === "verify") {
-      const { address, signature, nonce } = body ?? {};
-
-      if (
-        typeof nonce !== "string" ||
-        typeof signature !== "string" ||
-        typeof address !== "string" ||
-        !isAddress(address)
-      ) {
-        return json({ error: "Bad request" }, 400);
-      }
-
-      // 署名検証 (EIP-191 personal_sign 前提)
-      const recovered = await recoverAddress({
-        hash: hashMessage(nonce),
-        signature,
-      });
-
-      if (recovered.toLowerCase() !== address.toLowerCase()) {
-        return json({ error: "Signature does not match the address" }, 400);
-      }
-
-      // サインイン中ユーザーを取得（RLS 通過に必須）
-      const {
-        data: { user },
-        error: userErr,
-      } = await supabase.auth.getUser();
-      if (userErr || !user) {
-        return json({ error: "Unauthorized" }, 401);
-      }
-
-      // wallets に upsert（スキーマの既存列に合わせる）
-      const upsertPayload = {
-        user_id: user.id,
-        address: address,
-        verified: true,
-      };
-
-      const { error: upsertErr } = await supabase
-        .from("wallets")
-        .upsert(upsertPayload, { onConflict: "user_id,address" });
-
-      if (upsertErr) {
-        return json({ error: upsertErr.message }, 400);
-      }
-
-      return json({ ok: true });
+    if (action !== "verify") {
+      return json({ error: "Invalid action" }, 400);
     }
 
-    return json({ error: "Unknown action" }, 400);
+    const address: string = payload?.address;
+    const signature: string = payload?.signature;
+    const n: string = payload?.nonce;
+
+    if (!isAddress(address) || typeof signature !== "string" || typeof n !== "string") {
+      return json({ error: "Bad request: invalid address/signature/nonce" }, 400);
+    }
+
+    // EIP-191 前置きを含めたハッシュで復元（B版と同じやり方）
+    const recovered = await recoverAddress({
+      hash: hashMessage(n),
+      signature,
+    });
+
+    if (recovered.toLowerCase() !== address.toLowerCase()) {
+      return json({ error: "Signature does not match the address", recovered, address }, 400);
+    }
+
+    // 呼び出し元の認証ユーザー
+    const { data: userRes } = await supabaseWithAuth.auth.getUser();
+    const user_id = userRes?.user?.id;
+    if (!user_id) {
+      // verify_jwt=false でも通るようにするなら、別途 user_id を body に載せる運用でも良いが、
+      // セキュアに行くなら verify_jwt=true を推奨
+      return json({ error: "Unauthorized: missing user" }, 401);
+    }
+
+    // DB upsert（wallets テーブル： user_id / address / verified / created_at）
+    // ※ network カラムが無い環境で 42703 が出ていたため、ここでは address/verified のみ保存
+    const { error: upsertErr } = await supabaseAdmin
+      .from("wallets")
+      .upsert(
+        { user_id, address: address.toLowerCase(), verified: true },
+        { onConflict: "user_id,address" }
+      );
+
+    if (upsertErr) {
+      return json({ error: "DB upsert failed", details: upsertErr }, 500);
+    }
+
+    return json({ ok: true });
   } catch (e) {
     console.error("[verify-wallet-signature] fatal:", e);
-    return json({ error: "Internal error" }, 500);
+    return json({ error: "Internal error", details: String(e) }, 500);
   }
 });
