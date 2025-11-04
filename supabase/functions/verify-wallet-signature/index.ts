@@ -1,106 +1,112 @@
 // supabase/functions/verify-wallet-signature/index.ts
-// 署名検証 → wallets へ upsert（user_id=auth.uid()）
-import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+// Deno Deploy / Supabase Edge Functions
+// - CORSを明示
+// - action: "nonce" / "verify"
+// - EIP-191に合わせて server側は hashMessage(nonce) で recover
+// - 失敗時の本文を詳細に返す（フロントの alert に出る）
+
+import { serve } from "jsr:@supabase/functions-js/edge-runtime";
 import { isAddress, hashMessage, recoverAddress } from "https://esm.sh/viem@2";
 
-type Ctx = {
-  supabase: ReturnType<typeof createClient>;
-  userId: string;
-};
+const ALLOW_ORIGIN = "*"; // 必要なら preview--*.lovable.app 等に絞る
 
-function corsHeaders(origin?: string) {
-  return {
-    "Access-Control-Allow-Origin": origin || "*",
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-  };
+function json(
+  body: unknown,
+  init: number | ResponseInit = 200,
+): Response {
+  const status = typeof init === "number" ? init : init.status ?? 200;
+  const headers = new Headers(
+    typeof init === "number" ? {} : init.headers ?? {},
+  );
+  headers.set("content-type", "application/json");
+  headers.set("access-control-allow-origin", ALLOW_ORIGIN);
+  headers.set(
+    "access-control-allow-headers",
+    "authorization, content-type, x-client-info, apikey",
+  );
+  headers.set("access-control-allow-methods", "GET,POST,OPTIONS");
+  return new Response(JSON.stringify(body), { status, headers });
 }
 
-// 認証（JWT）＋ Supabase client 構築
-async function makeCtx(req: Request): Promise<Ctx> {
-  const url = Deno.env.get("SUPABASE_URL")!;
-  const key = Deno.env.get("SUPABASE_ANON_KEY")!; // 読み取りには anon で十分
-  const supabase = createClient(url, key, {
-    global: { headers: { Authorization: req.headers.get("Authorization")! } },
-  });
-  const { data: { user }, error } = await supabase.auth.getUser();
-  if (error || !user) throw new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 });
-  return { supabase, userId: user.id };
-}
-
-Deno.serve(async (req) => {
-  const origin = req.headers.get("Origin") ?? "*";
-
+serve(async (req) => {
   // CORS preflight
   if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders(origin) });
-  }
-
-  // ノンス発行
-  if (req.method === "GET") {
-    const nonce = crypto.randomUUID().replace(/-/g, "");
-    return new Response(JSON.stringify({ nonce }), {
-      status: 200,
-      headers: { "Content-Type": "application/json", ...corsHeaders(origin) },
-    });
-  }
-
-  if (req.method !== "POST") {
-    return new Response(JSON.stringify({ error: "Method Not Allowed" }), {
-      status: 405, headers: corsHeaders(origin),
-    });
+    return json({ ok: true });
   }
 
   try {
-    const { address, signature, nonce } = await req.json();
+    const contentType = req.headers.get("content-type") || "";
+    const method = req.method;
 
-    // 入力バリデーション
-    if (!isAddress(address) || typeof signature !== "string" || typeof nonce !== "string") {
-      return new Response(JSON.stringify({ error: "Bad Request: invalid payload" }), {
-        status: 400, headers: corsHeaders(origin),
-      });
+    if (method === "POST") {
+      if (!contentType.includes("application/json")) {
+        return json(
+          { error: "Content-Type must be application/json" },
+          415,
+        );
+      }
+      const body = await req.json().catch(() => null);
+      if (!body || typeof body !== "object") {
+        return json({ error: "Invalid JSON body" }, 400);
+      }
+
+      const action = (body as any).action;
+      if (action === "nonce") {
+        const nonce = crypto.randomUUID().replace(/-/g, "");
+        return json({ nonce }); // { nonce: "..." }
+      }
+
+      if (action === "verify") {
+        const address = (body as any).address;
+        const signature = (body as any).signature;
+        const nonce = (body as any).nonce;
+
+        if (
+          !isAddress(address) ||
+          typeof signature !== "string" ||
+          typeof nonce !== "string"
+        ) {
+          return json(
+            { error: "Bad request: address/signature/nonce invalid" },
+            400,
+          );
+        }
+
+        // EIP-191: client は personal_sign(nonce) を使う前提
+        const hash = hashMessage(nonce);
+        let recovered: string;
+        try {
+          recovered = await recoverAddress({ hash, signature });
+        } catch (e) {
+          console.error("recoverAddress error:", e);
+          return json(
+            { error: "Recover failed", detail: String(e) },
+            400,
+          );
+        }
+
+        if (recovered.toLowerCase() !== address.toLowerCase()) {
+          return json(
+            {
+              error: "Signature does not match the address",
+              input: address,
+              recovered,
+            },
+            400,
+          );
+        }
+
+        // ここでDB upsert等が必要なら実施（今回は verify のみOK返す）
+        return json({ ok: true, addr: address, recovered });
+      }
+
+      return json({ error: "Unsupported action" }, 400);
     }
 
-    // 署名検証（EIP-191 / personal_sign）
-    const recovered = await recoverAddress({
-      hash: hashMessage(nonce), // 余計な整形をしない
-      signature,
-    });
-
-    if (recovered.toLowerCase() !== address.toLowerCase()) {
-      return new Response(JSON.stringify({
-        error: "Signature does not match the address",
-        recovered,
-      }), { status: 400, headers: corsHeaders(origin) });
-    }
-
-    // 認証ユーザーを取得
-    const { supabase, userId } = await makeCtx(req);
-
-    // DB upsert（必要に応じて unique(user_id,address) を張る）
-    const { error } = await supabase
-      .from("wallets")
-      .upsert(
-        { user_id: userId, address: address.toLowerCase(), verified: true },
-        { onConflict: "user_id,address" },
-      );
-
-    if (error) {
-      console.error("DB upsert error:", error);
-      return new Response(JSON.stringify({ error: "DB error", details: error.message }), {
-        status: 500, headers: corsHeaders(origin),
-      });
-    }
-
-    return new Response(JSON.stringify({ ok: true }), {
-      status: 200,
-      headers: { "Content-Type": "application/json", ...corsHeaders(origin) },
-    });
+    // GETで nonce を返す実装を使いたい場合（現状はPOST/nonceで統一）
+    return json({ error: "Method not allowed" }, 405);
   } catch (e) {
-    console.error("verify-wallet-signature fatal:", e);
-    return new Response(JSON.stringify({ error: "Internal Server Error" }), {
-      status: 500, headers: corsHeaders(origin),
-    });
+    console.error("Unhandled error:", e);
+    return json({ error: "Internal error", detail: String(e) }, 500);
   }
 });
