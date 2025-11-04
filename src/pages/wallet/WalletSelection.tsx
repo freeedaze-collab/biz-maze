@@ -1,4 +1,7 @@
 // src/pages/wallet/WalletSelection.tsx
+// 要件：1) アドレス入力 → 2) 署名 → 3) Edge Function 検証&保存 → 4) 自分のウォレットだけ一覧
+// 依存：supabase.functions.invoke('verify-wallet-signature') が verify_jwt=true でデプロイ済み
+
 import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
@@ -19,10 +22,11 @@ export default function WalletSelection() {
   const [rows, setRows] = useState<WalletRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [linking, setLinking] = useState(false);
+  const [message, setMessage] = useState<string>("");
 
   const [addressInput, setAddressInput] = useState("");
 
-  const normalizedInput = useMemo(() => addressInput?.trim(), [addressInput]);
+  const normalizedInput = useMemo(() => addressInput.trim(), [addressInput]);
 
   const alreadyLinked = useMemo(() => {
     if (!normalizedInput) return false;
@@ -37,7 +41,7 @@ export default function WalletSelection() {
     const { data, error } = await supabase
       .from("wallets")
       .select("id,user_id,address,network,created_at,verified")
-      .eq("user_id", user.id)
+      .eq("user_id", user.id) // ← 自分のものだけ
       .order("created_at", { ascending: false });
 
     if (error) {
@@ -54,12 +58,52 @@ export default function WalletSelection() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
+  /** MetaMask から署名者アドレスを安全に取得 */
+  const getSignerAddress = async (): Promise<string> => {
+    const eth = (window as any).ethereum;
+    if (!eth?.request) throw new Error("Please install MetaMask.");
+    const accounts: string[] = await eth.request({ method: "eth_requestAccounts" });
+    const current = accounts?.[0];
+    if (!current) throw new Error("No wallet account connected.");
+    return current;
+  };
+
+  /** ノンス取得（Edge Function: action='nonce'） */
+  const fetchNonce = async (): Promise<string> => {
+    const { data, error } = await supabase.functions.invoke("verify-wallet-signature", {
+      body: { action: "nonce" },
+    });
+    if (error) {
+      throw new Error(
+        `Nonce request failed via invoke.\n${JSON.stringify(error, null, 2)}`
+      );
+    }
+    const n = (data as any)?.nonce;
+    if (!n) throw new Error(`Nonce not returned.\nRaw: ${JSON.stringify(data)}`);
+    return n as string;
+  };
+
+  /** 署名（EIP-191 personal_sign） */
+  const signMessage = async (msg: string, signerAddr: string): Promise<string> => {
+    const eth = (window as any).ethereum;
+    if (!eth?.request) throw new Error("MetaMask not found.");
+    // personal_sign は [message, address] の順
+    const sig: string = await eth.request({
+      method: "personal_sign",
+      params: [msg, signerAddr],
+    });
+    if (!sig || typeof sig !== "string") throw new Error("Signature failed.");
+    return sig;
+  };
+
   /**
    * 署名 & 検証 & DB upsert
    * - Edge Function: verify-wallet-signature（invoke方式 / action: 'nonce' → 'verify'）
-   * - エラーの「中身」を可視化（invokeの error / data / メッセージ本文 まで表示）
+   * - 失敗時に invoke の error/payload も見えるよう詳細に表示
    */
   const handleLink = async () => {
+    setMessage("");
+
     // 1) 入力検証
     if (!user?.id) {
       alert("Please login again.");
@@ -78,127 +122,69 @@ export default function WalletSelection() {
       return;
     }
 
-    // 2) MetaMask アカウントの取得 & 本人性（入力アドレスと一致）を担保
-    if (!(window as any).ethereum) {
-      alert("Please install MetaMask.");
-      return;
-    }
-    let current: string | undefined;
-    try {
-      const accounts: string[] = await (window as any).ethereum.request({
-        method: "eth_requestAccounts",
-      });
-      current = accounts?.[0];
-    } catch (e: any) {
-      console.error("[wallets] eth_requestAccounts error:", e);
-      alert(`Failed to access MetaMask accounts: ${e?.message ?? e}`);
-      return;
-    }
-    if (!current) {
-      alert("No wallet account connected.");
-      return;
-    }
-    if (current.toLowerCase() !== normalizedInput.toLowerCase()) {
-      // 権限更新を促す（切替）
-      try {
-        await (window as any).ethereum.request({
-          method: "wallet_requestPermissions",
-          params: [{ eth_accounts: {} }],
-        });
-      } catch (_) {
-        // noop
-      }
-      alert(
-        "The connected MetaMask account is different from the input address.\n" +
-          "Please switch MetaMask to the input address and try again."
-      );
-      return;
-    }
-
     setLinking(true);
     try {
-      // 3) ノンス取得（invoke: action='nonce'）
-      const {
-        data: nonceData,
-        error: nonceErr,
-      } = await supabase.functions.invoke("verify-wallet-signature", {
-        body: { action: "nonce" },
-      });
+      // 2) 署名者アドレス取得
+      const signerAddr = await getSignerAddress();
 
-      if (nonceErr) {
-        // invokeのエラーは message のみになりがちなので payload も含め詳細に表示
-        const details = JSON.stringify(nonceErr, null, 2);
-        throw new Error(`Nonce request failed via invoke.\n${details}`);
-      }
-      const nonce = nonceData?.nonce;
-      if (!nonce) {
+      // 3) 署名者＝入力アドレスの一致確認（本人性）
+      if (signerAddr.toLowerCase() !== normalizedInput.toLowerCase()) {
+        // 許可を更新させる（切替）→ ユーザーに再試行を促す
+        try {
+          await (window as any).ethereum.request({
+            method: "wallet_requestPermissions",
+            params: [{ eth_accounts: {} }],
+          });
+        } catch (_) {
+          /* noop */
+        }
         throw new Error(
-          `Nonce not returned from Edge Function.\nRaw: ${JSON.stringify(
-            nonceData
+          "The connected MetaMask account is different from the input address.\n" +
+            "Please switch MetaMask to the input address and try again."
+        );
+      }
+
+      // 4) ノンス取得
+      const nonce = await fetchNonce();
+
+      // 5) 署名
+      const signature = await signMessage(nonce, signerAddr);
+
+      // 6) 検証→DB登録（Edge Function）
+      const { data: verifyData, error: verifyErr } =
+        await supabase.functions.invoke("verify-wallet-signature", {
+          body: {
+            action: "verify",
+            address: normalizedInput,
+            signature,
+            nonce,
+          },
+        });
+
+      if (verifyErr) {
+        throw new Error(
+          `Verify request failed via invoke.\n${JSON.stringify(
+            verifyErr,
+            null,
+            2
           )}`
         );
       }
-
-      // 4) 署名（EIP-191 personal_sign）
-      let signature: string;
-      try {
-        signature = await (window as any).ethereum.request({
-          method: "personal_sign",
-          params: [nonce, current],
-        });
-      } catch (e: any) {
-        console.error("[wallets] personal_sign error:", e);
-        throw new Error(`Signature failed: ${e?.message ?? e}`);
+      if (!(verifyData as any)?.ok) {
+        throw new Error(`Verification failed.\nRaw: ${JSON.stringify(verifyData)}`);
       }
 
-      // 5) 検証→DB登録（invoke: action='verify'）
-      const {
-        data: verifyData,
-        error: verifyErr,
-      } = await supabase.functions.invoke("verify-wallet-signature", {
-        body: {
-          action: "verify",
-          address: normalizedInput,
-          signature,
-          nonce,
-        },
-      });
-
-      if (verifyErr) {
-        const details = JSON.stringify(verifyErr, null, 2);
-        throw new Error(`Verify request failed via invoke.\n${details}`);
-      }
-      // 関数側が { ok:true } を返す前提。失敗時は { error } などを返し得るので可視化
-      if (!verifyData?.ok) {
-        throw new Error(
-          `Verification failed.\nRaw: ${JSON.stringify(verifyData)}`
-        );
-      }
-
-      // 6) 完了
+      // 7) 完了
       setAddressInput("");
       await load();
+      setMessage("Wallet has been linked successfully.");
       alert("Wallet has been linked successfully.");
     } catch (e: any) {
-      // ここで "Edge Function returned a non-2xx" の代わりに invoke エラー/ペイロードを丸ごと表示
       console.error("[wallets] link error:", e);
       alert(`Link failed: ${e?.message ?? e}`);
+      setMessage(e?.message ?? String(e));
     } finally {
       setLinking(false);
-    }
-  };
-
-  const fillFromConnected = async () => {
-    if (!(window as any).ethereum) return;
-    try {
-      const accounts: string[] = await (window as any).ethereum.request({
-        method: "eth_requestAccounts",
-      });
-      const current = accounts?.[0];
-      if (current) setAddressInput(current);
-    } catch (e: any) {
-      console.error("[wallets] fillFromConnected error:", e);
-      alert(`Failed to read MetaMask account: ${e?.message ?? e}`);
     }
   };
 
@@ -206,8 +192,8 @@ export default function WalletSelection() {
     <div className="max-w-3xl mx-auto p-6 space-y-6">
       <h1 className="text-3xl font-bold">Wallets</h1>
       <p className="text-sm text-muted-foreground">
-        このページには<strong>あなたのアカウントに連携済みのウォレット</strong>のみ表示されます。
-        新しいウォレットを連携するにはアドレスを入力後、署名で本人性を確認します。
+        入力したウォレットアドレスで MetaMask 署名による本人確認を行い、
+        承認後にあなたのアカウントへリンクします（他人のウォレットは表示されません）。
       </p>
 
       {/* 入力 → 署名 → 完了 */}
@@ -222,14 +208,6 @@ export default function WalletSelection() {
             autoComplete="off"
           />
           <button
-            type="button"
-            className="px-3 py-2 rounded border"
-            onClick={fillFromConnected}
-            title="Use current MetaMask account"
-          >
-            Use connected
-          </button>
-          <button
             className="px-3 py-2 rounded bg-blue-600 text-white disabled:opacity-50"
             onClick={handleLink}
             disabled={linking}
@@ -238,11 +216,9 @@ export default function WalletSelection() {
           </button>
         </div>
         <p className="text-xs text-muted-foreground">
-          ※ MetaMaskで<strong>入力したアドレスと同じアカウント</strong>に切り替えた上で署名してください。
+          ※ MetaMask で<strong>入力したアドレスと同じアカウント</strong>に切り替えた上で署名してください。
         </p>
-        {alreadyLinked && (
-          <p className="text-xs text-green-700">This address is already linked.</p>
-        )}
+        {message && <div className="text-xs mt-2">{message}</div>}
       </div>
 
       {/* 連携済み一覧（DB） */}
