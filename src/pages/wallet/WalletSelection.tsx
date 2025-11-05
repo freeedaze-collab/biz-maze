@@ -20,20 +20,15 @@ export default function WalletSelection() {
   const [linking, setLinking] = useState(false);
   const [addressInput, setAddressInput] = useState("");
 
-  const normalizedInput = useMemo(() => addressInput?.trim(), [addressInput]);
-
+  const normalized = useMemo(() => addressInput.trim(), [addressInput]);
   const alreadyLinked = useMemo(() => {
-    if (!normalizedInput) return false;
-    return rows.some(
-      (r) => r.address?.toLowerCase() === normalizedInput.toLowerCase()
-    );
-  }, [rows, normalizedInput]);
+    if (!normalized) return false;
+    return rows.some((r) => r.address?.toLowerCase() === normalized.toLowerCase());
+  }, [rows, normalized]);
 
   const load = async () => {
     if (!user?.id) return;
     setLoading(true);
-
-    // network列が無い環境でも動くよう最小列だけ選択
     const { data, error } = await supabase
       .from("wallets")
       .select("id,user_id,address,created_at,verified")
@@ -54,21 +49,16 @@ export default function WalletSelection() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
-  /**
-   * 署名 & 検証 & DB upsert
-   * - Edge Function: verify-wallet-signature
-   * - invoke には Authorization: Bearer <token> を必ず付与
-   */
   const handleLink = async () => {
     if (!user?.id) {
       alert("Please login again.");
       return;
     }
-    if (!normalizedInput) {
+    if (!normalized) {
       alert("Please input your wallet address.");
       return;
     }
-    if (!isAddress(normalizedInput)) {
+    if (!isAddress(normalized)) {
       alert("Invalid Ethereum address format.");
       return;
     }
@@ -77,6 +67,7 @@ export default function WalletSelection() {
       return;
     }
 
+    // 必須：ユーザー JWT
     const { data: sess } = await supabase.auth.getSession();
     const token = sess?.session?.access_token;
     if (!token) {
@@ -84,71 +75,49 @@ export default function WalletSelection() {
       return;
     }
 
-    if (!(window as any).ethereum) {
-      alert("Please install MetaMask.");
-      return;
-    }
-
     setLinking(true);
     try {
-      // 1) ノンス取得
-      const {
-        data: nonceData,
-        error: nonceErr,
-      } = await supabase.functions.invoke("verify-wallet-signature", {
-        headers: { Authorization: `Bearer ${token}` },
-        body: { action: "nonce" },
-      });
-
+      // 1) ノンス取得（必ず Authorization を付与）
+      const { data: nonceData, error: nonceErr } = await supabase.functions.invoke(
+        "verify-wallet-signature",
+        {
+          headers: { Authorization: `Bearer ${token}` },
+          body: { action: "nonce" },
+        }
+      );
       if (nonceErr) {
-        const details = JSON.stringify(nonceErr, null, 2);
-        throw new Error(`Nonce request failed via invoke.\n${details}`);
+        throw new Error(`Nonce request failed via invoke.\n${JSON.stringify(nonceErr)}`);
       }
-      const nonce = nonceData?.nonce;
-      if (!nonce) {
-        throw new Error(
-          `Nonce not returned from Edge Function.\nRaw: ${JSON.stringify(
-            nonceData
-          )}`
-        );
-      }
+      const nonce = nonceData?.nonce as string | undefined;
+      if (!nonce) throw new Error(`Nonce not returned. Raw=${JSON.stringify(nonceData)}`);
 
-      // 2) 署名（EIP-191 personal_sign）
-      // MetaMaskの仕様上、現在接続中のアカウントで署名されます。
-      // 第二引数に署名者アドレス（=現在選択中のアカウント）を渡します。
+      // 2) 署名（EIP-191 personal_sign：message=nonce, address=現在のアカウント）
+      //    MetaMask の UI 都合上、直近の接続アカウントで署名が行われます
+      //    ※ 画面としては「入力アドレスに対する本人性確認」用途
       let signature: string;
       try {
         signature = await (window as any).ethereum.request({
           method: "personal_sign",
-          params: [nonce, normalizedInput],
+          params: [nonce, normalized],
         });
       } catch (e: any) {
         console.error("[wallets] personal_sign error:", e);
         throw new Error(`Signature failed: ${e?.message ?? e}`);
       }
 
-      // 3) 検証 → DB upsert
-      const {
-        data: verifyData,
-        error: verifyErr,
-      } = await supabase.functions.invoke("verify-wallet-signature", {
-        headers: { Authorization: `Bearer ${token}` },
-        body: {
-          action: "verify",
-          address: normalizedInput,
-          signature,
-          nonce,
-        },
-      });
-
+      // 3) 検証→DB 登録
+      const { data: verifyData, error: verifyErr } = await supabase.functions.invoke(
+        "verify-wallet-signature",
+        {
+          headers: { Authorization: `Bearer ${token}` },
+          body: { action: "verify", address: normalized, signature, nonce },
+        }
+      );
       if (verifyErr) {
-        const details = JSON.stringify(verifyErr, null, 2);
-        throw new Error(`Verify request failed via invoke.\n${details}`);
+        throw new Error(`Verify request failed via invoke.\n${JSON.stringify(verifyErr)}`);
       }
       if (!verifyData?.ok) {
-        throw new Error(
-          `Verification failed.\nRaw: ${JSON.stringify(verifyData)}`
-        );
+        throw new Error(`Verification failed. Raw=${JSON.stringify(verifyData)}`);
       }
 
       setAddressInput("");
@@ -190,7 +159,7 @@ export default function WalletSelection() {
           </button>
         </div>
         <p className="text-xs text-muted-foreground">
-          ※ MetaMask の署名ポップアップが表示されます。
+          メール/パスワードでログイン中のセッションを使ってサーバで検証します。
         </p>
         {alreadyLinked && (
           <p className="text-xs text-green-700">This address is already linked.</p>
