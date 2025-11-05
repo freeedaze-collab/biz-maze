@@ -55,40 +55,39 @@ export default function WalletSelection() {
   }, [user?.id]);
 
   /**
-   * 入力→署名→検証（Edge Function）→DB upsert
+   * 入力 → 署名 → 検証（Edge Function）→ DB upsert
    * - supabase.functions.invoke は Authorization ヘッダ必須
-   * - OPTIONS プリフライトを通すため、関数側は Verify JWT (legacy) を OFF に
-   * - 実認可は関数内の supabase.auth.getUser() で POST のみチェック
+   * - Edge Function 側は OPTIONS=204(empty) / 成功=200+JSON で実装済みであること
    */
   const handleLink = async () => {
-    if (!user?.id) {
-      alert("Please login again.");
-      return;
-    }
-    if (!normalizedInput) {
-      alert("Please input your wallet address.");
-      return;
-    }
-    if (!isAddress(normalizedInput)) {
-      alert("Invalid Ethereum address format.");
-      return;
-    }
-    if (alreadyLinked) {
-      alert("This wallet is already linked to your account.");
-      return;
-    }
-
-    // メール/パスでログイン済みの JWT
-    const { data: sess } = await supabase.auth.getSession();
-    const token = sess?.session?.access_token;
-    if (!token) {
-      alert("Session not found. Please re-login.");
-      return;
-    }
-
-    setLinking(true);
     try {
-      // 1) ノンス取得（invoke: action='nonce'）
+      if (!user?.id) {
+        alert("Please login again.");
+        return;
+      }
+      if (!normalizedInput) {
+        alert("Please input your wallet address.");
+        return;
+      }
+      if (!isAddress(normalizedInput)) {
+        alert("Invalid Ethereum address format.");
+        return;
+      }
+      if (alreadyLinked) {
+        alert("This wallet is already linked to your account.");
+        return;
+      }
+
+      const { data: sess } = await supabase.auth.getSession();
+      const token = sess?.session?.access_token;
+      if (!token) {
+        alert("Session not found. Please re-login.");
+        return;
+      }
+
+      setLinking(true);
+
+      // --- 1) ノンス取得 ---
       const { data: nonceData, error: nonceErr } = await supabase.functions.invoke(
         "verify-wallet-signature",
         {
@@ -101,66 +100,64 @@ export default function WalletSelection() {
       );
 
       if (nonceErr) {
-        const details = JSON.stringify(nonceErr, null, 2);
-        throw new Error(`Nonce request failed via invoke.\n${details}`);
-      }
-      const nonce = nonceData?.nonce;
-      if (!nonce) {
         throw new Error(
-          `Nonce not returned from Edge Function.\nRaw=${JSON.stringify(
-            nonceData
-          )}`
+          `Nonce request failed via invoke.\n${JSON.stringify(nonceErr, null, 2)}`
         );
       }
+      const nonce = (nonceData as any)?.nonce;
+      if (!nonce) {
+        throw new Error(`Nonce not returned from Edge Function.\nRaw=${JSON.stringify(nonceData)}`);
+      }
 
-      // 2) 署名（EIP-191 personal_sign）
-      // MetaMaskの現在アカウントで署名→サーバ側で recovered と入力addressを比較
+      // --- 2) 署名（EIP-191 personal_sign）---
       if (!(window as any).ethereum) {
         throw new Error("MetaMask not found");
       }
+
+      // MetaMask は第二引数の signer アドレスで署名者を指定する実装
+      // 入力アドレスが現在のアカウントに無い場合は MetaMask 側でエラーになります
       let signature: string;
       try {
         signature = await (window as any).ethereum.request({
           method: "personal_sign",
-          params: [nonce, normalizedInput], // メッセージ=nonce, 署名者=入力アドレスを想定
+          params: [nonce, normalizedInput],
         });
       } catch (e: any) {
         console.error("[wallets] personal_sign error:", e);
         throw new Error(`Signature failed: ${e?.message ?? e}`);
       }
 
-      // 3) 検証→DB登録（invoke: action='verify'）
-      const {
-        data: verifyData,
-        error: verifyErr,
-      } = await supabase.functions.invoke("verify-wallet-signature", {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: {
-          action: "verify",
-          address: normalizedInput,
-          signature,
-          nonce,
-        },
-      });
+      // --- 3) 検証 → DB upsert ---
+      const { data: verifyData, error: verifyErr } = await supabase.functions.invoke(
+        "verify-wallet-signature",
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: {
+            action: "verify",
+            address: normalizedInput,
+            signature,
+            nonce,
+          },
+        }
+      );
 
       if (verifyErr) {
-        const details = JSON.stringify(verifyErr, null, 2);
-        throw new Error(`Verify request failed via invoke.\n${details}`);
-      }
-      if (!verifyData?.ok) {
         throw new Error(
-          `Verification failed.\nRaw=${JSON.stringify(verifyData)}`
+          `Verify request failed via invoke.\n${JSON.stringify(verifyErr, null, 2)}`
         );
+      }
+      if (!(verifyData as any)?.ok) {
+        throw new Error(`Verification failed.\nRaw=${JSON.stringify(verifyData)}`);
       }
 
       setAddressInput("");
       await load();
       alert("Wallet has been linked successfully.");
     } catch (e: any) {
-      // FunctionsHttpError / FunctionsFetchError いずれも message に集約
+      // FunctionsHttpError / FunctionsFetchError どちらでも message で集約表示
       console.error("[wallets] link error:", e);
       alert(`Link failed: ${e?.message ?? e}`);
     } finally {
@@ -173,7 +170,7 @@ export default function WalletSelection() {
       <h1 className="text-3xl font-bold">Wallets</h1>
       <p className="text-sm text-muted-foreground">
         あなたのアカウントに紐づくウォレットのみ表示されます。新規連携は
-        <strong>アドレス入力→署名→完了</strong> の順です。
+        <strong>アドレス入力 → 署名 → 完了</strong> の順です。
       </p>
 
       {/* 入力 → 署名 → 完了 */}
@@ -187,6 +184,9 @@ export default function WalletSelection() {
             onChange={(e) => setAddressInput(e.target.value)}
             autoComplete="off"
           />
+        </div>
+
+        <div className="flex items-center gap-2">
           <button
             className="px-3 py-2 rounded bg-blue-600 text-white disabled:opacity-50"
             onClick={handleLink}
@@ -195,9 +195,12 @@ export default function WalletSelection() {
             {linking ? "Linking..." : "Link Wallet"}
           </button>
         </div>
+
         <p className="text-xs text-muted-foreground">
-          署名ポップアップが表示されます（メッセージはサーバ発行の nonce）。
+          署名ポップアップが表示されます（メッセージはサーバ発行の <code>nonce</code>）。
+          署名者は入力したアドレスである必要があります。
         </p>
+
         {alreadyLinked && (
           <p className="text-xs text-green-700">This address is already linked.</p>
         )}
