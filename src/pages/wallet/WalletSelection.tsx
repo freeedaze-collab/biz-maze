@@ -33,7 +33,7 @@ export default function WalletSelection() {
     if (!user?.id) return;
     setLoading(true);
 
-    // ※ network カラムが無い環境で 42703 が出ていたため、select 列を最小限に
+    // network列が無い環境でも動くよう最小列だけ選択
     const { data, error } = await supabase
       .from("wallets")
       .select("id,user_id,address,created_at,verified")
@@ -56,8 +56,8 @@ export default function WalletSelection() {
 
   /**
    * 署名 & 検証 & DB upsert
-   * - invoke は Authorization（JWT）を必ず送る
-   * - 失敗時は詳細メッセージを可視化
+   * - Edge Function: verify-wallet-signature
+   * - invoke には Authorization: Bearer <token> を必ず付与
    */
   const handleLink = async () => {
     if (!user?.id) {
@@ -77,7 +77,6 @@ export default function WalletSelection() {
       return;
     }
 
-    // メール/パスでログイン済みの JWT を取得
     const { data: sess } = await supabase.auth.getSession();
     const token = sess?.session?.access_token;
     if (!token) {
@@ -85,16 +84,21 @@ export default function WalletSelection() {
       return;
     }
 
+    if (!(window as any).ethereum) {
+      alert("Please install MetaMask.");
+      return;
+    }
+
     setLinking(true);
     try {
-      // 1) ノンス取得（invoke: action='nonce'）
-      const { data: nonceData, error: nonceErr } = await supabase.functions.invoke(
-        "verify-wallet-signature",
-        {
-          headers: { Authorization: `Bearer ${token}` },
-          body: { action: "nonce" },
-        }
-      );
+      // 1) ノンス取得
+      const {
+        data: nonceData,
+        error: nonceErr,
+      } = await supabase.functions.invoke("verify-wallet-signature", {
+        headers: { Authorization: `Bearer ${token}` },
+        body: { action: "nonce" },
+      });
 
       if (nonceErr) {
         const details = JSON.stringify(nonceErr, null, 2);
@@ -110,9 +114,8 @@ export default function WalletSelection() {
       }
 
       // 2) 署名（EIP-191 personal_sign）
-      //    MetaMask にアカウント接続は不要（「B版」準拠：入力アドレスに対して署名だけ行う）
-      //    ただし MetaMask の UI 仕様上、現在の接続アカウントで署名されるため
-      //    ここは connected と addressInput が違う場合エラーになり得る点に注意。
+      // MetaMaskの仕様上、現在接続中のアカウントで署名されます。
+      // 第二引数に署名者アドレス（=現在選択中のアカウント）を渡します。
       let signature: string;
       try {
         signature = await (window as any).ethereum.request({
@@ -124,19 +127,19 @@ export default function WalletSelection() {
         throw new Error(`Signature failed: ${e?.message ?? e}`);
       }
 
-      // 3) 検証→DB登録（invoke: action='verify'）
-      const { data: verifyData, error: verifyErr } = await supabase.functions.invoke(
-        "verify-wallet-signature",
-        {
-          headers: { Authorization: `Bearer ${token}` },
-          body: {
-            action: "verify",
-            address: normalizedInput,
-            signature,
-            nonce,
-          },
-        }
-      );
+      // 3) 検証 → DB upsert
+      const {
+        data: verifyData,
+        error: verifyErr,
+      } = await supabase.functions.invoke("verify-wallet-signature", {
+        headers: { Authorization: `Bearer ${token}` },
+        body: {
+          action: "verify",
+          address: normalizedInput,
+          signature,
+          nonce,
+        },
+      });
 
       if (verifyErr) {
         const details = JSON.stringify(verifyErr, null, 2);
