@@ -1,124 +1,115 @@
-// supabase/functions/verify-wallet-signature/index.ts
-// 署名フローの根源的な失敗要因（CORS, 非JSON, JWT未検証, recovered不一致, RLS起因のupsert失敗）をすべて可視化＆JSON返却で対処
+// index.ts (Supabase Edge Function)
+// CORS と 204/body エラーの是正、nonce/verify を安定化
 
+// 型補完用（import だけでOK）
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { isAddress, hashMessage, recoverAddress } from "https://esm.sh/viem@2";
 
-// 常にJSON + CORSヘッダ + 返却直前ミラー出力
-function json(body: unknown, status = 200): Response {
-  console.log("verify-wallet-signature response", { status, body });
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import {
+  isAddress,
+  hashMessage,
+  recoverAddress,
+} from "https://esm.sh/viem@2";
+
+const cors = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, content-type, apikey, x-client-info",
+  "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+};
+
+function json(body: unknown, init: number = 200, extraHeaders: Record<string, string> = {}) {
   return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "Content-Type": "application/json",
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Headers":
-        "authorization, content-type, x-client-info, apikey",
-      "Access-Control-Allow-Methods": "POST,OPTIONS",
-    },
+    status: init,
+    headers: { "Content-Type": "application/json", ...cors, ...extraHeaders },
   });
 }
 
-Deno.serve(async (req: Request) => {
+function bad(msg: string, code = 400) {
+  return json({ error: msg }, code);
+}
+
+Deno.serve(async (req) => {
   try {
-    // Preflight
+    // 1) CORS プリフライト
     if (req.method === "OPTIONS") {
-      return json({ ok: true }, 204);
-    }
-    if (req.method !== "POST") {
-      return json({ error: "Method not allowed" }, 405);
+      // 204 は body を持てない → body なしで返す
+      return new Response(null, { status: 204, headers: cors });
     }
 
-    // Supabase client（フロントのJWTを引き継ぐ）
-    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-    const supabaseKey = Deno.env.get("SUPABASE_ANON_KEY")!;
-    const supabase = createClient(supabaseUrl, supabaseKey, {
-      global: { headers: { Authorization: req.headers.get("Authorization") ?? "" } },
-    });
+    // 2) Supabase admin client（ユーザーの JWT を検証するため）
+    const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
+    const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    const admin = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { persistSession: false } });
 
-    // 認証ユーザー確認
-    const { data: authData, error: authErr } = await supabase.auth.getUser();
-    if (authErr || !authData?.user) {
-      return json(
-        { error: "Unauthorized", details: authErr?.message ?? null },
-        401
-      );
-    }
-    const userId = authData.user.id;
+    // 3) Authorization から user を取り出す
+    const authz = req.headers.get("Authorization") ?? "";
+    const token = authz.startsWith("Bearer ") ? authz.slice(7) : undefined;
+    if (!token) return bad("Missing Authorization header", 401);
 
-    // 入力JSON読み取り
-    let payload: any;
+    const { data: userRes, error: userErr } = await admin.auth.getUser(token);
+    if (userErr || !userRes?.user) return bad("Invalid token", 401);
+    const userId = userRes.user.id;
+
+    // 4) ルーティング（POST: { action }）
+    if (req.method !== "POST") return bad("Method Not Allowed", 405);
+
+    let body: any;
     try {
-      payload = await req.json();
+      body = await req.json();
     } catch {
-      return json({ error: "Bad JSON" }, 400);
+      return bad("Invalid JSON body");
     }
 
-    const action = String(payload?.action ?? "");
-
-    // 1) nonce 発行
+    const action = String(body?.action ?? "");
     if (action === "nonce") {
+      // 5) nonce を返す（200 + JSON）
       const nonce = crypto.randomUUID().replace(/-/g, "");
-      return json({ nonce }, 200);
+      return json({ nonce }); // 200
     }
 
-    // 2) 署名検証 & 登録
     if (action === "verify") {
-      const address = String(payload?.address ?? "");
-      const signature = String(payload?.signature ?? "");
-      const nonce = String(payload?.nonce ?? "");
+      const address: string = body?.address;
+      const signature: string = body?.signature;
+      const nonce: string = body?.nonce;
 
-      // 入力検証
-      if (!isAddress(address) || !signature || !nonce) {
-        return json(
-          { error: "Bad request", hint: "address/signature/nonce required" },
-          400
-        );
+      if (!isAddress(address)) return bad("Invalid address");
+      if (typeof signature !== "string" || !signature) return bad("Missing signature");
+      if (typeof nonce !== "string" || !nonce) return bad("Missing nonce");
+
+      // 6) 署名復元（EIP-191）
+      let recovered: `0x${string}`;
+      try {
+        const hash = hashMessage(nonce);
+        recovered = await recoverAddress({ hash, signature });
+      } catch (e) {
+        console.log("recover error:", e);
+        return bad("Recover failed");
       }
-
-      // 署名検証（EIP-191 personal_sign：message=nonce）
-      const recovered = await recoverAddress({
-        hash: hashMessage(nonce),
-        signature,
-      });
 
       if (recovered.toLowerCase() !== address.toLowerCase()) {
-        return json(
-          {
-            error: "Signature does not match the address",
-            recovered,
-            address,
-          },
-          400
-        );
+        return bad("Signature does not match the address");
       }
 
-      // DB upsert（user_id+address）: 既にあれば verified=true に更新
-      const { error: upsertErr } = await supabase
+      // 7) DB 登録
+      const { error: upErr } = await admin
         .from("wallets")
         .upsert(
-          {
-            user_id: userId,
-            address,
-            verified: true,
-          },
-          { onConflict: "user_id,address" }
+          { user_id: userId, address: address.toLowerCase(), verified: true },
+          { onConflict: "user_id,address" },
         );
 
-      if (upsertErr) {
-        return json(
-          { error: "DB upsert failed", details: upsertErr.message },
-          400
-        );
+      if (upErr) {
+        console.log("upsert error:", upErr);
+        return bad("DB upsert failed", 500);
       }
 
-      return json({ ok: true }, 200);
+      return json({ ok: true }); // 200 + JSON
     }
 
-    return json({ error: "Unknown action" }, 400);
+    return bad("Unknown action");
   } catch (e) {
-    console.error("verify-wallet-signature fatal", e);
-    return json({ error: "Internal Error", message: String(e) }, 500);
+    // ここで 500 に落としても必ず JSON body を付ける
+    console.log("fatal:", e);
+    return json({ error: "Internal Error", message: String(e?.message ?? e) }, 500);
   }
 });
