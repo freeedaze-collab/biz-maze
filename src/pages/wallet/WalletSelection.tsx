@@ -21,9 +21,12 @@ export default function WalletSelection() {
   const [addressInput, setAddressInput] = useState("");
 
   const normalized = useMemo(() => addressInput.trim(), [addressInput]);
+
   const alreadyLinked = useMemo(() => {
     if (!normalized) return false;
-    return rows.some((r) => r.address?.toLowerCase() === normalized.toLowerCase());
+    return rows.some(
+      (r) => r.address?.toLowerCase() === normalized.toLowerCase()
+    );
   }, [rows, normalized]);
 
   const load = async () => {
@@ -34,7 +37,6 @@ export default function WalletSelection() {
       .select("id,user_id,address,created_at,verified")
       .eq("user_id", user.id)
       .order("created_at", { ascending: false });
-
     if (error) {
       console.error("[wallets] load error:", error);
       setRows([]);
@@ -50,34 +52,20 @@ export default function WalletSelection() {
   }, [user?.id]);
 
   const handleLink = async () => {
-    if (!user?.id) {
-      alert("Please login again.");
-      return;
-    }
-    if (!normalized) {
-      alert("Please input your wallet address.");
-      return;
-    }
-    if (!isAddress(normalized)) {
-      alert("Invalid Ethereum address format.");
-      return;
-    }
-    if (alreadyLinked) {
-      alert("This wallet is already linked to your account.");
-      return;
-    }
+    if (!user?.id) return alert("Please login again.");
+    if (!normalized) return alert("Please input your wallet address.");
+    if (!isAddress(normalized)) return alert("Invalid Ethereum address format.");
+    if (alreadyLinked)
+      return alert("This wallet is already linked to your account.");
 
-    // 必須：ユーザー JWT
+    // メールログインの JWT
     const { data: sess } = await supabase.auth.getSession();
     const token = sess?.session?.access_token;
-    if (!token) {
-      alert("Session not found. Please re-login.");
-      return;
-    }
+    if (!token) return alert("Session not found. Please re-login.");
 
     setLinking(true);
     try {
-      // 1) ノンス取得（必ず Authorization を付与）
+      // 1) nonce
       const { data: nonceData, error: nonceErr } = await supabase.functions.invoke(
         "verify-wallet-signature",
         {
@@ -86,45 +74,62 @@ export default function WalletSelection() {
         }
       );
       if (nonceErr) {
-        throw new Error(`Nonce request failed via invoke.\n${JSON.stringify(nonceErr)}`);
+        console.error("[invoke:nonce] error=", nonceErr, "data=", nonceData);
+        alert(
+          `Nonce failed.\n${JSON.stringify(nonceErr, null, 2)}\nRaw=${JSON.stringify(
+            nonceData
+          )}`
+        );
+        return;
       }
-      const nonce = nonceData?.nonce as string | undefined;
-      if (!nonce) throw new Error(`Nonce not returned. Raw=${JSON.stringify(nonceData)}`);
+      const nonce = nonceData?.nonce as string;
+      if (!nonce) {
+        alert(`Nonce not returned.\nRaw=${JSON.stringify(nonceData)}`);
+        return;
+      }
 
-      // 2) 署名（EIP-191 personal_sign：message=nonce, address=現在のアカウント）
-      //    MetaMask の UI 都合上、直近の接続アカウントで署名が行われます
-      //    ※ 画面としては「入力アドレスに対する本人性確認」用途
+      // 2) 署名（MetaMask）
       let signature: string;
       try {
         signature = await (window as any).ethereum.request({
           method: "personal_sign",
-          params: [nonce, normalized],
+          params: [nonce, normalized], // personal_sign(message, address)
         });
       } catch (e: any) {
         console.error("[wallets] personal_sign error:", e);
-        throw new Error(`Signature failed: ${e?.message ?? e}`);
+        alert(`Signature failed: ${e?.message ?? e}`);
+        return;
       }
 
-      // 3) 検証→DB 登録
-      const { data: verifyData, error: verifyErr } = await supabase.functions.invoke(
-        "verify-wallet-signature",
-        {
+      // 3) verify
+      const { data: verifyData, error: verifyErr } =
+        await supabase.functions.invoke("verify-wallet-signature", {
           headers: { Authorization: `Bearer ${token}` },
           body: { action: "verify", address: normalized, signature, nonce },
-        }
-      );
+        });
+
       if (verifyErr) {
-        throw new Error(`Verify request failed via invoke.\n${JSON.stringify(verifyErr)}`);
+        console.error("[invoke:verify] error=", verifyErr, "data=", verifyData);
+        alert(
+          `Verify failed.\n${JSON.stringify(
+            verifyErr,
+            null,
+            2
+          )}\nRaw=${JSON.stringify(verifyData)}`
+        );
+        return;
       }
+
       if (!verifyData?.ok) {
-        throw new Error(`Verification failed. Raw=${JSON.stringify(verifyData)}`);
+        alert(`Verification failed.\nRaw=${JSON.stringify(verifyData)}`);
+        return;
       }
 
       setAddressInput("");
       await load();
       alert("Wallet has been linked successfully.");
     } catch (e: any) {
-      console.error("[wallets] link error:", e);
+      console.error("[wallets] link fatal:", e);
       alert(`Link failed: ${e?.message ?? e}`);
     } finally {
       setLinking(false);
@@ -136,10 +141,9 @@ export default function WalletSelection() {
       <h1 className="text-3xl font-bold">Wallets</h1>
       <p className="text-sm text-muted-foreground">
         このページには<strong>あなたのアカウントに連携済みのウォレット</strong>のみ表示されます。
-        新しいウォレットを連携するにはアドレスを入力後、署名で本人性を確認します。
+        新しいウォレットは<strong>アドレスを入力 → 署名 → 登録</strong>で本人性確認の上リンクします。
       </p>
 
-      {/* 入力 → 署名 → 完了 */}
       <div className="border rounded-xl p-4 space-y-3">
         <label className="text-sm font-medium">Wallet Address</label>
         <div className="flex items-center gap-2">
@@ -158,21 +162,16 @@ export default function WalletSelection() {
             {linking ? "Linking..." : "Link Wallet"}
           </button>
         </div>
-        <p className="text-xs text-muted-foreground">
-          メール/パスワードでログイン中のセッションを使ってサーバで検証します。
-        </p>
-        {alreadyLinked && (
-          <p className="text-xs text-green-700">This address is already linked.</p>
-        )}
       </div>
 
-      {/* 連携済み一覧（DB） */}
       <div className="border rounded-xl p-4">
         <div className="font-semibold mb-2">Linked wallets (DB)</div>
         {loading ? (
           <div>Loading...</div>
         ) : rows.length === 0 ? (
-          <div className="text-sm text-muted-foreground">No linked wallets yet.</div>
+          <div className="text-sm text-muted-foreground">
+            No linked wallets yet.
+          </div>
         ) : (
           <ul className="space-y-2">
             {rows.map((w) => (
