@@ -1,9 +1,5 @@
-// index.ts (Supabase Edge Function)
-// CORS と 204/body エラーの是正、nonce/verify を安定化
-
-// 型補完用（import だけでOK）
-import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-
+// supabase/functions/verify-wallet-signature/index.ts
+// --- 必要な型/関数だけ最小限に ---
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   isAddress,
@@ -11,105 +7,92 @@ import {
   recoverAddress,
 } from "https://esm.sh/viem@2";
 
-const cors = {
+// CORS 共通ヘッダ
+const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, content-type, apikey, x-client-info",
-  "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-function json(body: unknown, init: number = 200, extraHeaders: Record<string, string> = {}) {
+function json(body: unknown, status = 200, headers: Record<string, string> = {}) {
   return new Response(JSON.stringify(body), {
-    status: init,
-    headers: { "Content-Type": "application/json", ...cors, ...extraHeaders },
+    status,
+    headers: { "Content-Type": "application/json", ...CORS, ...headers },
   });
-}
-
-function bad(msg: string, code = 400) {
-  return json({ error: msg }, code);
 }
 
 Deno.serve(async (req) => {
   try {
-    // 1) CORS プリフライト
+    // Preflight
     if (req.method === "OPTIONS") {
-      // 204 は body を持てない → body なしで返す
-      return new Response(null, { status: 204, headers: cors });
+      // 204 は本当に「空レスポンス」にする（body なし）
+      return new Response(null, { status: 204, headers: CORS });
     }
 
-    // 2) Supabase admin client（ユーザーの JWT を検証するため）
-    const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-    const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-    const admin = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { persistSession: false } });
+    if (req.method !== "POST") {
+      return json({ error: "Method not allowed" }, 405);
+    }
 
-    // 3) Authorization から user を取り出す
-    const authz = req.headers.get("Authorization") ?? "";
-    const token = authz.startsWith("Bearer ") ? authz.slice(7) : undefined;
-    if (!token) return bad("Missing Authorization header", 401);
+    // 認証（JWT）
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const serviceRole = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    const client = createClient(supabaseUrl, serviceRole, {
+      global: { headers: { Authorization: req.headers.get("Authorization") ?? "" } },
+    });
 
-    const { data: userRes, error: userErr } = await admin.auth.getUser(token);
-    if (userErr || !userRes?.user) return bad("Invalid token", 401);
+    const { data: userRes, error: userErr } = await client.auth.getUser();
+    if (userErr || !userRes?.user?.id) {
+      return json({ error: "Unauthorized" }, 401);
+    }
     const userId = userRes.user.id;
 
-    // 4) ルーティング（POST: { action }）
-    if (req.method !== "POST") return bad("Method Not Allowed", 405);
-
-    let body: any;
+    // 入力
+    let payload: any = null;
     try {
-      body = await req.json();
+      payload = await req.json(); // POST のみで 1 回だけ読む
     } catch {
-      return bad("Invalid JSON body");
+      return json({ error: "Invalid JSON" }, 400);
     }
 
-    const action = String(body?.action ?? "");
+    const action = payload?.action;
     if (action === "nonce") {
-      // 5) nonce を返す（200 + JSON）
       const nonce = crypto.randomUUID().replace(/-/g, "");
-      return json({ nonce }); // 200
+      // ここは 200 + JSON（204 は使わない）
+      return json({ nonce }, 200);
     }
 
     if (action === "verify") {
-      const address: string = body?.address;
-      const signature: string = body?.signature;
-      const nonce: string = body?.nonce;
+      const address = payload?.address as string;
+      const signature = payload?.signature as string;
+      const nonce = payload?.nonce as string;
 
-      if (!isAddress(address)) return bad("Invalid address");
-      if (typeof signature !== "string" || !signature) return bad("Missing signature");
-      if (typeof nonce !== "string" || !nonce) return bad("Missing nonce");
-
-      // 6) 署名復元（EIP-191）
-      let recovered: `0x${string}`;
-      try {
-        const hash = hashMessage(nonce);
-        recovered = await recoverAddress({ hash, signature });
-      } catch (e) {
-        console.log("recover error:", e);
-        return bad("Recover failed");
+      if (!isAddress(address) || typeof signature !== "string" || typeof nonce !== "string") {
+        return json({ error: "Bad request" }, 400);
       }
 
+      // EIP-191 前置き込みハッシュで検証
+      const recovered = await recoverAddress({ hash: hashMessage(nonce), signature });
       if (recovered.toLowerCase() !== address.toLowerCase()) {
-        return bad("Signature does not match the address");
+        return json({ ok: false, error: "Signature does not match address" }, 400);
       }
 
-      // 7) DB 登録
-      const { error: upErr } = await admin
+      // DB 反映（wallets: id bigserial / user_id uuid / address text unique(user_id,address) 推奨）
+      const { error: upsertErr } = await client
         .from("wallets")
         .upsert(
-          { user_id: userId, address: address.toLowerCase(), verified: true },
-          { onConflict: "user_id,address" },
+          { user_id: userId, address, verified: true },
+          { onConflict: "user_id,address" }
         );
-
-      if (upErr) {
-        console.log("upsert error:", upErr);
-        return bad("DB upsert failed", 500);
+      if (upsertErr) {
+        return json({ ok: false, error: upsertErr.message }, 500);
       }
 
-      return json({ ok: true }); // 200 + JSON
+      return json({ ok: true }, 200);
     }
 
-    return bad("Unknown action");
+    return json({ error: "Unknown action" }, 400);
   } catch (e) {
-    // ここで 500 に落としても必ず JSON body を付ける
-    console.log("fatal:", e);
+    // ここも必ず 500 + JSON
     return json({ error: "Internal Error", message: String(e?.message ?? e) }, 500);
   }
 });
