@@ -1,113 +1,127 @@
 // supabase/functions/verify-wallet-signature/index.ts
-// Deno (Supabase Edge Runtime)
+// 常に JSON 返却し、返却直前のオブジェクトを console.log にも出力して
+// Supabase Dashboard > Edge Functions > Logs で原因を観測できるようにする。
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { isAddress, hashMessage, recoverAddress } from "https://esm.sh/viem@2";
+import {
+  isAddress,
+  hashMessage,
+  recoverAddress,
+} from "https://esm.sh/viem@2";
 
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-
-/**
- * JSON レスポンス（デバッグ時にテキストではなく JSON を返す）
- */
-function json(body: unknown, status = 200, extraHeaders: HeadersInit = {}) {
-  const h = new Headers({
-    "content-type": "application/json",
-    // 将来 browser fetch でも困らないように薄い CORS を付与
-    "access-control-allow-origin": "*",
-    "access-control-allow-headers": "authorization, x-client-info, apikey, content-type",
-    ...extraHeaders,
+// --- util: JSON response + 直前ログ ---
+function json(body: unknown, status = 200): Response {
+  // 返す前にログへミラー
+  console.log("verify-wallet-signature response", { status, body });
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Headers":
+        "authorization, content-type, x-client-info, apikey",
+      "Access-Control-Allow-Methods": "POST,OPTIONS",
+    },
   });
-  return new Response(JSON.stringify(body), { status, headers: h });
 }
 
-Deno.serve(async (req) => {
-  // Preflight にも 204 を返しておく（invoke には不要だが将来の直接 fetch 用）
-  if (req.method === "OPTIONS") {
-    return new Response(null, {
-      status: 204,
-      headers: {
-        "access-control-allow-origin": "*",
-        "access-control-allow-headers": "authorization, x-client-info, apikey, content-type",
-        "access-control-allow-methods": "POST,OPTIONS",
-      },
-    });
-  }
-
-  if (req.method !== "POST") {
-    return json({ error: "Method not allowed" }, 405);
-  }
-
-  let payload: any;
+Deno.serve(async (req: Request) => {
   try {
-    payload = await req.json();
-  } catch {
-    return json({ error: "Invalid JSON" }, 400);
-  }
-
-  const action = String(payload?.action ?? "");
-  // invoke の時は Verify JWT を OFF にしていても自前で認証をかける
-  // （ON のままでも動きますが、設定ずれによる 401/400 を避けるため）
-  const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, {
-    global: { headers: { Authorization: req.headers.get("Authorization") ?? "" } },
-  });
-
-  // セッションのユーザーを取得（Authorization: Bearer <access_token> が必須）
-  const { data: userRes, error: userErr } = await supabase.auth.getUser();
-  if (userErr || !userRes?.user) {
-    return json({ error: "Unauthorized (missing/invalid Authorization)" }, 401);
-  }
-  const user = userRes.user;
-
-  // action: 'nonce' | 'verify'
-  if (action === "nonce") {
-    // 前後の空白や改行でズレないように UUID 文字列のみ返す
-    const nonce = crypto.randomUUID().replace(/-/g, "");
-    return json({ nonce }, 200);
-  }
-
-  if (action === "verify") {
-    const address: string = payload?.address ?? "";
-    const signature: string = payload?.signature ?? "";
-    const nonce: string = payload?.nonce ?? "";
-
-    if (!isAddress(address) || typeof signature !== "string" || typeof nonce !== "string") {
-      return json({ error: "Bad request (address/signature/nonce)" }, 400);
+    // CORS preflight
+    if (req.method === "OPTIONS") {
+      return json({ ok: true }, 204);
+    }
+    if (req.method !== "POST") {
+      return json({ error: "Method not allowed" }, 405);
     }
 
-    // EIP-191（personal_sign）前提：nonce をそのままハッシュして recover
-    const recovered = await recoverAddress({
-      hash: hashMessage(nonce),
-      signature,
+    // Supabase client（フロントの Authorization を引き継ぐ）
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const supabaseKey = Deno.env.get("SUPABASE_ANON_KEY")!; // verify_jwt=true でも Authorization を渡す
+    const supabase = createClient(supabaseUrl, supabaseKey, {
+      global: { headers: { Authorization: req.headers.get("Authorization")! } },
     });
 
-    if (recovered.toLowerCase() !== address.toLowerCase()) {
+    // 認証ユーザー確認
+    const { data: authData, error: authErr } = await supabase.auth.getUser();
+    if (authErr || !authData?.user) {
       return json(
-        { error: "Signature does not match the address", recovered, address },
-        400
+        { error: "Unauthorized", details: authErr?.message ?? null },
+        401
       );
     }
+    const userId = authData.user.id;
 
-    // DB upsert（ユーザー毎に同じ address を一意にしたい場合は unique 制約を用意）
-    const { error: upErr } = await supabase
-      .from("wallets")
-      .upsert(
-        {
-          user_id: user.id,
-          address: address,
-          verified: true,
-          // created_at は DEFAULT now()
-        },
-        { onConflict: "user_id,address" }
-      );
-
-    if (upErr) {
-      return json({ error: "DB upsert failed", details: upErr.message }, 400);
+    // 入力 JSON
+    let payload: any;
+    try {
+      payload = await req.json();
+    } catch {
+      return json({ error: "Bad JSON" }, 400);
     }
-    return json({ ok: true }, 200);
+
+    const action = String(payload?.action ?? "");
+    if (action === "nonce") {
+      const nonce = crypto.randomUUID().replace(/-/g, "");
+      return json({ nonce }, 200);
+    }
+
+    if (action === "verify") {
+      const address = String(payload?.address ?? "");
+      const signature = String(payload?.signature ?? "");
+      const nonce = String(payload?.nonce ?? "");
+
+      if (!isAddress(address) || !signature || !nonce) {
+        return json(
+          { error: "Bad request", hint: "address/signature/nonce required" },
+          400
+        );
+      }
+
+      // 署名検証（EIP-191）
+      const recovered = await recoverAddress({
+        hash: hashMessage(nonce),
+        signature,
+      });
+      if (recovered.toLowerCase() !== address.toLowerCase()) {
+        return json(
+          {
+            error: "Signature does not match the address",
+            recovered,
+            address,
+          },
+          400
+        );
+      }
+
+      // DB 反映（wallets: id/ user_id/ address/ verified/ created_at）
+      // 重複は許容（すでにあれば verified を true に更新）
+      const { error: upsertErr } = await supabase
+        .from("wallets")
+        .upsert(
+          {
+            user_id: userId,
+            address,
+            verified: true,
+          },
+          { onConflict: "user_id,address" }
+        );
+
+      if (upsertErr) {
+        return json(
+          { error: "DB upsert failed", details: upsertErr.message },
+          400
+        );
+      }
+
+      return json({ ok: true }, 200);
+    }
+
+    return json({ error: "Unknown action" }, 400);
+  } catch (e) {
+    // 想定外
+    console.error("verify-wallet-signature fatal", e);
+    return json({ error: "Internal Error", message: String(e) }, 500);
   }
-
-  // 未知 action
-  return json({ error: "Unknown action" }, 400);
 });
