@@ -1,7 +1,5 @@
 // src/lib/walletconnect.ts
-//
-// WalletConnect v2 UMD をモバイル Safari でも確実に読み込むための多段ローダ。
-// 失敗時はエラーメッセージを返し、UI 側で alert に出せるようにする。
+// WalletConnect v2 UMD ローダ（多CDN + CSSはfetchでインライン注入）
 
 export type WCProvider = {
   connect?: () => Promise<void>;
@@ -10,10 +8,9 @@ export type WCProvider = {
 };
 
 const PROVIDER_SRCS = [
-  // 1st: jsDelivr（高速 CDN）
-  "https://cdn.jsdelivr.net/npm/@walletconnect/ethereum-provider@2.13.1/dist/index.umd.min.js",
-  // 2nd: UNPKG（フォールバック）
-  "https://unpkg.com/@walletconnect/ethereum-provider@2.13.1/dist/index.umd.min.js",
+  // 正しい UMD パス（/dist/umd/index.min.js）
+  "https://cdn.jsdelivr.net/npm/@walletconnect/ethereum-provider@2/dist/umd/index.min.js",
+  "https://unpkg.com/@walletconnect/ethereum-provider@2/dist/umd/index.min.js",
 ];
 
 const MODAL_JS_SRCS = [
@@ -21,7 +18,6 @@ const MODAL_JS_SRCS = [
   "https://unpkg.com/@walletconnect/modal@2.6.2/dist/index.umd.min.js",
 ];
 
-// モーダルは CSS が無いと描画時に例外が出るケースがある
 const MODAL_CSS_SRCS = [
   "https://cdn.jsdelivr.net/npm/@walletconnect/modal@2.6.2/dist/style.css",
   "https://unpkg.com/@walletconnect/modal@2.6.2/dist/style.css",
@@ -29,24 +25,16 @@ const MODAL_CSS_SRCS = [
 
 function withTimeout<T>(p: Promise<T>, ms: number, tag: string) {
   return new Promise<T>((resolve, reject) => {
-    const t = setTimeout(
-      () => reject(new Error(`${tag} timed out (${ms}ms)`)),
-      ms
-    );
-    p.then((v) => {
-      clearTimeout(t);
-      resolve(v);
-    }).catch((e) => {
-      clearTimeout(t);
-      reject(e);
-    });
+    const t = setTimeout(() => reject(new Error(`${tag} timed out (${ms}ms)`)), ms);
+    p.then(v => { clearTimeout(t); resolve(v); })
+     .catch(e => { clearTimeout(t); reject(e); });
   });
 }
 
 function loadScript(src: string): Promise<void> {
   return new Promise<void>((res, rej) => {
     const s = document.createElement("script");
-    s.src = src + (src.includes("?") ? "" : `?v=${Date.now()}`); // キャッシュ回避
+    s.src = src + (src.includes("?") ? "" : `?v=${Date.now()}`); // cache bust
     s.async = true;
     s.crossOrigin = "anonymous";
     s.onload = () => res();
@@ -55,58 +43,61 @@ function loadScript(src: string): Promise<void> {
   });
 }
 
-function loadCss(href: string): Promise<void> {
-  return new Promise<void>((res, rej) => {
-    const l = document.createElement("link");
-    l.rel = "stylesheet";
-    l.href = href;
-    l.crossOrigin = "anonymous";
-    l.onload = () => res();
-    l.onerror = () => rej(new Error(`css load failed: ${href}`));
-    document.head.appendChild(l);
-  });
+// CSS は link で失敗しやすいので fetch→<style> でインライン注入
+async function inlineCssFrom(url: string) {
+  const r = await fetch(url, { mode: "cors", cache: "force-cache" });
+  if (!r.ok) throw new Error(`css fetch failed: ${url} (${r.status})`);
+  const css = await r.text();
+  const st = document.createElement("style");
+  st.setAttribute("data-wc-modal-inline", "1");
+  st.textContent = css;
+  document.head.appendChild(st);
 }
 
-async function loadFirstAvailable(
-  candidates: string[],
-  tag: string,
-  isCss = false
-) {
+async function ensureModalCss() {
+  if (document.querySelector("style[data-wc-modal-inline]")) return;
+  const errs: string[] = [];
+  for (const u of MODAL_CSS_SRCS) {
+    try {
+      await withTimeout(inlineCssFrom(u), 8000, "wc modal css");
+      return;
+    } catch (e: any) {
+      errs.push(`${u} -> ${e?.message ?? e}`);
+    }
+  }
+  throw new Error(`WalletConnect Modal CSS load failed:\n${errs.join("\n")}`);
+}
+
+async function loadFirstAvailable(candidates: string[], tag: string) {
   const errs: string[] = [];
   for (const url of candidates) {
     try {
-      if (isCss) {
-        await withTimeout(loadCss(url), 8000, `${tag} css`);
-      } else {
-        await withTimeout(loadScript(url), 10000, `${tag} js`);
-      }
+      await withTimeout(loadScript(url), 10000, `${tag} js`);
       return; // 成功
     } catch (e: any) {
       errs.push(`${url} -> ${e?.message ?? e}`);
     }
   }
-  throw new Error(`${tag} UMD load failed: \n${errs.join("\n")}`);
+  throw new Error(`${tag} UMD load failed:\n${errs.join("\n")}`);
 }
 
 let loaded = false;
-
 async function ensureUMDLoaded() {
   if (loaded) return;
 
-  // 1) Provider JS
+  // 1) Provider UMD
   await loadFirstAvailable(PROVIDER_SRCS, "WalletConnect Provider");
 
-  // 2) Modal CSS（先に CSS）
-  await loadFirstAvailable(MODAL_CSS_SRCS, "WalletConnect Modal", true);
+  // 2) Modal CSS（先にインライン注入）
+  await ensureModalCss();
 
-  // 3) Modal JS
+  // 3) Modal UMD
   await loadFirstAvailable(MODAL_JS_SRCS, "WalletConnect Modal");
 
-  // グローバル確認
-  const EthereumProvider = (window as any).EthereumProvider;
-  if (!EthereumProvider) {
-    throw new Error("EthereumProvider missing after UMD load");
-  }
+  // グローバル確認（← ここ重要）
+  const WCE = (window as any).WalletConnectEthereumProvider;
+  if (!WCE) throw new Error("WalletConnectEthereumProvider missing after UMD load");
+
   loaded = true;
 }
 
@@ -116,12 +107,11 @@ export async function createWCProvider(): Promise<WCProvider> {
   const projectId = (import.meta as any).env.VITE_WC_PROJECT_ID as string;
   if (!projectId) throw new Error("VITE_WC_PROJECT_ID is missing");
 
-  const EthereumProvider = (window as any).EthereumProvider;
+  const WCE = (window as any).WalletConnectEthereumProvider;
 
-  const provider: WCProvider = await EthereumProvider.init({
+  const provider: WCProvider = await WCE.init({
     projectId,
-    // モーダルは “connect() を呼んだときだけ” 開く
-    showQrModal: true,
+    showQrModal: true, // connect() でモーダル表示
     metadata: {
       name: "BizMaze Wallet Link",
       description: "Link your wallet",
