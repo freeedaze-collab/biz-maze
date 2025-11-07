@@ -3,11 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
 import { isAddress } from "viem";
-import { initWalletConnect, type WCProvider } from "@/lib/walletconnect";
-
-// Edge Function のフル URL を .env から
-// 例: VITE_FUNCTION_VERIFY_WALLET=https://<ref>.functions.supabase.co/functions/v1/verify-wallet-signature
-const FN_URL = import.meta.env.VITE_FUNCTION_VERIFY_WALLET as string;
+import { createWCProvider, WCProvider } from "@/lib/walletconnect";
 
 type WalletRow = {
   id: number;
@@ -16,6 +12,8 @@ type WalletRow = {
   created_at?: string | null;
   verified?: boolean | null;
 };
+
+const FN_URL = import.meta.env.VITE_FUNCTION_VERIFY_WALLET as string;
 
 export default function WalletSelection() {
   const { user } = useAuth();
@@ -37,8 +35,6 @@ export default function WalletSelection() {
   const load = async () => {
     if (!user?.id) return;
     setLoading(true);
-
-    // network列が無い環境で42703回避のため列は最小限
     const { data, error } = await supabase
       .from("wallets")
       .select("id,user_id,address,created_at,verified")
@@ -59,13 +55,11 @@ export default function WalletSelection() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
-  // ---------- 共通：nonce（= message）を GET ----------
+  // ---- 共通：nonce取得（GET）
   const getNonce = async (token?: string) => {
     const r = await fetch(FN_URL, {
       method: "GET",
-      headers: {
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     });
     const body = await r.json().catch(() => ({}));
     if (!r.ok || !body?.nonce) {
@@ -76,7 +70,7 @@ export default function WalletSelection() {
     return body.nonce as string;
   };
 
-  // ---------- 共通：verify（POST） ----------
+  // ---- 共通：verify（POST）
   const postVerify = async (
     payload: { address: string; signature: string; message: string },
     token?: string
@@ -87,62 +81,22 @@ export default function WalletSelection() {
         "content-type": "application/json",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      // Edge Function 側は { action:'verify', address, signature, message } を期待
       body: JSON.stringify({ action: "verify", ...payload }),
     });
-    const raw = await r.text();
+    const text = await r.text();
     let body: any = null;
     try {
-      body = JSON.parse(raw);
+      body = JSON.parse(text);
     } catch {
-      body = raw;
+      body = text;
     }
-
     if (!r.ok || !body?.ok) {
-      throw new Error(
-        `Verify failed. status=${r.status}, body=${JSON.stringify(body)}`
-      );
+      throw new Error(`Verify failed. status=${r.status}, body=${text}`);
     }
     return body;
   };
 
-  // ---------- 共通：local recover（ブラウザ側で即復元してズレ検知） ----------
-  // viem UMD を一度だけロード
-  async function ensureViem(): Promise<any> {
-    // すでに import 済みなら window.viem があるケースもある
-    if ((window as any).viem?.recoverMessageAddress) return (window as any).viem;
-    // UMDロード（確実なミラー）
-    await new Promise<void>((res, rej) => {
-      const s = document.createElement("script");
-      s.src =
-        "https://unpkg.com/viem@2.18.8/dist/umd/index.min.js";
-      s.onload = () => res();
-      s.onerror = rej;
-      document.head.appendChild(s);
-    });
-    return (window as any).viem;
-  }
-
-  async function signWithPersonalSign(
-    provider: any,
-    message: string,
-    signer: string
-  ): Promise<string> {
-    // personal_sign の param 順は実装差があるので両順フォールバック
-    try {
-      return (await provider.request({
-        method: "personal_sign",
-        params: [message, signer],
-      })) as string;
-    } catch {
-      return (await provider.request({
-        method: "personal_sign",
-        params: [signer, message],
-      })) as string;
-    }
-  }
-
-  // ---------- MetaMask（拡張機能） ----------
+  // ---- MetaMask（拡張機能）
   const handleLinkWithMetaMask = async () => {
     try {
       if (!user?.id) {
@@ -167,49 +121,26 @@ export default function WalletSelection() {
 
       setLinking("mm");
 
-      // 署名者（MetaMask 現在アカウント）
       const [current] = await (window as any).ethereum.request({
         method: "eth_requestAccounts",
       });
-      if (!current) throw new Error("No MetaMask account.");
+      if (!current)
+        throw new Error("No MetaMask account. Please unlock MetaMask.");
 
-      // 入力と MetaMask の署名者が違うと不一致になるので明示チェック
       if (current.toLowerCase() !== normalizedInput.toLowerCase()) {
         alert(
-          "Selected MetaMask account differs from the input address. Please switch your account."
+          "The currently selected MetaMask account differs from the input address."
         );
         return;
       }
 
-      // 1) GET nonce（= 文字列 message）
-      const nonce = await getNonce(token);
-
-      // 2) 署名（フォールバック順）
-      const signature = await signWithPersonalSign(
-        (window as any).ethereum,
-        nonce,
-        current
-      );
-
-      // 2.5) ローカル即復元チェック（デバッグ可視化）
-      const viem = await ensureViem();
-      const recoveredLocal = await viem.recoverMessageAddress({
-        message: nonce,
-        signature,
-      });
-      console.log("[local recover mm]", {
-        input: current,
-        recoveredLocal,
-        same:
-          recoveredLocal?.toLowerCase() === current?.toLowerCase(),
+      const message = await getNonce(token);
+      const signature = await (window as any).ethereum.request({
+        method: "personal_sign",
+        params: [message, current],
       });
 
-      // 3) verify（Edge Function は {message} を検証に使う）
-      await postVerify(
-        { address: current, signature, message: nonce },
-        token
-      );
-
+      await postVerify({ address: current, signature, message }, token);
       setAddressInput("");
       await load();
       alert("Wallet linked (MetaMask).");
@@ -221,7 +152,8 @@ export default function WalletSelection() {
     }
   };
 
-  // ---------- WalletConnect（拡張機能不要 / スマホ通常ブラウザOK） ----------
+  // ---- WalletConnect（モバイル／拡張機能なし）
+  // B案：ユーザーのクリック → connect() で初めてモーダルを開く
   const handleLinkWithWalletConnect = async () => {
     let provider: WCProvider | null = null;
     try {
@@ -243,51 +175,34 @@ export default function WalletSelection() {
 
       setLinking("wc");
 
-      provider = await initWalletConnect();
-      await provider.enable();
+      provider = await createWCProvider();
+
+      // ★ ここが“ユーザー操作中”に行われる：connect() でモーダルが開く
+      if (typeof provider.connect === "function") {
+        await provider.connect();
+      } else {
+        // 古い UMD 互換（通常は不要）
+        await provider.request({ method: "eth_requestAccounts" });
+      }
 
       const accounts = (await provider.request({
-        method: "eth_requestAccounts",
+        method: "eth_accounts",
       })) as string[];
       const current = accounts?.[0];
       if (!current) throw new Error("WalletConnect: no accounts.");
 
       if (current.toLowerCase() !== normalizedInput.toLowerCase()) {
-        alert(
-          "Selected wallet account differs from the input address. Please switch your account."
-        );
+        alert("Selected account differs from the input address.");
         return;
       }
 
-      // 1) GET nonce
-      const nonce = await getNonce(token);
+      const message = await getNonce(token);
+      const signature = (await provider.request({
+        method: "personal_sign",
+        params: [message, current],
+      })) as string;
 
-      // 2) 署名（フォールバック順）
-      const signature = await signWithPersonalSign(
-        provider,
-        nonce,
-        current
-      );
-
-      // 2.5) ローカル即復元チェック
-      const viem = await ensureViem();
-      const recoveredLocal = await viem.recoverMessageAddress({
-        message: nonce,
-        signature,
-      });
-      console.log("[local recover wc]", {
-        input: current,
-        recoveredLocal,
-        same:
-          recoveredLocal?.toLowerCase() === current?.toLowerCase(),
-      });
-
-      // 3) verify
-      await postVerify(
-        { address: current, signature, message: nonce },
-        token
-      );
-
+      await postVerify({ address: current, signature, message }, token);
       setAddressInput("");
       await load();
       alert("Wallet linked (WalletConnect).");
@@ -306,8 +221,8 @@ export default function WalletSelection() {
     <div className="max-w-3xl mx-auto p-6 space-y-6">
       <h1 className="text-3xl font-bold">Wallets</h1>
       <p className="text-sm text-muted-foreground">
-        あなたのアカウントに紐づくウォレットのみ表示されます。
-        新規連携は<strong>アドレス入力 → 署名 → 完了</strong>の順です。
+        あなたのアカウントに紐づくウォレットのみ表示されます。新規連携は
+        <strong>アドレス入力 → 署名 → 完了</strong>の順です。
       </p>
 
       {/* 入力 → 署名 → 完了 */}
@@ -339,9 +254,8 @@ export default function WalletSelection() {
           </button>
         </div>
         <p className="text-xs text-muted-foreground">
-          署名メッセージはサーバ発行の <code>nonce</code>（=純テキスト）です。
-          <br />
-          入力アドレスと署名者アドレスは<strong>必ず同じ</strong>にしてください。
+          署名メッセージはサーバ発行の <code>nonce</code>（素の文字列）です。
+          入力アドレスと署名者のアドレスは<strong>必ず同じ</strong>にしてください。
         </p>
         {alreadyLinked && (
           <p className="text-xs text-green-700">This address is already linked.</p>
