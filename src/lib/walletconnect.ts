@@ -1,6 +1,5 @@
 // src/lib/walletconnect.ts
-// WalletConnect v2 を拡張機能なしで使うための軽量ローダ（UMD）
-// 依存インストール不要：実行時に UMD をロードして window.* から利用します。
+// WalletConnect v2（UMD）ローダ：ブラウザ差異に強い安全実装
 
 export type WCProvider = {
   enable: () => Promise<void>;
@@ -15,6 +14,7 @@ function loadScriptOnce(src: string): Promise<void> {
     const s = document.createElement("script");
     s.src = src;
     s.async = true;
+    s.crossOrigin = "anonymous";
     s.id = id;
     s.onload = () => resolve();
     s.onerror = (e) => reject(e);
@@ -22,45 +22,67 @@ function loadScriptOnce(src: string): Promise<void> {
   });
 }
 
-/**
- * WalletConnect Ethereum Provider を初期化
- * - UMD を CDN からロードして `window` グローバルを参照
- * - MetaMask 非依存、スマホ通常ブラウザでも署名OK
- */
+function pickProviderCtor(): any {
+  const w: any = window as any;
+
+  // 代表的な露出パターンを順に探索
+  const cand = [
+    w.EthereumProvider,
+    w.WalletConnectEthereumProvider,
+    w.walletconnect?.EthereumProvider,
+    w.walletConnect?.EthereumProvider,
+  ].filter(Boolean);
+
+  // default 名前空間（UMD によっては default に入る）
+  const withDefault = [
+    w.EthereumProvider?.default,
+    w.WalletConnectEthereumProvider?.default,
+    w.walletconnect?.EthereumProvider?.default,
+  ].filter(Boolean);
+
+  return cand[0] ?? withDefault[0] ?? null;
+}
+
 export async function initWalletConnect(): Promise<WCProvider> {
   const projectId = (import.meta as any).env?.VITE_WC_PROJECT_ID as string;
   if (!projectId) {
     throw new Error(
-      "VITE_WC_PROJECT_ID is missing. Create one at https://cloud.walletconnect.com and set it in .env"
+      "VITE_WC_PROJECT_ID is missing. Set it in .env (get one at https://cloud.walletconnect.com)"
     );
   }
 
-  // UMD を読み込み（ethereum-provider）
-  // v2 UMD のグローバルは実装差があるため防御的に参照
+  // 1) 必要に応じて TextEncoder/Decoder をポリフィル（古い iOS 対策）
+  // 通常は不要ですが、念のためチェック
+  if (!(window as any).TextEncoder) {
+    await loadScriptOnce("https://polyfill.io/v3/polyfill.min.js?features=TextEncoder,TextDecoder");
+  }
+
+  // 2) QR モーダル（いくつかのビルドでは別 UMD が必須）
+  try {
+    await loadScriptOnce(
+      "https://cdn.jsdelivr.net/npm/@walletconnect/modal@2/dist/index.umd.min.js"
+    );
+  } catch {
+    /* modal の読み込み失敗は致命ではないため継続 */
+  }
+
+  // 3) Ethereum Provider 本体（UMD）
   await loadScriptOnce(
     "https://cdn.jsdelivr.net/npm/@walletconnect/ethereum-provider@2/dist/index.umd.min.js"
   );
 
-  // QR モーダル（@walletconnect/modal）は provider 側で内包されます（showQrModal: true）
-  const g: any =
-    (window as any).WalletConnectEthereumProvider ??
-    (window as any).EthereumProvider ??
-    (window as any).walletconnect?.EthereumProvider;
-
-  if (!g?.EthereumProvider) {
-    throw new Error("WalletConnect UMD not found (EthereumProvider missing).");
+  const Ctor = pickProviderCtor();
+  if (!Ctor || !Ctor.init) {
+    throw new Error("WalletConnect UMD not found (EthereumProvider.init missing).");
   }
 
-  // 主要チェーン（例：Ethereum / Polygon / Arbitrum / Base）
-  // 必要に応じて chains を調整
+  // よく使う L1/L2。必要に応じて調整可。
   const chains = [1, 137, 42161, 8453];
 
-  const provider: WCProvider = await g.EthereumProvider.init({
+  const provider: WCProvider = await Ctor.init({
     projectId,
     chains,
     showQrModal: true,
-    optionalChains: [],
-    // WalletConnect v2 はメソッド宣言が必要（少なくとも personal_sign）
     methods: ["personal_sign", "eth_sign"],
     events: ["chainChanged", "accountsChanged", "disconnect"],
     qrModalOptions: {
