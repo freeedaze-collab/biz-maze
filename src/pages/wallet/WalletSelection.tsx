@@ -3,7 +3,6 @@ import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
 import { isAddress } from "viem";
-import { initWalletConnect, WCProvider } from "@/lib/walletconnect";
 
 type WalletRow = {
   id: number;
@@ -13,46 +12,15 @@ type WalletRow = {
   verified?: boolean | null;
 };
 
-const FN_URL = import.meta.env.VITE_FUNCTION_VERIFY_WALLET as string;
-
-// ---- 共有ユーティリティ（トップレベルに定義してOK） ----
-async function ensureViem() {
-  if ((window as any).viem) return (window as any).viem;
-  await new Promise<void>((res, rej) => {
-    const s = document.createElement("script");
-    s.src = "https://cdn.jsdelivr.net/npm/viem@2.18.8/umd/index.min.js";
-    s.onload = () => res();
-    s.onerror = rej;
-    document.head.appendChild(s);
-  });
-  return (window as any).viem;
-}
-
-async function signNonceWithFallback(nonce: string, account: string) {
-  if (!(window as any).ethereum) throw new Error("MetaMask not found");
-  // 1) 標準順（message, account）
-  try {
-    const sig = await (window as any).ethereum.request({
-      method: "personal_sign",
-      params: [nonce, account],
-    });
-    return sig as string;
-  } catch {
-    // 2) 逆順（WalletConnect互換ケース）
-    const sig = await (window as any).ethereum.request({
-      method: "personal_sign",
-      params: [account, nonce],
-    });
-    return sig as string;
-  }
-}
+const FN_URL = import.meta.env.VITE_FUNCTION_VERIFY_WALLET as string; 
+// 例: "https://<project-id>.functions.supabase.co/functions/v1/verify-wallet-signature"
 
 export default function WalletSelection() {
   const { user } = useAuth();
 
   const [rows, setRows] = useState<WalletRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [linking, setLinking] = useState<"mm" | "wc" | null>(null);
+  const [linking, setLinking] = useState(false);
   const [addressInput, setAddressInput] = useState("");
 
   const normalizedInput = useMemo(() => addressInput?.trim(), [addressInput]);
@@ -67,6 +35,7 @@ export default function WalletSelection() {
   const load = async () => {
     if (!user?.id) return;
     setLoading(true);
+
     const { data, error } = await supabase
       .from("wallets")
       .select("id,user_id,address,created_at,verified")
@@ -87,54 +56,17 @@ export default function WalletSelection() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
-  // ---- 共通：nonce取得（GET）
-  const getNonce = async (token?: string) => {
-    const r = await fetch(FN_URL, {
-      method: "GET",
-      headers: {
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-    });
-    const body = await r.json().catch(() => ({}));
-    if (!r.ok || !body?.nonce) {
-      throw new Error(
-        `Nonce failed. status=${r.status}, body=${JSON.stringify(body)}`
-      );
-    }
-    return body.nonce as string;
-  };
+  // --- viem を ES Module で確実にロード（UMD/CSP問題回避）
+  async function ensureViem() {
+    // 既にどこかで import 済みなら再利用
+    if ((window as any).__viem_eSM__) return (window as any).__viem_eSM__;
+    const mod = await import("https://esm.sh/viem@2.18.8?bundle&target=es2020");
+    (window as any).__viem_eSM__ = mod;
+    return mod;
+  }
 
-  // ---- 共通：verify（POST）
-  const postVerify = async (
-    payload: { address: string; signature: string; nonce: string },
-    token?: string
-  ) => {
-    const r = await fetch(FN_URL, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify({ action: "verify", ...payload }),
-    });
-    const text = await r.text();
-    let body: any;
-    try {
-      body = JSON.parse(text);
-    } catch {
-      body = text;
-    }
-
-    if (!r.ok || !body?.ok) {
-      throw new Error(
-        `Verify failed. status=${r.status}, body=${JSON.stringify(body)}`
-      );
-    }
-    return body;
-  };
-
-  // ---- MetaMask（拡張機能）
-  const handleLinkWithMetaMask = async () => {
+  // --- 署名→verify
+  const handleLink = async () => {
     try {
       if (!user?.id) {
         alert("Please login again.");
@@ -145,151 +77,138 @@ export default function WalletSelection() {
         return;
       }
       if (alreadyLinked) {
-        alert("This wallet is already linked.");
+        alert("This wallet is already linked to your account.");
         return;
       }
-
-      const { data: sess } = await supabase.auth.getSession();
-      const token = sess?.session?.access_token;
-
       if (!(window as any).ethereum) {
         alert("MetaMask not found.");
         return;
       }
 
-      const [current] = await (window as any).ethereum.request({
+      // JWT を取得（DB保存時に user を紐付けるため Authorization を付与）
+      const { data: sess } = await supabase.auth.getSession();
+      const token = sess?.session?.access_token;
+      if (!token) {
+        alert("Session not found. Please re-login.");
+        return;
+      }
+
+      setLinking(true);
+
+      // 1) GET /verify-wallet-signature → { nonce }
+      const r1 = await fetch(FN_URL, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const b1 = await r1.json().catch(() => ({}));
+      if (!r1.ok || !b1?.nonce) {
+        throw new Error(
+          `Nonce fetch failed. status=${r1.status} body=${JSON.stringify(b1)}`
+        );
+      }
+      const nonce: string = b1.nonce;
+
+      // 2) 署名メッセージを“文字列”で統一
+      const message = `BizMaze Wallet Link\nnonce=${nonce}`;
+
+      // 3) 署名者＝現在の MetaMask アカウント
+      const [account] = await (window as any).ethereum.request({
         method: "eth_requestAccounts",
       });
-      if (!current) throw new Error("No MetaMask account.");
-      if (current.toLowerCase() !== normalizedInput.toLowerCase()) {
+      if (!account) throw new Error("No MetaMask account.");
+
+      // 入力と接続中アカウントを合わせる（異なると検証で落ちる）
+      if (account.toLowerCase() !== normalizedInput.toLowerCase()) {
         alert(
-          "MetaMask currently selected account differs from the input address."
+          "The selected MetaMask account differs from the input address. Please switch the account and retry."
         );
         return;
       }
 
-      setLinking("mm");
+      // 4) viem（ESM）をロードし、toHex を使用して personal_sign の実装差を吸収
+      const viem = await ensureViem();
+      const { toHex, recoverMessageAddress } = viem;
 
-      // 1) nonce
-      const nonce = await getNonce(token);
-
-      // 2) 署名（両順フォールバックあり）
-      const signature = await signNonceWithFallback(nonce, current);
-
-      // 2.5) ローカルでEIP-191復元 → デバッグ表示
+      let signature: string;
+      // 標準順（[message, account]）をまず試す
       try {
-        const viem = await ensureViem();
-        const recoveredLocal = await viem.recoverMessageAddress({
-          message: nonce,
-          signature,
+        signature = await (window as any).ethereum.request({
+          method: "personal_sign",
+          params: [toHex(message), account],
         });
-        console.log("[local recover]", {
-          account: current,
-          recoveredLocal,
-          same:
-            recoveredLocal?.toLowerCase() === current?.toLowerCase(),
+      } catch {
+        // 一部実装は逆順を要求することがある
+        signature = await (window as any).ethereum.request({
+          method: "personal_sign",
+          params: [account, toHex(message)],
         });
-      } catch (e) {
-        console.warn("local recover failed", e);
       }
 
-      // 3) verify
-      await postVerify(
-        { address: current, signature, nonce },
-        token /* optional */
-      );
+      // 5) ローカルでも即座に復元して一致確認（デバッグ用）
+      const recoveredLocal = await recoverMessageAddress({ message, signature });
+      const localSame =
+        recoveredLocal.toLowerCase() === account.toLowerCase();
+      console.log("[local recover]", {
+        account,
+        recoveredLocal,
+        same: localSame,
+        sigLen: signature.length,
+      });
+      if (!localSame) {
+        throw new Error(
+          `Local recover mismatch. recovered=${recoveredLocal}, account=${account}`
+        );
+      }
+
+      // 6) POST /verify-wallet-signature → 検証＆DB upsert
+      const r2 = await fetch(FN_URL, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          action: "verify",
+          address: account,
+          signature,
+          message, // ← ここがポイント：サーバも“同じ文字列”で検証する
+        }),
+      });
+      const t2 = await r2.text();
+      let b2: any = null;
+      try {
+        b2 = JSON.parse(t2);
+      } catch {
+        b2 = t2;
+      }
+      console.log("[verify resp]", r2.status, b2);
+
+      if (!r2.ok || !b2?.ok) {
+        throw new Error(
+          `Verify failed. status=${r2.status} body=${JSON.stringify(b2)}`
+        );
+      }
 
       setAddressInput("");
       await load();
-      alert("Wallet linked (MetaMask).");
+      alert("Wallet has been linked successfully.");
     } catch (e: any) {
-      console.error("[wallets] mm error:", e);
+      console.error("[wallets] link error:", e);
       alert(e?.message ?? String(e));
     } finally {
-      setLinking(null);
+      setLinking(false);
     }
   };
 
-  // ---- WalletConnect（拡張機能なし / モバイル）
-  const handleLinkWithWalletConnect = async () => {
-    let provider: WCProvider | null = null;
-    try {
-      if (!user?.id) {
-        alert("Please login again.");
-        return;
-      }
-      if (!normalizedInput || !isAddress(normalizedInput)) {
-        alert("Please input a valid Ethereum address.");
-        return;
-      }
-      if (alreadyLinked) {
-        alert("This wallet is already linked.");
-        return;
-      }
-
-      const { data: sess } = await supabase.auth.getSession();
-      const token = sess?.session?.access_token;
-
-      setLinking("wc");
-      provider = await initWalletConnect();
-
-      await provider.enable();
-      const accounts = (await provider.request({
-        method: "eth_requestAccounts",
-      })) as string[];
-      const current = accounts?.[0];
-
-      if (!current) throw new Error("WalletConnect: no accounts.");
-      if (current.toLowerCase() !== normalizedInput.toLowerCase()) {
-        alert("Selected account differs from the input address.");
-        return;
-      }
-
-      const nonce = await getNonce(token);
-      const signature = (await provider.request({
-        method: "personal_sign",
-        params: [nonce, current],
-      })) as string;
-
-      // デバッグ：ローカル復元
-      try {
-        const viem = await ensureViem();
-        const recoveredLocal = await viem.recoverMessageAddress({
-          message: nonce,
-          signature,
-        });
-        console.log("[local recover][wc]", {
-          account: current,
-          recoveredLocal,
-          same:
-            recoveredLocal?.toLowerCase() === current?.toLowerCase(),
-        });
-      } catch {}
-
-      await postVerify({ address: current, signature, nonce }, token);
-      setAddressInput("");
-      await load();
-      alert("Wallet linked (WalletConnect).");
-    } catch (e: any) {
-      console.error("[wallets] wc error:", e);
-      alert(e?.message ?? String(e));
-    } finally {
-      try {
-        provider?.disconnect?.();
-      } catch {}
-      setLinking(null);
-    }
-  };
-
-  // ---- UI ----
   return (
     <div className="max-w-3xl mx-auto p-6 space-y-6">
       <h1 className="text-3xl font-bold">Wallets</h1>
       <p className="text-sm text-muted-foreground">
-        あなたのアカウントに紐づくウォレットのみ表示されます。新規連携は
-        <strong>アドレス入力 → 署名 → 完了</strong> の順です。
+        このページには<strong>あなたのアカウントに連携済みのウォレット</strong>のみ表示されます。
+        新しいウォレットを連携するにはアドレスを入力後、署名で本人性を確認します。
       </p>
 
+      {/* 入力 → 署名 → 完了 */}
       <div className="border rounded-xl p-4 space-y-3">
         <label className="text-sm font-medium">Wallet Address</label>
         <div className="flex items-center gap-2">
@@ -302,49 +221,35 @@ export default function WalletSelection() {
           />
           <button
             className="px-3 py-2 rounded bg-blue-600 text-white disabled:opacity-50"
-            onClick={handleLinkWithMetaMask}
-            disabled={linking !== null}
-            title="Sign with MetaMask"
+            onClick={handleLink}
+            disabled={linking}
           >
-            {linking === "mm" ? "Linking..." : "Link (MetaMask)"}
-          </button>
-          <button
-            className="px-3 py-2 rounded border disabled:opacity-50"
-            onClick={handleLinkWithWalletConnect}
-            disabled={linking !== null}
-            title="Sign with WalletConnect (mobile / no extension)"
-          >
-            {linking === "wc" ? "Linking..." : "Link (WalletConnect)"}
+            {linking ? "Linking..." : "Link Wallet"}
           </button>
         </div>
         <p className="text-xs text-muted-foreground">
-          署名メッセージはサーバ発行の <code>nonce</code>
-          （プレーン文字列）です。入力アドレスと署名者のアドレスは
-          <strong>必ず同じ</strong>にしてください。
+          署名メッセージは <code>BizMaze Wallet Link\ nnonce=&lt;nonce&gt;</code> です（文字列のまま）。<br />
+          入力したアドレスと MetaMask の選択アカウントは<strong>同一である必要</strong>があります。
         </p>
         {alreadyLinked && (
-          <p className="text-xs text-green-700">
-            This address is already linked.
-          </p>
+          <p className="text-xs text-green-700">This address is already linked.</p>
         )}
       </div>
 
+      {/* 連携済み一覧（DB） */}
       <div className="border rounded-xl p-4">
         <div className="font-semibold mb-2">Linked wallets (DB)</div>
         {loading ? (
           <div>Loading...</div>
         ) : rows.length === 0 ? (
-          <div className="text-sm text-muted-foreground">
-            No linked wallets yet.
-          </div>
+          <div className="text-sm text-muted-foreground">No linked wallets yet.</div>
         ) : (
           <ul className="space-y-2">
             {rows.map((w) => (
               <li key={w.id} className="border rounded p-3">
                 <div className="font-mono break-all">{w.address}</div>
                 <div className="text-xs text-muted-foreground">
-                  {w.verified ? "verified" : "unverified"} •{" "}
-                  {w.created_at ?? "—"}
+                  {w.verified ? "verified" : "unverified"} • {w.created_at ?? "—"}
                 </div>
               </li>
             ))}
