@@ -1,113 +1,97 @@
-// Deno runtime for Supabase Edge Functions
-// File: supabase/functions/verify-wallet-signature/index.ts
-
-// --- imports
+// supabase/functions/verify-wallet-signature/index.ts
+// ─────────────────────────────────────────────────────────────
+// A方式：MetaMask 互換の復元（@metamask/eth-sig-util の recoverPersonalSignature）
+// ※ “nonce をそのまま”署名し、“そのまま”検証します（整形・JSON.stringify 等は一切しない）
+// ─────────────────────────────────────────────────────────────
+import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { isAddress } from "https://esm.sh/viem@2";
 import {
-  isAddress,
-  hashMessage,        // <- EIP-191 前置きを含むハッシュ化
-  recoverAddress,     // <- 署名からアドレス復元
-} from "https://esm.sh/viem@2";
+  recoverPersonalSignature,
+} from "npm:@metamask/eth-sig-util@7.0.1"; // Deno npm import
 
-// --- env
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SERVICE_KEY  = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+// CORS 共通ヘッダ
+const CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, content-type",
+  "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+};
 
-// --- init
-const admin = createClient(SUPABASE_URL, SERVICE_KEY);
+const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+const anonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
+const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!; // DB 書込が必要なら使用
 
-// --- helpers
-const json = (obj: unknown, status = 200) =>
-  new Response(JSON.stringify(obj), {
-    status,
-    headers: {
-      "content-type": "application/json; charset=utf-8",
-      // CORS
-      "access-control-allow-origin": "*",
-      "access-control-allow-headers": "authorization,content-type",
-      "access-control-allow-methods": "GET,POST,OPTIONS",
-    },
-  });
+serve(async (req: Request) => {
+  // OPTIONS（プリフライト）
+  if (req.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: CORS });
+  }
 
-Deno.serve(async (req) => {
-  // CORS preflight
-  if (req.method === "OPTIONS") return json({}, 204);
-
-  // 認証（JWT 必須。UI 側は Authorization: Bearer を付ける）
-  const auth = req.headers.get("authorization") ?? "";
-  const jwt  = auth.toLowerCase().startsWith("bearer ")
-    ? auth.slice(7)
-    : undefined;
-
-  // GET: ノンス発行
+  // 1) GET: ノンス発行（ただの文字列）
   if (req.method === "GET") {
-    if (!jwt) return json({ error: "Unauthorized" }, 401);
     const nonce = crypto.randomUUID().replace(/-/g, "");
     return json({ nonce }, 200);
   }
 
-  // POST: 検証
+  // 2) POST: 検証 → DB upsert
   if (req.method === "POST") {
-    if (!jwt) return json({ error: "Unauthorized" }, 401);
+    try {
+      const { address, signature, nonce } = await req.json();
 
-    let body: any = {};
-    try { body = await req.json(); } catch { /* ignore */ }
-
-    const { action } = body ?? {};
-
-    if (action === "nonce") {
-      // invoke(body={action:'nonce'}) 用の互換ハンドラ
-      const nonce = crypto.randomUUID().replace(/-/g, "");
-      return json({ nonce }, 200);
-    }
-
-    if (action === "verify") {
-      const address   = String(body?.address ?? "");
-      const signature = String(body?.signature ?? "");
-      const nonce     = String(body?.nonce ?? "");
-
-      // 入力バリデーション
-      if (!isAddress(address) || !signature || !nonce) {
+      // 入力チェック（“そのままの”値で）
+      if (!isAddress(address) || typeof signature !== "string" || typeof nonce !== "string") {
         return json({ error: "Bad request" }, 400);
       }
 
-      // ここが最重要：nonce を**そのまま** hashMessage へ
-      // JSON.stringify したり、trim したり、改行を足したりしない
-      const hash = hashMessage(nonce);
+      // MetaMask 互換のリカバー（メッセージは nonce そのまま）
+      // data は「UTF-8文字列（16進や0x付でも可）」本文。MetaMask personal_sign と一致します。
+      const recovered = recoverPersonalSignature({
+        data: nonce,
+        signature,
+      });
 
-      let recovered = "";
-      try {
-        recovered = await recoverAddress({ hash, signature });
-      } catch (e) {
-        return json({ error: "Invalid signature", detail: String(e) }, 400);
-      }
-
-      // 大文字小文字を無視して比較
+      // 大文字小文字を無視して一致比較
       if (recovered.toLowerCase() !== address.toLowerCase()) {
-        // デバッグ用の最小限ログ（Supabase Logsで確認可能）
-        console.log("sig-mismatch", {
-          input: address,
-          recovered,
-          nonce8: nonce.slice(0, 8),
-          sigLen: signature.length,
-        });
         return json(
-          { error: "Signature mismatch", recovered, address },
+          {
+            error: "Signature mismatch",
+            recovered,
+            address,
+          },
           400,
         );
       }
 
-      // ここで wallets へ upsert（必要な場合のみ）
-      // await admin.from('wallets').upsert(
-      //   { user_id: (await admin.auth.getUser(jwt)).data.user?.id, address, verified: true },
-      //   { onConflict: 'user_id,address' },
-      // );
+      // （任意）ユーザー抽出：Authorization を付けていれば user を取得
+      const authHeader = req.headers.get("authorization") ?? "";
+      const supabase = createClient(supabaseUrl, anonKey, {
+        global: { headers: { Authorization: authHeader } },
+      });
+      const { data: u } = await supabase.auth.getUser();
+      const userId = u?.user?.id ?? null;
 
-      return json({ ok: true }, 200);
+      // （任意）DB 反映：wallets テーブルに upsert（user スコープなら）
+      if (userId) {
+        const admin = createClient(supabaseUrl, serviceKey);
+        await admin.from("wallets").upsert(
+          { user_id: userId, address, verified: true },
+          { onConflict: "user_id,address" },
+        );
+      }
+
+      return json({ ok: true, recovered, linked_to: userId ?? null }, 200);
+    } catch (e) {
+      console.error("[verify-wallet-signature] fatal:", e);
+      return json({ error: "Internal Error", message: String(e?.message ?? e) }, 500);
     }
-
-    return json({ error: "Unknown action" }, 400);
   }
 
   return json({ error: "Method not allowed" }, 405);
 });
+
+function json(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8", ...CORS },
+  });
+}
