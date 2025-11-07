@@ -70,6 +70,71 @@ export default function WalletSelection() {
     return body.nonce as string;
   };
 
+  // 署名 → verify の前に追加：viem UMD を1回だけロード
+async function ensureViem() {
+  if ((window as any).viem) return (window as any).viem;
+  await new Promise<void>((res, rej) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/viem@2.18.8/umd/index.min.js';
+    s.onload = () => res();
+    s.onerror = rej;
+    document.head.appendChild(s);
+  });
+  return (window as any).viem;
+}
+
+async function signNonceWithFallback(nonce: string, account: string) {
+  if (!(window as any).ethereum) throw new Error('MetaMask not found');
+
+  // 1) MetaMask 標準（message, account）
+  try {
+    const sig = await (window as any).ethereum.request({
+      method: 'personal_sign',
+      params: [nonce, account],
+    });
+    return sig as string;
+  } catch (_) {
+    // 2) 逆順（WalletConnect 互換のケース）
+    const sig = await (window as any).ethereum.request({
+      method: 'personal_sign',
+      params: [account, nonce],
+    });
+    return sig as string;
+  }
+}
+
+// ---- handleLink 内の “署名～verify” をこの形に ----
+const { data: sess } = await supabase.auth.getSession();
+const token = sess?.session?.access_token;
+if (!token) { alert('Session not found'); return; }
+
+// 1) nonce
+const r1 = await fetch(FN_URL, { method: 'GET', headers: { Authorization: `Bearer ${token}` }});
+const { nonce } = await r1.json();
+
+// 2) サイン（両順フォールバック）
+const [account] = await (window as any).ethereum.request({ method: 'eth_requestAccounts' });
+const signature = await signNonceWithFallback(nonce, account);
+
+// 2.5) ローカルでも復元して即比較（デバッグ）
+const viem = await ensureViem();
+const recoveredLocal = await viem.recoverMessageAddress({ message: nonce, signature });
+console.log('[local recover]', { account, recoveredLocal });
+
+// 3) verify
+const r2 = await fetch(FN_URL, {
+  method: 'POST',
+  headers: {
+    'content-type': 'application/json',
+    Authorization: `Bearer ${token}`,
+  },
+  body: JSON.stringify({ action: 'verify', address: account, signature, nonce }),
+});
+const t2 = await r2.text();
+console.log('verify', r2.status, t2);
+if (!r2.ok) throw new Error(`Verify failed: ${t2}`);
+
+
   // ---- 共通：verify（POST）
   const postVerify = async (payload: {
     address: string;
