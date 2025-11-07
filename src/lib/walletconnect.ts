@@ -1,7 +1,8 @@
 // src/lib/walletconnect.ts
 //
-// WalletConnect v2 UMD をモバイル Safari / Chrome でも確実に読み込む多段ローダ。
-// CSS は style.css / index.css の両方を試行し、両方失敗しても JS は続行。
+// WalletConnect v2 UMD ローダ（モバイルでも確実動作）。
+// まず自前配信 (/public/wc/...) を読みに行き、失敗時に CDN フォールバック。
+// CSS は存在すれば適用、無くても機能は続行。
 
 export type WCProvider = {
   connect?: () => Promise<void>;
@@ -9,23 +10,29 @@ export type WCProvider = {
   request: (args: { method: string; params?: any[] }) => Promise<any>;
 };
 
+const LOCAL_PROVIDER = "/wc/ethereum-provider.min.js";
+const LOCAL_MODAL_JS = "/wc/modal/index.umd.min.js";
+const LOCAL_MODAL_CSS = "/wc/modal/style.css"; // index.css でも OK
+
 const PROVIDER_SRCS = [
-  // Provider UMD（2 系）
+  // 1st: 自前配信
+  LOCAL_PROVIDER,
+  // 2nd: CDN フォールバック
   "https://cdn.jsdelivr.net/npm/@walletconnect/ethereum-provider@2/dist/umd/index.min.js",
   "https://unpkg.com/@walletconnect/ethereum-provider@2/dist/umd/index.min.js",
 ];
 
 const MODAL_JS_SRCS = [
+  LOCAL_MODAL_JS,
   "https://cdn.jsdelivr.net/npm/@walletconnect/modal@2.6.2/dist/index.umd.min.js",
   "https://unpkg.com/@walletconnect/modal@2.6.2/dist/index.umd.min.js",
 ];
 
-// ⚠️ CDN により dist の CSS ファイル名が異なることがあるため両方試行
+// CSS は style.css / index.css の両方を試す
 const MODAL_CSS_SRCS = [
-  // jsDelivr
+  LOCAL_MODAL_CSS,
   "https://cdn.jsdelivr.net/npm/@walletconnect/modal@2.6.2/dist/style.css",
   "https://cdn.jsdelivr.net/npm/@walletconnect/modal@2.6.2/dist/index.css",
-  // unpkg
   "https://unpkg.com/@walletconnect/modal@2.6.2/dist/style.css",
   "https://unpkg.com/@walletconnect/modal@2.6.2/dist/index.css",
 ];
@@ -33,15 +40,17 @@ const MODAL_CSS_SRCS = [
 function withTimeout<T>(p: Promise<T>, ms: number, tag: string) {
   return new Promise<T>((resolve, reject) => {
     const t = setTimeout(() => reject(new Error(`${tag} timed out (${ms}ms)`)), ms);
-    p.then((v) => { clearTimeout(t); resolve(v); })
-     .catch((e) => { clearTimeout(t); reject(e); });
+    p.then(v => { clearTimeout(t); resolve(v); })
+     .catch(e => { clearTimeout(t); reject(e); });
   });
 }
 
 function loadScript(src: string): Promise<void> {
   return new Promise<void>((res, rej) => {
     const s = document.createElement("script");
-    s.src = src + (src.includes("?") ? "" : `?v=${Date.now()}`); // cache-bust
+    // 自前配信はキャッシュ OK、CDN は cache-bust
+    const isLocal = src.startsWith("/") || src.startsWith(location.origin);
+    s.src = isLocal ? src : `${src}${src.includes("?") ? "" : `?v=${Date.now()}`}`;
     s.async = true;
     s.crossOrigin = "anonymous";
     s.onload = () => res();
@@ -54,7 +63,8 @@ function loadCss(href: string): Promise<void> {
   return new Promise<void>((res, rej) => {
     const l = document.createElement("link");
     l.rel = "stylesheet";
-    l.href = href + (href.includes("?") ? "" : `?v=${Date.now()}`); // cache-bust
+    const isLocal = href.startsWith("/") || href.startsWith(location.origin);
+    l.href = isLocal ? href : `${href}${href.includes("?") ? "" : `?v=${Date.now()}`}`;
     l.crossOrigin = "anonymous";
     l.onload = () => res();
     l.onerror = () => rej(new Error(`css load failed: ${href}`));
@@ -62,12 +72,7 @@ function loadCss(href: string): Promise<void> {
   });
 }
 
-async function tryList(
-  candidates: string[],
-  tag: string,
-  isCss = false,
-  timeoutMs = 10000
-) {
+async function tryList(candidates: string[], tag: string, isCss = false, timeoutMs = 10000) {
   const errs: string[] = [];
   for (const url of candidates) {
     try {
@@ -81,7 +86,7 @@ async function tryList(
       errs.push(`${url} -> ${e?.message ?? e}`);
     }
   }
-  throw new Error(`${tag} load failed: \n${errs.join("\n")}`);
+  throw new Error(`${tag} load failed:\n${errs.join("\n")}`);
 }
 
 let loaded = false;
@@ -89,30 +94,22 @@ let loaded = false;
 async function ensureUMDLoaded() {
   if (loaded) return;
 
-  // 1) Provider JS（必須）
+  // Provider（必須）
   await tryList(PROVIDER_SRCS, "WalletConnect Provider UMD", false, 12000);
 
-  // 2) Modal CSS（非致命で試行：style.css / index.css 両方）
-  let cssOk = true;
+  // Modal CSS（非致命）
   try {
     await tryList(MODAL_CSS_SRCS, "WalletConnect Modal CSS", true, 8000);
-  } catch (e: any) {
-    cssOk = false;
-    console.warn(String(e?.message ?? e));
-    // CSS 失敗でも JS は続行する（見た目の乱れは発生し得るが、機能は動かす）
+  } catch (e) {
+    console.warn(String(e));
+    // 続行（見た目だけ影響）
   }
 
-  // 3) Modal JS
+  // Modal JS（必須）
   await tryList(MODAL_JS_SRCS, "WalletConnect Modal UMD", false, 12000);
 
-  // グローバル確認
-  const EthereumProvider = (window as any).EthereumProvider;
-  if (!EthereumProvider) {
+  if (!(window as any).EthereumProvider) {
     throw new Error("EthereumProvider missing after UMD load");
-  }
-  if (!cssOk) {
-    // UI 側で分かるよう軽いダイアログに出したい場合は例外ではなく return 値で渡す設計にする
-    console.warn("WalletConnect Modal CSS could not be loaded; continuing without CSS.");
   }
   loaded = true;
 }
@@ -126,7 +123,7 @@ export async function createWCProvider(): Promise<WCProvider> {
   const EthereumProvider = (window as any).EthereumProvider;
   const provider: WCProvider = await EthereumProvider.init({
     projectId,
-    showQrModal: true, // connect() 実行時にモーダルを開く
+    showQrModal: true, // connect() 時にモーダルを開く
     metadata: {
       name: "BizMaze Wallet Link",
       description: "Link your wallet",
