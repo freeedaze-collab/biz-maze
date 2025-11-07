@@ -1,5 +1,5 @@
 // src/lib/walletconnect.ts
-// WalletConnect v2（UMD）ローダ：ブラウザ差異に強い安全実装
+// WalletConnect v2 Provider robust loader for browser/iOS Safari.
 
 export type WCProvider = {
   enable: () => Promise<void>;
@@ -7,88 +7,124 @@ export type WCProvider = {
   disconnect?: () => Promise<void>;
 };
 
-function loadScriptOnce(src: string): Promise<void> {
+type AnyFn = (...a: any[]) => any;
+
+function log(...a: any[]) {
+  // 開発中だけ noisy に
+  console.log("[WC]", ...a);
+}
+
+function loadScript(src: string, id?: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const id = `__wc_script_${btoa(src).replace(/=+/g, "")}`;
-    if (document.getElementById(id)) return resolve();
+    const exist = id ? document.getElementById(id) : null;
+    if (exist) return resolve();
     const s = document.createElement("script");
     s.src = src;
     s.async = true;
     s.crossOrigin = "anonymous";
-    s.id = id;
+    if (id) s.id = id;
     s.onload = () => resolve();
     s.onerror = (e) => reject(e);
     document.head.appendChild(s);
   });
 }
 
-function pickProviderCtor(): any {
-  const w: any = window as any;
+async function loadFirst(cands: { src: string; id?: string }[], label: string) {
+  for (const c of cands) {
+    try {
+      await loadScript(c.src, c.id);
+      log(`${label} loaded:`, c.src);
+      return c.src;
+    } catch (e) {
+      log(`${label} failed:`, c.src, e);
+    }
+  }
+  throw new Error(`${label} all candidates failed`);
+}
 
-  // 代表的な露出パターンを順に探索
+function pickCtor(): any {
+  const w: any = window as any;
+  // 代表的な露出パターン
   const cand = [
     w.EthereumProvider,
     w.WalletConnectEthereumProvider,
     w.walletconnect?.EthereumProvider,
     w.walletConnect?.EthereumProvider,
   ].filter(Boolean);
-
-  // default 名前空間（UMD によっては default に入る）
-  const withDefault = [
+  const def = [
     w.EthereumProvider?.default,
     w.WalletConnectEthereumProvider?.default,
     w.walletconnect?.EthereumProvider?.default,
   ].filter(Boolean);
+  return cand[0] ?? def[0] ?? null;
+}
 
-  return cand[0] ?? withDefault[0] ?? null;
+async function ensureTextEncoder() {
+  if (!(window as any).TextEncoder || !(window as any).TextDecoder) {
+    await loadScript("https://polyfill.io/v3/polyfill.min.js?features=TextEncoder,TextDecoder");
+    log("polyfilled TextEncoder/Decoder");
+  }
 }
 
 export async function initWalletConnect(): Promise<WCProvider> {
   const projectId = (import.meta as any).env?.VITE_WC_PROJECT_ID as string;
-  if (!projectId) {
-    throw new Error(
-      "VITE_WC_PROJECT_ID is missing. Set it in .env (get one at https://cloud.walletconnect.com)"
-    );
-  }
+  if (!projectId) throw new Error("VITE_WC_PROJECT_ID missing");
 
-  // 1) 必要に応じて TextEncoder/Decoder をポリフィル（古い iOS 対策）
-  // 通常は不要ですが、念のためチェック
-  if (!(window as any).TextEncoder) {
-    await loadScriptOnce("https://polyfill.io/v3/polyfill.min.js?features=TextEncoder,TextDecoder");
-  }
+  await ensureTextEncoder();
 
-  // 2) QR モーダル（いくつかのビルドでは別 UMD が必須）
+  // 1) モーダル（なくても致命ではないが showQrModal=true なら必要）
   try {
-    await loadScriptOnce(
-      "https://cdn.jsdelivr.net/npm/@walletconnect/modal@2/dist/index.umd.min.js"
+    await loadFirst(
+      [
+        { src: "https://cdn.jsdelivr.net/npm/@walletconnect/modal@2/dist/index.umd.min.js", id: "__wc_modal_jsd" },
+        { src: "https://unpkg.com/@walletconnect/modal@2/dist/index.umd.min.js", id: "__wc_modal_unp" },
+        { src: "https://cdnjs.cloudflare.com/ajax/libs/walletconnect/2.11.3/modal/index.umd.min.js", id: "__wc_modal_cdn" }, // 例：バージョンは適宜調整
+      ],
+      "modal UMD"
     );
   } catch {
-    /* modal の読み込み失敗は致命ではないため継続 */
+    log("modal UMD skipped");
   }
 
-  // 3) Ethereum Provider 本体（UMD）
-  await loadScriptOnce(
-    "https://cdn.jsdelivr.net/npm/@walletconnect/ethereum-provider@2/dist/index.umd.min.js"
-  );
-
-  const Ctor = pickProviderCtor();
-  if (!Ctor || !Ctor.init) {
-    throw new Error("WalletConnect UMD not found (EthereumProvider.init missing).");
+  // 2) Provider 本体 UMD（複数 CDN を試す）
+  let ctor = null;
+  try {
+    await loadFirst(
+      [
+        { src: "https://cdn.jsdelivr.net/npm/@walletconnect/ethereum-provider@2/dist/index.umd.min.js", id: "__wc_ep_jsd" },
+        { src: "https://unpkg.com/@walletconnect/ethereum-provider@2/dist/index.umd.min.js", id: "__wc_ep_unp" },
+        { src: "https://cdnjs.cloudflare.com/ajax/libs/walletconnect/2.11.3/ethereum-provider/index.umd.min.js", id: "__wc_ep_cdn" }, // 例
+      ],
+      "provider UMD"
+    );
+    ctor = pickCtor();
+  } catch (e) {
+    log("UMD path failed -> fallback to ESM", e);
   }
 
-  // よく使う L1/L2。必要に応じて調整可。
+  // 3) まだ見つからなければ ESM 直 import（esm.sh 経由）
+  if (!ctor) {
+    try {
+      const mod: any = await import(
+        "https://esm.sh/@walletconnect/ethereum-provider@2?bundle&target=es2020"
+      );
+      ctor = mod?.EthereumProvider ?? mod?.default ?? null;
+      if (!ctor?.init) throw new Error("ESM ctor invalid");
+      log("ESM provider loaded");
+    } catch (e) {
+      log("ESM import failed", e);
+      throw new Error("WalletConnect provider not found (UMD & ESM failed).");
+    }
+  }
+
   const chains = [1, 137, 42161, 8453];
-
-  const provider: WCProvider = await Ctor.init({
+  const provider: WCProvider = await ctor.init({
     projectId,
     chains,
     showQrModal: true,
     methods: ["personal_sign", "eth_sign"],
     events: ["chainChanged", "accountsChanged", "disconnect"],
-    qrModalOptions: {
-      themeMode: "light",
-      enableExplorer: false,
-    },
+    qrModalOptions: { themeMode: "light", enableExplorer: false },
     metadata: {
       name: "Biz Maze",
       description: "Biz Maze Wallet Link",
@@ -97,5 +133,11 @@ export async function initWalletConnect(): Promise<WCProvider> {
     },
   });
 
+  // iOS の一部で .enable() 要求がないと QR が開かないケースがある
+  try {
+    await provider.enable();
+  } catch (e) {
+    log("provider.enable warning:", e);
+  }
   return provider;
 }
