@@ -1,8 +1,8 @@
-// src/pages/wallet/WalletSelection.tsx
+// 省略: imports は現状のままでOK
 import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
-import { isAddress } from "viem";
+import { isAddress, recoverMessageAddress } from "viem";
 import { createWCProvider, WCProvider } from "@/lib/walletconnect";
 
 type WalletRow = {
@@ -24,12 +24,9 @@ export default function WalletSelection() {
   const [addressInput, setAddressInput] = useState("");
 
   const normalizedInput = useMemo(() => addressInput?.trim(), [addressInput]);
-
   const alreadyLinked = useMemo(() => {
     if (!normalizedInput) return false;
-    return rows.some(
-      (r) => r.address?.toLowerCase() === normalizedInput.toLowerCase()
-    );
+    return rows.some((r) => r.address?.toLowerCase() === normalizedInput.toLowerCase());
   }, [rows, normalizedInput]);
 
   const load = async () => {
@@ -50,208 +47,131 @@ export default function WalletSelection() {
     setLoading(false);
   };
 
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.id]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [user?.id]);
 
-  // ---- 共通：nonce取得（GET）
+  // 共通：nonce & verify
   const getNonce = async (token?: string) => {
-    const r = await fetch(FN_URL, {
-      method: "GET",
-      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-    });
+    const r = await fetch(FN_URL, { method: "GET", headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) } });
     const body = await r.json().catch(() => ({}));
-    if (!r.ok || !body?.nonce) {
-      throw new Error(
-        `Nonce failed. status=${r.status}, body=${JSON.stringify(body)}`
-      );
-    }
+    if (!r.ok || !body?.nonce) throw new Error(`Nonce failed. status=${r.status}, body=${JSON.stringify(body)}`);
     return body.nonce as string;
   };
 
-  // ---- 共通：verify（POST）
-  const postVerify = async (
-    payload: { address: string; signature: string; message: string },
-    token?: string
-  ) => {
+  const postVerify = async (payload: { address: string; signature: string; message: string }, token?: string) => {
     const r = await fetch(FN_URL, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
+      headers: { "content-type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       body: JSON.stringify({ action: "verify", ...payload }),
     });
     const text = await r.text();
-    let body: any = null;
-    try { body = JSON.parse(text); } catch { body = text; }
-    if (!r.ok || !body?.ok) {
-      throw new Error(`Verify failed. status=${r.status}, body=${text}`);
-    }
+    let body: any = null; try { body = JSON.parse(text); } catch { body = text; }
+    if (!r.ok || !body?.ok) throw new Error(`Verify failed. status=${r.status}, body=${text}`);
     return body;
   };
 
-  // ---- MetaMask（拡張機能）
+  // personal_sign：順序差異に自動対応し、recover で整合チェック
+  async function signAndRecover(opts: {
+    request: (args: { method: string; params?: any[] }) => Promise<any>;
+    message: string;
+    account: string;
+  }): Promise<{ signature: string; recovered: string; usedOrder: "msg-first" | "addr-first" }> {
+    const { request, message, account } = opts;
+
+    // 1) MetaMask順 [message, address]
+    try {
+      const sig1 = await request({ method: "personal_sign", params: [message, account] }) as string;
+      const rec1 = await recoverMessageAddress({ message, signature: sig1 });
+      if (rec1.toLowerCase() === account.toLowerCase()) {
+        return { signature: sig1, recovered: rec1, usedOrder: "msg-first" };
+      }
+    } catch (e) {
+      // 続行して逆順を試す
+    }
+
+    // 2) 逆順 [address, message]（一部WalletConnect系）
+    const sig2 = await request({ method: "personal_sign", params: [account, message] }) as string;
+    const rec2 = await recoverMessageAddress({ message, signature: sig2 });
+    return { signature: sig2, recovered: rec2, usedOrder: "addr-first" };
+  }
+
+  // MetaMask
   const handleLinkWithMetaMask = async () => {
     try {
-      if (!user?.id) { alert("Please login again."); return; }
-      if (!normalizedInput || !isAddress(normalizedInput)) {
-        alert("Please input a valid Ethereum address."); return;
-      }
-      if (alreadyLinked) { alert("This wallet is already linked."); return; }
-      if (!(window as any).ethereum) { alert("MetaMask not found."); return; }
+      if (!user?.id) return alert("Please login again.");
+      if (!normalizedInput || !isAddress(normalizedInput)) return alert("Please input a valid Ethereum address.");
+      if (alreadyLinked) return alert("This wallet is already linked.");
+      if (!(window as any).ethereum) return alert("MetaMask not found.");
 
       const { data: sess } = await supabase.auth.getSession();
       const token = sess?.session?.access_token;
-
       setLinking("mm");
 
-      const [current] = await (window as any).ethereum.request({
-        method: "eth_requestAccounts",
-      });
+      const [current] = await (window as any).ethereum.request({ method: "eth_requestAccounts" });
       if (!current) throw new Error("No MetaMask account. Please unlock MetaMask.");
-
       if (current.toLowerCase() !== normalizedInput.toLowerCase()) {
-        alert("The currently selected MetaMask account differs from the input address.");
-        return;
+        alert("The currently selected MetaMask account differs from the input address."); return;
       }
 
       const message = await getNonce(token);
-      const signature = await (window as any).ethereum.request({
-        method: "personal_sign",
-        params: [message, current],
+      const { signature, recovered, usedOrder } = await signAndRecover({
+        request: (args) => (window as any).ethereum.request(args),
+        message, account: current,
       });
 
+      if (recovered.toLowerCase() !== current.toLowerCase()) {
+        throw new Error(`Signature mismatch (MetaMask). used=${usedOrder}, recovered=${recovered}, input=${current}`);
+      }
+
       await postVerify({ address: current, signature, message }, token);
-      setAddressInput("");
-      await load();
-      alert("Wallet linked (MetaMask).");
+      setAddressInput(""); await load(); alert("Wallet linked (MetaMask).");
     } catch (e: any) {
-      console.error("[wallets] mm error:", e);
-      alert(e?.message ?? String(e));
-    } finally {
-      setLinking(null);
-    }
+      console.error("[wallets] mm error:", e); alert(e?.message ?? String(e));
+    } finally { setLinking(null); }
   };
 
-  // ---- WalletConnect（モバイル／拡張機能なし）
+  // WalletConnect（クリック時にだけモーダル起動）
   const handleLinkWithWalletConnect = async () => {
     let provider: WCProvider | null = null;
     try {
-      if (!user?.id) { alert("Please login again."); return; }
-      if (!normalizedInput || !isAddress(normalizedInput)) {
-        alert("Please input a valid Ethereum address."); return;
-      }
-      if (alreadyLinked) { alert("This wallet is already linked."); return; }
+      if (!user?.id) return alert("Please login again.");
+      if (!normalizedInput || !isAddress(normalizedInput)) return alert("Please input a valid Ethereum address.");
+      if (alreadyLinked) return alert("This wallet is already linked.");
 
       const { data: sess } = await supabase.auth.getSession();
       const token = sess?.session?.access_token;
-
       setLinking("wc");
 
       provider = await createWCProvider();
+      if (typeof provider.connect === "function") { await provider.connect(); }
+      else { await provider.request({ method: "eth_requestAccounts" }); }
 
-      // ユーザー操作中にモーダルを開く
-      if (typeof provider.connect === "function") {
-        await provider.connect();
-      } else {
-        await provider.request({ method: "eth_requestAccounts" });
-      }
-
-      const accounts = (await provider.request({
-        method: "eth_accounts",
-      })) as string[];
+      const accounts = (await provider.request({ method: "eth_accounts" })) as string[];
       const current = accounts?.[0];
       if (!current) throw new Error("WalletConnect: no accounts.");
-
       if (current.toLowerCase() !== normalizedInput.toLowerCase()) {
-        alert("Selected account differs from the input address.");
-        return;
+        alert("Selected account differs from the input address."); return;
       }
 
       const message = await getNonce(token);
-      const signature = (await provider.request({
-        method: "personal_sign",
-        params: [message, current],
-      })) as string;
+      const { signature, recovered, usedOrder } = await signAndRecover({
+        request: (args) => provider!.request(args),
+        message, account: current,
+      });
+
+      if (recovered.toLowerCase() !== current.toLowerCase()) {
+        throw new Error(`Signature mismatch (WalletConnect). used=${usedOrder}, recovered=${recovered}, input=${current}`);
+      }
 
       await postVerify({ address: current, signature, message }, token);
-      setAddressInput("");
-      await load();
-      alert("Wallet linked (WalletConnect).");
+      setAddressInput(""); await load(); alert("Wallet linked (WalletConnect).");
     } catch (e: any) {
-      console.error("[wallets] wc error:", e);
-      alert(e?.message ?? String(e));
+      console.error("[wallets] wc error:", e); alert(e?.message ?? String(e));
     } finally {
       try { await provider?.disconnect?.(); } catch {}
       setLinking(null);
     }
   };
 
-  return (
-    <div className="max-w-3xl mx-auto p-6 space-y-6">
-      <h1 className="text-3xl font-bold">Wallets</h1>
-      <p className="text-sm text-muted-foreground">
-        あなたのアカウントに紐づくウォレットのみ表示されます。新規連携は
-        <strong>アドレス入力 → 署名 → 完了</strong>の順です。
-      </p>
-
-      <div className="border rounded-xl p-4 space-y-3">
-        <label className="text-sm font-medium">Wallet Address</label>
-        <div className="flex items-center gap-2">
-          <input
-            className="flex-1 border rounded px-3 py-2"
-            placeholder="0x..."
-            value={addressInput}
-            onChange={(e) => setAddressInput(e.target.value)}
-            autoComplete="off"
-          />
-          <button
-            className="px-3 py-2 rounded bg-blue-600 text-white disabled:opacity-50"
-            onClick={handleLinkWithMetaMask}
-            disabled={linking !== null}
-            title="Sign with MetaMask"
-          >
-            {linking === "mm" ? "Linking..." : "Link (MetaMask)"}
-          </button>
-          <button
-            className="px-3 py-2 rounded border disabled:opacity-50"
-            onClick={handleLinkWithWalletConnect}
-            disabled={linking !== null}
-            title="Sign with WalletConnect (mobile / no extension)"
-          >
-            {linking === "wc" ? "Linking..." : "Link (WalletConnect)"}
-          </button>
-        </div>
-        <p className="text-xs text-muted-foreground">
-          署名メッセージはサーバ発行の <code>nonce</code>（素の文字列）です。
-          入力アドレスと署名者のアドレスは<strong>必ず同じ</strong>にしてください。
-        </p>
-        {alreadyLinked && (
-          <p className="text-xs text-green-700">This address is already linked.</p>
-        )}
-      </div>
-
-      <div className="border rounded-xl p-4">
-        <div className="font-semibold mb-2">Linked wallets (DB)</div>
-        {loading ? (
-          <div>Loading...</div>
-        ) : rows.length === 0 ? (
-          <div className="text-sm text-muted-foreground">No linked wallets yet.</div>
-        ) : (
-          <ul className="space-y-2">
-            {rows.map((w) => (
-              <li key={w.id} className="border rounded p-3">
-                <div className="font-mono break-all">{w.address}</div>
-                <div className="text-xs text-muted-foreground">
-                  {w.verified ? "verified" : "unverified"} • {w.created_at ?? "—"}
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-    </div>
-  );
+  // --- JSX はそのまま ---
+  return (/* 既存の JSX そのまま */ null as any);
 }
