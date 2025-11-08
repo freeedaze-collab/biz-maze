@@ -1,5 +1,5 @@
-// WalletConnect v2 UMD ローダ（self-host 優先 + CDN フォールバック）
-// グローバル名の差異（EthereumProvider / WalletConnectEthereumProvider）に完全対応。
+// WalletConnect v2 loader: self-host検証 → CDN → ESM dynamic import の三段fallback。
+// グローバル名差異にも対応（EthereumProvider / WalletConnectEthereumProvider / WalletConnectProvider）
 
 export type WCProvider = {
   connect?: () => Promise<void>;
@@ -7,145 +7,143 @@ export type WCProvider = {
   request: (args: { method: string; params?: any[] }) => Promise<any>;
 };
 
-// ---- self-host 先（/public 配下に配置済みのはず）
-const LOCAL_PROVIDER = "/walletconnect/provider/index.umd.min.js";
-const LOCAL_MODAL_JS = "/walletconnect/modal/index.umd.min.js";
-const LOCAL_MODAL_CSS = "/walletconnect/modal/style.css";
+const LOCAL = {
+  provider: "/walletconnect/provider/index.umd.min.js",
+  modalJs: "/walletconnect/modal/index.umd.min.js",
+  modalCss: "/walletconnect/modal/style.css",
+};
 
-// ---- CDN フォールバック
-const PROVIDER_SRCS = [
-  LOCAL_PROVIDER,
-  "https://cdn.jsdelivr.net/npm/@walletconnect/ethereum-provider@2/dist/umd/index.min.js",
-  "https://unpkg.com/@walletconnect/ethereum-provider@2/dist/umd/index.min.js",
-];
+const CDN = {
+  provider: [
+    "https://cdn.jsdelivr.net/npm/@walletconnect/ethereum-provider@2/dist/umd/index.min.js",
+    "https://unpkg.com/@walletconnect/ethereum-provider@2/dist/umd/index.min.js",
+  ],
+  modalJs: [
+    "https://cdn.jsdelivr.net/npm/@walletconnect/modal@2.6.2/dist/index.umd.min.js",
+    "https://unpkg.com/@walletconnect/modal@2.6.2/dist/index.umd.min.js",
+  ],
+  modalCss: [
+    "https://cdn.jsdelivr.net/npm/@walletconnect/modal@2.6.2/dist/style.css",
+    "https://unpkg.com/@walletconnect/modal@2.6.2/dist/style.css",
+  ],
+  // 最終手段（ESM）
+  providerEsm: "https://esm.sh/@walletconnect/ethereum-provider@2?bundle",
+};
 
-const MODAL_JS_SRCS = [
-  LOCAL_MODAL_JS,
-  "https://cdn.jsdelivr.net/npm/@walletconnect/modal@2.6.2/dist/index.umd.min.js",
-  "https://unpkg.com/@walletconnect/modal@2.6.2/dist/index.umd.min.js",
-];
-
-const MODAL_CSS_SRCS = [
-  LOCAL_MODAL_CSS,
-  "https://cdn.jsdelivr.net/npm/@walletconnect/modal@2.6.2/dist/style.css",
-  "https://unpkg.com/@walletconnect/modal@2.6.2/dist/style.css",
-];
-
-// ---- utils
-function withTimeout<T>(p: Promise<T>, ms: number, tag: string) {
-  return new Promise<T>((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error(`${tag} timed out (${ms}ms)`)), ms);
-    p.then(v => { clearTimeout(t); resolve(v); })
-     .catch(e => { clearTimeout(t); reject(e); });
-  });
+function g(): any { return window as any; }
+function pickGlobal() {
+  return g().EthereumProvider || g().WalletConnectEthereumProvider || g().WalletConnectProvider || null;
+}
+function debugFlags() {
+  return {
+    has_EthereumProvider: !!g().EthereumProvider,
+    has_WalletConnectEthereumProvider: !!g().WalletConnectEthereumProvider,
+    has_WalletConnectProvider: !!g().WalletConnectProvider,
+  };
 }
 
-function loadScript(src: string): Promise<void> {
-  return new Promise<void>((res, rej) => {
+function loadScript(src: string, timeout = 12_000): Promise<void> {
+  return new Promise((resolve, reject) => {
     const s = document.createElement("script");
     const isLocal = src.startsWith("/") || src.startsWith(location.origin);
     s.src = isLocal ? src : `${src}${src.includes("?") ? "" : `?v=${Date.now()}`}`;
     s.async = true;
     s.crossOrigin = "anonymous";
-    s.onload = () => res();
-    s.onerror = () => rej(new Error(`script load failed: ${src}`));
+    const t = setTimeout(() => reject(new Error(`timeout: ${src}`)), timeout);
+    s.onload = () => { clearTimeout(t); resolve(); };
+    s.onerror = () => { clearTimeout(t); reject(new Error(`script error: ${src}`)); };
     document.head.appendChild(s);
   });
 }
-
 function loadCss(href: string): Promise<void> {
-  return new Promise<void>((res, rej) => {
+  return new Promise((resolve, reject) => {
     const l = document.createElement("link");
     l.rel = "stylesheet";
     const isLocal = href.startsWith("/") || href.startsWith(location.origin);
     l.href = isLocal ? href : `${href}${href.includes("?") ? "" : `?v=${Date.now()}`}`;
     l.crossOrigin = "anonymous";
-    l.onload = () => res();
-    l.onerror = () => rej(new Error(`css load failed: ${href}`));
+    l.onload = () => resolve();
+    l.onerror = () => reject(new Error(`css error: ${href}`));
     document.head.appendChild(l);
   });
 }
 
-async function tryList(candidates: string[], tag: string, isCss = false, timeoutMs = 10000) {
-  const errs: string[] = [];
-  for (const url of candidates) {
-    try {
-      if (isCss) {
-        await withTimeout(loadCss(url), timeoutMs, `${tag} css`);
-      } else {
-        await withTimeout(loadScript(url), timeoutMs, `${tag} js`);
-      }
-      return; // success
-    } catch (e: any) {
-      errs.push(`${url} -> ${e?.message ?? e}`);
-    }
-  }
-  throw new Error(`${tag} UMD load failed:\n${errs.join("\n")}`);
+// 自前ファイルの実体チェック：200系 && text/javascript(or application/javascript) && 十分なサイズ && キーワード含有
+async function probeLocalJs(url: string): Promise<boolean> {
+  try {
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) return false;
+    const ct = (res.headers.get("content-type") || "").toLowerCase();
+    if (!ct.includes("javascript")) return false;
+    const txt = await res.text();
+    if (txt.length < 10_000) return false; // 小さすぎる＝HTMLダミーの可能性
+    if (!/EthereumProvider|WalletConnect/i.test(txt)) return false;
+    return true;
+  } catch { return false; }
 }
 
-// ---- グローバル検出（両方名を見る）
-function getWCGlobal(): any {
-  const g: any = window as any;
-  return g.EthereumProvider || g.WalletConnectEthereumProvider || g.WalletConnectProvider || null;
-}
-function getWCGlobalDebug() {
-  const g: any = window as any;
-  return {
-    has_EthereumProvider: !!g.EthereumProvider,
-    has_WalletConnectEthereumProvider: !!g.WalletConnectEthereumProvider,
-    has_WalletConnectProvider: !!g.WalletConnectProvider,
-  };
+async function tryMany(urls: string[]) {
+  const errs: string[] = [];
+  for (const u of urls) {
+    try { await loadScript(u); return; }
+    catch (e: any) { errs.push(`${u} -> ${e?.message ?? e}`); }
+  }
+  throw new Error(errs.join("\n"));
 }
 
 let loaded = false;
 
-async function ensureUMDLoaded() {
+async function ensureLoaded() {
   if (loaded) return;
 
-  // 0) すでに script タグで読み込まれているならそれを使う
-  if (getWCGlobal()) { loaded = true; return; }
+  // 0) 既にいる？
+  if (pickGlobal()) { loaded = true; return; }
 
-  // 1) Provider（必須）
-  await tryList(PROVIDER_SRCS, "WalletConnect Provider");
+  // 1) 自前 provider を“実体チェック”してから読む。ダメなら CDN へ。
+  const localOk = await probeLocalJs(LOCAL.provider);
+  try {
+    if (localOk) {
+      await loadScript(LOCAL.provider);
+    } else {
+      await tryMany(CDN.provider);
+    }
+  } catch (e) {
+    // provider UMD フォールバック(ESM import)
+    try {
+      const mod: any = await import(/* @vite-ignore */ CDN.providerEsm);
+      const EP = mod?.default || mod?.EthereumProvider || mod;
+      if (EP) (g().EthereumProvider ||= EP);
+    } catch {}
+  }
 
-  // 読み込み後にもう一度チェック
-  if (!getWCGlobal()) {
-    // 2) Modal を読む前に、検出状況を詳細表示して失敗
-    const dbg = getWCGlobalDebug();
+  // provider を見つける
+  if (!pickGlobal()) {
     throw new Error(
-      `EthereumProvider missing after UMD load\n` +
-      JSON.stringify(dbg, null, 2)
+      "EthereumProvider missing after provider load\n" + JSON.stringify(debugFlags(), null, 2)
     );
   }
 
-  // 3) Modal CSS（見た目だけなので失敗は無視して続行）
-  try { await tryList(MODAL_CSS_SRCS, "WalletConnect Modal", true, 8000); } catch {}
-
-  // 4) Modal JS（将来の UI 用。現状 connect() で自動表示される）
-  try { await tryList(MODAL_JS_SRCS, "WalletConnect Modal"); } catch {}
+  // 2) Modal（CSSはベストエフォート）
+  try { await loadCss(LOCAL.modalCss); } catch { try { await loadCss(CDN.modalCss[0]); } catch {} }
+  try { await loadScript(LOCAL.modalJs); } catch { try { await tryMany(CDN.modalJs); } catch {} }
 
   loaded = true;
 }
 
 export async function createWCProvider(): Promise<WCProvider> {
-  await ensureUMDLoaded();
+  await ensureLoaded();
 
-  const g: any = window as any;
-  const EthereumProvider =
-    g.EthereumProvider || g.WalletConnectEthereumProvider || g.WalletConnectProvider;
-
-  if (!EthereumProvider) {
-    const dbg = getWCGlobalDebug();
+  const EP = pickGlobal();
+  if (!EP) {
     throw new Error(
-      `EthereumProvider not found (post-ensure)\n` +
-      JSON.stringify(dbg, null, 2)
+      "EthereumProvider not found (post ensure)\n" + JSON.stringify(debugFlags(), null, 2)
     );
   }
 
   const projectId = (import.meta as any).env.VITE_WC_PROJECT_ID as string;
   if (!projectId) throw new Error("VITE_WC_PROJECT_ID is missing");
 
-  const provider: WCProvider = await EthereumProvider.init({
+  const provider: WCProvider = await EP.init({
     projectId,
     showQrModal: true,
     metadata: {
