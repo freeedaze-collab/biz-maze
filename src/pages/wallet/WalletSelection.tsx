@@ -85,11 +85,7 @@ export default function WalletSelection() {
     });
     const text = await r.text();
     let body: any = null;
-    try {
-      body = JSON.parse(text);
-    } catch {
-      body = text;
-    }
+    try { body = JSON.parse(text); } catch { body = text; }
     if (!r.ok || !body?.ok) {
       throw new Error(`Verify failed. status=${r.status}, body=${text}`);
     }
@@ -99,22 +95,12 @@ export default function WalletSelection() {
   // ---- MetaMask（拡張機能）
   const handleLinkWithMetaMask = async () => {
     try {
-      if (!user?.id) {
-        alert("Please login again.");
-        return;
-      }
+      if (!user?.id) { alert("Please login again."); return; }
       if (!normalizedInput || !isAddress(normalizedInput)) {
-        alert("Please input a valid Ethereum address.");
-        return;
+        alert("Please input a valid Ethereum address."); return;
       }
-      if (alreadyLinked) {
-        alert("This wallet is already linked.");
-        return;
-      }
-      if (!(window as any).ethereum) {
-        alert("MetaMask not found.");
-        return;
-      }
+      if (alreadyLinked) { alert("This wallet is already linked."); return; }
+      if (!(window as any).ethereum) { alert("MetaMask not found."); return; }
 
       const { data: sess } = await supabase.auth.getSession();
       const token = sess?.session?.access_token;
@@ -124,13 +110,10 @@ export default function WalletSelection() {
       const [current] = await (window as any).ethereum.request({
         method: "eth_requestAccounts",
       });
-      if (!current)
-        throw new Error("No MetaMask account. Please unlock MetaMask.");
+      if (!current) throw new Error("No MetaMask account. Please unlock MetaMask.");
 
       if (current.toLowerCase() !== normalizedInput.toLowerCase()) {
-        alert(
-          "The currently selected MetaMask account differs from the input address."
-        );
+        alert("The currently selected MetaMask account differs from the input address.");
         return;
       }
 
@@ -153,22 +136,14 @@ export default function WalletSelection() {
   };
 
   // ---- WalletConnect（モバイル／拡張機能なし）
-  // B案：ユーザーのクリック → connect() で初めてモーダルを開く
   const handleLinkWithWalletConnect = async () => {
     let provider: WCProvider | null = null;
     try {
-      if (!user?.id) {
-        alert("Please login again.");
-        return;
-      }
+      if (!user?.id) { alert("Please login again."); return; }
       if (!normalizedInput || !isAddress(normalizedInput)) {
-        alert("Please input a valid Ethereum address.");
-        return;
+        alert("Please input a valid Ethereum address."); return;
       }
-      if (alreadyLinked) {
-        alert("This wallet is already linked.");
-        return;
-      }
+      if (alreadyLinked) { alert("This wallet is already linked."); return; }
 
       const { data: sess } = await supabase.auth.getSession();
       const token = sess?.session?.access_token;
@@ -177,11 +152,10 @@ export default function WalletSelection() {
 
       provider = await createWCProvider();
 
-      // ★ ここが“ユーザー操作中”に行われる：connect() でモーダルが開く
+      // ユーザー操作中にモーダルを開く
       if (typeof provider.connect === "function") {
         await provider.connect();
       } else {
-        // 古い UMD 互換（通常は不要）
         await provider.request({ method: "eth_requestAccounts" });
       }
 
@@ -210,9 +184,7 @@ export default function WalletSelection() {
       console.error("[wallets] wc error:", e);
       alert(e?.message ?? String(e));
     } finally {
-      try {
-        await provider?.disconnect?.();
-      } catch {}
+      try { await provider?.disconnect?.(); } catch {}
       setLinking(null);
     }
   };
@@ -225,7 +197,6 @@ export default function WalletSelection() {
         <strong>アドレス入力 → 署名 → 完了</strong>の順です。
       </p>
 
-      {/* 入力 → 署名 → 完了 */}
       <div className="border rounded-xl p-4 space-y-3">
         <label className="text-sm font-medium">Wallet Address</label>
         <div className="flex items-center gap-2">
@@ -262,7 +233,6 @@ export default function WalletSelection() {
         )}
       </div>
 
-      {/* 連携済み一覧（DB） */}
       <div className="border rounded-xl p-4">
         <div className="font-semibold mb-2">Linked wallets (DB)</div>
         {loading ? (
