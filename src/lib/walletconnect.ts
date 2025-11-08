@@ -1,8 +1,5 @@
-// src/lib/walletconnect.ts
-// WalletConnect v2 UMD ローダ（モバイルでも確実動作）。
-// 1) まず /public に置いたローカル UMD/CSS を読みに行く
-// 2) 失敗したら jsDelivr → UNPKG の順でフォールバック
-// 3) CSSは無くても機能は続行（見た目のみ影響）
+// WalletConnect v2 UMD ローダ（self-host 優先 + CDN フォールバック）
+// グローバル名の差異（EthereumProvider / WalletConnectEthereumProvider）に完全対応。
 
 export type WCProvider = {
   connect?: () => Promise<void>;
@@ -10,11 +7,12 @@ export type WCProvider = {
   request: (args: { method: string; params?: any[] }) => Promise<any>;
 };
 
-// ★ ここを /walletconnect/ に統一（/wc/ ではありません）
+// ---- self-host 先（/public 配下に配置済みのはず）
 const LOCAL_PROVIDER = "/walletconnect/provider/index.umd.min.js";
 const LOCAL_MODAL_JS = "/walletconnect/modal/index.umd.min.js";
 const LOCAL_MODAL_CSS = "/walletconnect/modal/style.css";
 
+// ---- CDN フォールバック
 const PROVIDER_SRCS = [
   LOCAL_PROVIDER,
   "https://cdn.jsdelivr.net/npm/@walletconnect/ethereum-provider@2/dist/umd/index.min.js",
@@ -27,15 +25,13 @@ const MODAL_JS_SRCS = [
   "https://unpkg.com/@walletconnect/modal@2.6.2/dist/index.umd.min.js",
 ];
 
-// CSS は style.css / index.css の両方を試す
 const MODAL_CSS_SRCS = [
   LOCAL_MODAL_CSS,
   "https://cdn.jsdelivr.net/npm/@walletconnect/modal@2.6.2/dist/style.css",
-  "https://cdn.jsdelivr.net/npm/@walletconnect/modal@2.6.2/dist/index.css",
   "https://unpkg.com/@walletconnect/modal@2.6.2/dist/style.css",
-  "https://unpkg.com/@walletconnect/modal@2.6.2/dist/index.css",
 ];
 
+// ---- utils
 function withTimeout<T>(p: Promise<T>, ms: number, tag: string) {
   return new Promise<T>((resolve, reject) => {
     const t = setTimeout(() => reject(new Error(`${tag} timed out (${ms}ms)`)), ms);
@@ -74,14 +70,31 @@ async function tryList(candidates: string[], tag: string, isCss = false, timeout
   const errs: string[] = [];
   for (const url of candidates) {
     try {
-      if (isCss) await withTimeout(loadCss(url), timeoutMs, `${tag} css`);
-      else       await withTimeout(loadScript(url), timeoutMs, `${tag} js`);
+      if (isCss) {
+        await withTimeout(loadCss(url), timeoutMs, `${tag} css`);
+      } else {
+        await withTimeout(loadScript(url), timeoutMs, `${tag} js`);
+      }
       return; // success
     } catch (e: any) {
       errs.push(`${url} -> ${e?.message ?? e}`);
     }
   }
-  throw new Error(`${tag} load failed:\n${errs.join("\n")}`);
+  throw new Error(`${tag} UMD load failed:\n${errs.join("\n")}`);
+}
+
+// ---- グローバル検出（両方名を見る）
+function getWCGlobal(): any {
+  const g: any = window as any;
+  return g.EthereumProvider || g.WalletConnectEthereumProvider || g.WalletConnectProvider || null;
+}
+function getWCGlobalDebug() {
+  const g: any = window as any;
+  return {
+    has_EthereumProvider: !!g.EthereumProvider,
+    has_WalletConnectEthereumProvider: !!g.WalletConnectEthereumProvider,
+    has_WalletConnectProvider: !!g.WalletConnectProvider,
+  };
 }
 
 let loaded = false;
@@ -89,32 +102,52 @@ let loaded = false;
 async function ensureUMDLoaded() {
   if (loaded) return;
 
-  await tryList(PROVIDER_SRCS, "WalletConnect Provider UMD", false, 12000);
+  // 0) すでに script タグで読み込まれているならそれを使う
+  if (getWCGlobal()) { loaded = true; return; }
 
-  try {
-    await tryList(MODAL_CSS_SRCS, "WalletConnect Modal CSS", true, 8000);
-  } catch (e) {
-    console.warn(String(e)); // CSSは非致命
+  // 1) Provider（必須）
+  await tryList(PROVIDER_SRCS, "WalletConnect Provider");
+
+  // 読み込み後にもう一度チェック
+  if (!getWCGlobal()) {
+    // 2) Modal を読む前に、検出状況を詳細表示して失敗
+    const dbg = getWCGlobalDebug();
+    throw new Error(
+      `EthereumProvider missing after UMD load\n` +
+      JSON.stringify(dbg, null, 2)
+    );
   }
 
-  await tryList(MODAL_JS_SRCS, "WalletConnect Modal UMD", false, 12000);
+  // 3) Modal CSS（見た目だけなので失敗は無視して続行）
+  try { await tryList(MODAL_CSS_SRCS, "WalletConnect Modal", true, 8000); } catch {}
 
-  if (!(window as any).EthereumProvider) {
-    throw new Error("EthereumProvider missing after UMD load");
-  }
+  // 4) Modal JS（将来の UI 用。現状 connect() で自動表示される）
+  try { await tryList(MODAL_JS_SRCS, "WalletConnect Modal"); } catch {}
+
   loaded = true;
 }
 
 export async function createWCProvider(): Promise<WCProvider> {
   await ensureUMDLoaded();
 
+  const g: any = window as any;
+  const EthereumProvider =
+    g.EthereumProvider || g.WalletConnectEthereumProvider || g.WalletConnectProvider;
+
+  if (!EthereumProvider) {
+    const dbg = getWCGlobalDebug();
+    throw new Error(
+      `EthereumProvider not found (post-ensure)\n` +
+      JSON.stringify(dbg, null, 2)
+    );
+  }
+
   const projectId = (import.meta as any).env.VITE_WC_PROJECT_ID as string;
   if (!projectId) throw new Error("VITE_WC_PROJECT_ID is missing");
 
-  const EthereumProvider = (window as any).EthereumProvider;
   const provider: WCProvider = await EthereumProvider.init({
     projectId,
-    showQrModal: true, // connect() 時にモーダルを開く
+    showQrModal: true,
     metadata: {
       name: "BizMaze Wallet Link",
       description: "Link your wallet",
