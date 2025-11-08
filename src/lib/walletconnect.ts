@@ -1,5 +1,4 @@
-// WalletConnect v2 loader: self-host検証 → CDN → ESM dynamic import の三段fallback。
-// グローバル名差異にも対応（EthereumProvider / WalletConnectEthereumProvider / WalletConnectProvider）
+// WalletConnect v2 loader: self-host検証 → CDN UMD → CDN ESM の三段fallback（Safari/Chrome/PC/モバイル対応）
 
 export type WCProvider = {
   connect?: () => Promise<void>;
@@ -14,9 +13,13 @@ const LOCAL = {
 };
 
 const CDN = {
-  provider: [
+  providerUmd: [
     "https://cdn.jsdelivr.net/npm/@walletconnect/ethereum-provider@2/dist/umd/index.min.js",
     "https://unpkg.com/@walletconnect/ethereum-provider@2/dist/umd/index.min.js",
+  ],
+  providerEsm: [
+    "https://esm.sh/@walletconnect/ethereum-provider@2?bundle&target=es2020",
+    "https://cdn.jsdelivr.net/npm/@walletconnect/ethereum-provider@2/dist/index.js",
   ],
   modalJs: [
     "https://cdn.jsdelivr.net/npm/@walletconnect/modal@2.6.2/dist/index.umd.min.js",
@@ -26,19 +29,17 @@ const CDN = {
     "https://cdn.jsdelivr.net/npm/@walletconnect/modal@2.6.2/dist/style.css",
     "https://unpkg.com/@walletconnect/modal@2.6.2/dist/style.css",
   ],
-  // 最終手段（ESM）
-  providerEsm: "https://esm.sh/@walletconnect/ethereum-provider@2?bundle",
 };
 
-function g(): any { return window as any; }
+function W(): any { return window as any; }
 function pickGlobal() {
-  return g().EthereumProvider || g().WalletConnectEthereumProvider || g().WalletConnectProvider || null;
+  return W().EthereumProvider || W().WalletConnectEthereumProvider || W().WalletConnectProvider || null;
 }
 function debugFlags() {
   return {
-    has_EthereumProvider: !!g().EthereumProvider,
-    has_WalletConnectEthereumProvider: !!g().WalletConnectEthereumProvider,
-    has_WalletConnectProvider: !!g().WalletConnectProvider,
+    has_EthereumProvider: !!W().EthereumProvider,
+    has_WalletConnectEthereumProvider: !!W().WalletConnectEthereumProvider,
+    has_WalletConnectProvider: !!W().WalletConnectProvider,
   };
 }
 
@@ -68,7 +69,7 @@ function loadCss(href: string): Promise<void> {
   });
 }
 
-// 自前ファイルの実体チェック：200系 && text/javascript(or application/javascript) && 十分なサイズ && キーワード含有
+// 自前 UMD の実体チェック（空HTMLなどを弾く）
 async function probeLocalJs(url: string): Promise<boolean> {
   try {
     const res = await fetch(url, { cache: "no-store" });
@@ -76,7 +77,7 @@ async function probeLocalJs(url: string): Promise<boolean> {
     const ct = (res.headers.get("content-type") || "").toLowerCase();
     if (!ct.includes("javascript")) return false;
     const txt = await res.text();
-    if (txt.length < 10_000) return false; // 小さすぎる＝HTMLダミーの可能性
+    if (txt.length < 10_000) return false;
     if (!/EthereumProvider|WalletConnect/i.test(txt)) return false;
     return true;
   } catch { return false; }
@@ -91,39 +92,55 @@ async function tryMany(urls: string[]) {
   throw new Error(errs.join("\n"));
 }
 
+async function importManyEsm(urls: string[]) {
+  const errs: string[] = [];
+  for (const u of urls) {
+    try {
+      // @vite-ignore で動的importを素通し
+      const mod: any = await import(/* @vite-ignore */ u);
+      const EP = mod?.default || mod?.EthereumProvider || mod;
+      if (EP) {
+        W().EthereumProvider ||= EP;
+        W().WalletConnectEthereumProvider ||= EP;
+        return;
+      }
+    } catch (e: any) {
+      errs.push(`${u} -> ${e?.message ?? e}`);
+    }
+  }
+  throw new Error("esm import failed:\n" + errs.join("\n"));
+}
+
 let loaded = false;
 
 async function ensureLoaded() {
   if (loaded) return;
 
-  // 0) 既にいる？
   if (pickGlobal()) { loaded = true; return; }
 
-  // 1) 自前 provider を“実体チェック”してから読む。ダメなら CDN へ。
+  // Provider: 自前OKならそれ、ダメならCDN UMD、それもダメなら ESM import
   const localOk = await probeLocalJs(LOCAL.provider);
+  let providerErrs: string[] = [];
   try {
     if (localOk) {
       await loadScript(LOCAL.provider);
     } else {
-      await tryMany(CDN.provider);
+      await tryMany(CDN.providerUmd);
     }
-  } catch (e) {
-    // provider UMD フォールバック(ESM import)
-    try {
-      const mod: any = await import(/* @vite-ignore */ CDN.providerEsm);
-      const EP = mod?.default || mod?.EthereumProvider || mod;
-      if (EP) (g().EthereumProvider ||= EP);
-    } catch {}
+  } catch (e: any) {
+    providerErrs.push(String(e?.message ?? e));
+    try { await importManyEsm(CDN.providerEsm); }
+    catch (e2: any) { providerErrs.push(String(e2?.message ?? e2)); }
   }
 
-  // provider を見つける
   if (!pickGlobal()) {
     throw new Error(
-      "EthereumProvider missing after provider load\n" + JSON.stringify(debugFlags(), null, 2)
+      "EthereumProvider missing after provider load\n" +
+      JSON.stringify({ ...debugFlags(), providerErrs }, null, 2)
     );
   }
 
-  // 2) Modal（CSSはベストエフォート）
+  // Modal（CSSはベストエフォート）
   try { await loadCss(LOCAL.modalCss); } catch { try { await loadCss(CDN.modalCss[0]); } catch {} }
   try { await loadScript(LOCAL.modalJs); } catch { try { await tryMany(CDN.modalJs); } catch {} }
 
