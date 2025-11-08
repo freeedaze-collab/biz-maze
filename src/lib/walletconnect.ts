@@ -1,8 +1,8 @@
 // src/lib/walletconnect.ts
-//
 // WalletConnect v2 UMD ローダ（モバイルでも確実動作）。
-// まず自前配信 (/public/wc/...) を読みに行き、失敗時に CDN フォールバック。
-// CSS は存在すれば適用、無くても機能は続行。
+// 1) まず /public に置いたローカル UMD/CSS を読みに行く
+// 2) 失敗したら jsDelivr → UNPKG の順でフォールバック
+// 3) CSSは無くても機能は続行（見た目のみ影響）
 
 export type WCProvider = {
   connect?: () => Promise<void>;
@@ -10,14 +10,13 @@ export type WCProvider = {
   request: (args: { method: string; params?: any[] }) => Promise<any>;
 };
 
-const LOCAL_PROVIDER = "/wc/ethereum-provider.min.js";
-const LOCAL_MODAL_JS = "/wc/modal/index.umd.min.js";
-const LOCAL_MODAL_CSS = "/wc/modal/style.css"; // index.css でも OK
+// ★ ここを /walletconnect/ に統一（/wc/ ではありません）
+const LOCAL_PROVIDER = "/walletconnect/provider/index.umd.min.js";
+const LOCAL_MODAL_JS = "/walletconnect/modal/index.umd.min.js";
+const LOCAL_MODAL_CSS = "/walletconnect/modal/style.css";
 
 const PROVIDER_SRCS = [
-  // 1st: 自前配信
   LOCAL_PROVIDER,
-  // 2nd: CDN フォールバック
   "https://cdn.jsdelivr.net/npm/@walletconnect/ethereum-provider@2/dist/umd/index.min.js",
   "https://unpkg.com/@walletconnect/ethereum-provider@2/dist/umd/index.min.js",
 ];
@@ -48,7 +47,6 @@ function withTimeout<T>(p: Promise<T>, ms: number, tag: string) {
 function loadScript(src: string): Promise<void> {
   return new Promise<void>((res, rej) => {
     const s = document.createElement("script");
-    // 自前配信はキャッシュ OK、CDN は cache-bust
     const isLocal = src.startsWith("/") || src.startsWith(location.origin);
     s.src = isLocal ? src : `${src}${src.includes("?") ? "" : `?v=${Date.now()}`}`;
     s.async = true;
@@ -76,11 +74,8 @@ async function tryList(candidates: string[], tag: string, isCss = false, timeout
   const errs: string[] = [];
   for (const url of candidates) {
     try {
-      if (isCss) {
-        await withTimeout(loadCss(url), timeoutMs, `${tag} css`);
-      } else {
-        await withTimeout(loadScript(url), timeoutMs, `${tag} js`);
-      }
+      if (isCss) await withTimeout(loadCss(url), timeoutMs, `${tag} css`);
+      else       await withTimeout(loadScript(url), timeoutMs, `${tag} js`);
       return; // success
     } catch (e: any) {
       errs.push(`${url} -> ${e?.message ?? e}`);
@@ -94,18 +89,14 @@ let loaded = false;
 async function ensureUMDLoaded() {
   if (loaded) return;
 
-  // Provider（必須）
   await tryList(PROVIDER_SRCS, "WalletConnect Provider UMD", false, 12000);
 
-  // Modal CSS（非致命）
   try {
     await tryList(MODAL_CSS_SRCS, "WalletConnect Modal CSS", true, 8000);
   } catch (e) {
-    console.warn(String(e));
-    // 続行（見た目だけ影響）
+    console.warn(String(e)); // CSSは非致命
   }
 
-  // Modal JS（必須）
   await tryList(MODAL_JS_SRCS, "WalletConnect Modal UMD", false, 12000);
 
   if (!(window as any).EthereumProvider) {
