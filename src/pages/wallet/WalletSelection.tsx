@@ -55,8 +55,8 @@ export default function WalletSelection() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
-  // ---- 共通：nonce取得（GET）
-  const getNonce = async (token?: string) => {
+  // ---- 共通：message取得（GET）
+  const getMessage = async (token?: string) => {
     const r = await fetch(FN_URL, {
       method: "GET",
       headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
@@ -67,6 +67,7 @@ export default function WalletSelection() {
         `Nonce failed. status=${r.status}, body=${JSON.stringify(body)}`
       );
     }
+    // サーバは nonce を “素の文字列”として返す → これを message としてそのまま署名する
     return body.nonce as string;
   };
 
@@ -85,67 +86,22 @@ export default function WalletSelection() {
     });
     const text = await r.text();
     let body: any = null;
-    try {
-      body = JSON.parse(text);
-    } catch {
-      body = text;
-    }
+    try { body = JSON.parse(text); } catch { body = text; }
     if (!r.ok || !body?.ok) {
       throw new Error(`Verify failed. status=${r.status}, body=${text}`);
     }
     return body;
   };
 
-  // ---- 署名の引数順を自動判定し、recover 一致を確認
-  async function signAndRecover(opts: {
-    request: (args: { method: string; params?: any[] }) => Promise<any>;
-    message: string;
-    account: string;
-  }): Promise<{ signature: string; recovered: string; order: "msg-first" | "addr-first" }> {
-    const { request, message, account } = opts;
-
-    // 1) MetaMask順 [message, address]
-    try {
-      const sig1 = (await request({
-        method: "personal_sign",
-        params: [message, account],
-      })) as string;
-      const rec1 = await recoverMessageAddress({ message, signature: sig1 });
-      if (rec1.toLowerCase() === account.toLowerCase()) {
-        return { signature: sig1, recovered: rec1, order: "msg-first" };
-      }
-    } catch {
-      // noop — 逆順を試す
-    }
-
-    // 2) 逆順 [address, message]（一部WalletConnect系）
-    const sig2 = (await request({
-      method: "personal_sign",
-      params: [account, message],
-    })) as string;
-    const rec2 = await recoverMessageAddress({ message, signature: sig2 });
-    return { signature: sig2, recovered: rec2, order: "addr-first" };
-  }
-
   // ---- MetaMask（拡張機能）
   const handleLinkWithMetaMask = async () => {
     try {
-      if (!user?.id) {
-        alert("Please login again.");
-        return;
-      }
+      if (!user?.id) { alert("Please login again."); return; }
       if (!normalizedInput || !isAddress(normalizedInput)) {
-        alert("Please input a valid Ethereum address.");
-        return;
+        alert("Please input a valid Ethereum address."); return;
       }
-      if (alreadyLinked) {
-        alert("This wallet is already linked.");
-        return;
-      }
-      if (!(window as any).ethereum) {
-        alert("MetaMask not found.");
-        return;
-      }
+      if (alreadyLinked) { alert("This wallet is already linked."); return; }
+      if (!(window as any).ethereum) { alert("MetaMask not found."); return; }
 
       const { data: sess } = await supabase.auth.getSession();
       const token = sess?.session?.access_token;
@@ -155,27 +111,23 @@ export default function WalletSelection() {
       const [current] = await (window as any).ethereum.request({
         method: "eth_requestAccounts",
       });
-      if (!current)
-        throw new Error("No MetaMask account. Please unlock MetaMask.");
+      if (!current) throw new Error("No MetaMask account. Please unlock MetaMask.");
 
       if (current.toLowerCase() !== normalizedInput.toLowerCase()) {
-        alert(
-          "The currently selected MetaMask account differs from the input address."
-        );
+        alert("The currently selected MetaMask account differs from the input address.");
         return;
       }
 
-      const message = await getNonce(token);
-      const { signature, recovered, order } = await signAndRecover({
-        request: (args) => (window as any).ethereum.request(args),
-        message,
-        account: current,
+      const message = await getMessage(token);
+      const signature = await (window as any).ethereum.request({
+        method: "personal_sign",
+        params: [message, current], // message, signer
       });
 
+      // --- 署名直後に “ローカルrecover” で same:true を確認（デバッグ）
+      const recovered = await recoverMessageAddress({ message, signature });
       if (recovered.toLowerCase() !== current.toLowerCase()) {
-        throw new Error(
-          `Signature mismatch (MetaMask). used=${order}, recovered=${recovered}, input=${current}`
-        );
+        throw new Error(`Local recover mismatch: ${recovered} != ${current}`);
       }
 
       await postVerify({ address: current, signature, message }, token);
@@ -194,18 +146,11 @@ export default function WalletSelection() {
   const handleLinkWithWalletConnect = async () => {
     let provider: WCProvider | null = null;
     try {
-      if (!user?.id) {
-        alert("Please login again.");
-        return;
-      }
+      if (!user?.id) { alert("Please login again."); return; }
       if (!normalizedInput || !isAddress(normalizedInput)) {
-        alert("Please input a valid Ethereum address.");
-        return;
+        alert("Please input a valid Ethereum address."); return;
       }
-      if (alreadyLinked) {
-        alert("This wallet is already linked.");
-        return;
-      }
+      if (alreadyLinked) { alert("This wallet is already linked."); return; }
 
       const { data: sess } = await supabase.auth.getSession();
       const token = sess?.session?.access_token;
@@ -213,10 +158,8 @@ export default function WalletSelection() {
       setLinking("wc");
 
       provider = await createWCProvider();
-
-      // ユーザー操作中にモーダルを開く
       if (typeof provider.connect === "function") {
-        await provider.connect();
+        await provider.connect(); // ユーザー操作で QR モーダルを開く
       } else {
         await provider.request({ method: "eth_requestAccounts" });
       }
@@ -232,17 +175,16 @@ export default function WalletSelection() {
         return;
       }
 
-      const message = await getNonce(token);
-      const { signature, recovered, order } = await signAndRecover({
-        request: (args) => provider!.request(args),
-        message,
-        account: current,
-      });
+      const message = await getMessage(token);
+      const signature = (await provider.request({
+        method: "personal_sign",
+        params: [message, current],
+      })) as string;
 
+      // --- ローカルrecoverで確認
+      const recovered = await recoverMessageAddress({ message, signature });
       if (recovered.toLowerCase() !== current.toLowerCase()) {
-        throw new Error(
-          `Signature mismatch (WalletConnect). used=${order}, recovered=${recovered}, input=${current}`
-        );
+        throw new Error(`Local recover mismatch: ${recovered} != ${current}`);
       }
 
       await postVerify({ address: current, signature, message }, token);
@@ -253,9 +195,7 @@ export default function WalletSelection() {
       console.error("[wallets] wc error:", e);
       alert(e?.message ?? String(e));
     } finally {
-      try {
-        await provider?.disconnect?.();
-      } catch {}
+      try { await provider?.disconnect?.(); } catch {}
       setLinking(null);
     }
   };
@@ -268,7 +208,6 @@ export default function WalletSelection() {
         <strong>アドレス入力 → 署名 → 完了</strong>の順です。
       </p>
 
-      {/* 入力 → 署名 → 完了 */}
       <div className="border rounded-xl p-4 space-y-3">
         <label className="text-sm font-medium">Wallet Address</label>
         <div className="flex items-center gap-2">
@@ -297,7 +236,7 @@ export default function WalletSelection() {
           </button>
         </div>
         <p className="text-xs text-muted-foreground">
-          署名メッセージはサーバ発行の <code>nonce</code>（素の文字列）です。
+          署名メッセージはサーバ発行の <code>message</code>（素の文字列）です。
           入力アドレスと署名者のアドレスは<strong>必ず同じ</strong>にしてください。
         </p>
         {alreadyLinked && (
@@ -305,7 +244,6 @@ export default function WalletSelection() {
         )}
       </div>
 
-      {/* 連携済み一覧（DB） */}
       <div className="border rounded-xl p-4">
         <div className="font-semibold mb-2">Linked wallets (DB)</div>
         {loading ? (
