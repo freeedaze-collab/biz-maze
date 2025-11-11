@@ -1,7 +1,8 @@
-﻿import { useEffect, useMemo, useState } from "react";
+// src/pages/wallet/WalletSelection.tsx
+import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
-import { isAddress, recoverMessageAddress } from "viem";
+import { isAddress, toHex, recoverMessageAddress } from "viem";
 import { createWCProvider, WCProvider } from "@/lib/walletconnect";
 
 type WalletRow = {
@@ -51,10 +52,11 @@ export default function WalletSelection() {
 
   useEffect(() => {
     load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
-  // ---- 共通：message取得（GET）
-  const getMessage = async (token?: string) => {
+  // ---- 共通：nonce取得（GET）
+  const getNonce = async (token?: string) => {
     const r = await fetch(FN_URL, {
       method: "GET",
       headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
@@ -65,10 +67,11 @@ export default function WalletSelection() {
         `Nonce failed. status=${r.status}, body=${JSON.stringify(body)}`
       );
     }
-    // サーバは nonce を “素の文字列”として返す → これを message としてそのまま署名する
+    // サーバは nonce を “素の文字列” として返す → これを message としてそのまま署名する
     return body.nonce as string;
   };
 
+  // ---- 共通：verify（POST）
   const postVerify = async (
     payload: { address: string; signature: string; message: string },
     token?: string
@@ -90,6 +93,7 @@ export default function WalletSelection() {
     return body;
   };
 
+  // ---- MetaMask（拡張機能）
   const handleLinkWithMetaMask = async () => {
     try {
       if (!user?.id) { alert("Please login again."); return; }
@@ -114,12 +118,16 @@ export default function WalletSelection() {
         return;
       }
 
-      const message = await getMessage(token);
+      const message = await getNonce(token);
+
+      // ★ hex で personal_sign（順序は [hexMessage, account]）
+      const hexMsg = toHex(message);
       const signature = await (window as any).ethereum.request({
         method: "personal_sign",
-        params: [message, current], // message, signer
+        params: [hexMsg, current],
       });
 
+      // 署名直後のローカル recover 検証
       const recovered = await recoverMessageAddress({ message, signature });
       if (recovered.toLowerCase() !== current.toLowerCase()) {
         throw new Error(`Local recover mismatch: ${recovered} != ${current}`);
@@ -137,6 +145,7 @@ export default function WalletSelection() {
     }
   };
 
+  // ---- WalletConnect（モバイル／拡張機能なし）
   const handleLinkWithWalletConnect = async () => {
     let provider: WCProvider | null = null;
     try {
@@ -152,8 +161,10 @@ export default function WalletSelection() {
       setLinking("wc");
 
       provider = await createWCProvider();
+
+      // ユーザー操作中にモーダルを開く
       if (typeof provider.connect === "function") {
-        await provider.connect(); // ユーザー操作で QR モーダルを開く
+        await provider.connect();
       } else {
         await provider.request({ method: "eth_requestAccounts" });
       }
@@ -169,12 +180,16 @@ export default function WalletSelection() {
         return;
       }
 
-      const message = await getMessage(token);
+      const message = await getNonce(token);
+
+      // ★ hex で personal_sign（順序は [hexMessage, account]）
+      const hexMsg = toHex(message);
       const signature = (await provider.request({
         method: "personal_sign",
-        params: [message, current],
+        params: [hexMsg, current],
       })) as string;
 
+      // 署名直後のローカル recover 検証
       const recovered = await recoverMessageAddress({ message, signature });
       if (recovered.toLowerCase() !== current.toLowerCase()) {
         throw new Error(`Local recover mismatch: ${recovered} != ${current}`);
@@ -229,7 +244,7 @@ export default function WalletSelection() {
           </button>
         </div>
         <p className="text-xs text-muted-foreground">
-          署名メッセージはサーバ発行の <code>message</code>（素の文字列）です。
+          署名メッセージはサーバ発行の <code>nonce</code>（素の文字列）です。
           入力アドレスと署名者のアドレスは<strong>必ず同じ</strong>にしてください。
         </p>
         {alreadyLinked && (
