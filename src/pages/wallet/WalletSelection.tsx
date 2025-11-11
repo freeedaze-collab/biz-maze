@@ -53,6 +53,7 @@ export default function WalletSelection() {
     load();
   }, [user?.id]);
 
+  // ---- 共通：message取得（GET）
   const getMessage = async (token?: string) => {
     const r = await fetch(FN_URL, {
       method: "GET",
@@ -64,7 +65,8 @@ export default function WalletSelection() {
         `Nonce failed. status=${r.status}, body=${JSON.stringify(body)}`
       );
     }
-    return body.nonce as string; // そのまま personal_sign の message に使う
+    // サーバは nonce を “素の文字列”として返す → これを message としてそのまま署名する
+    return body.nonce as string;
   };
 
   const postVerify = async (
@@ -115,7 +117,7 @@ export default function WalletSelection() {
       const message = await getMessage(token);
       const signature = await (window as any).ethereum.request({
         method: "personal_sign",
-        params: [message, current],
+        params: [message, current], // message, signer
       });
 
       const recovered = await recoverMessageAddress({ message, signature });
@@ -151,7 +153,7 @@ export default function WalletSelection() {
 
       provider = await createWCProvider();
       if (typeof provider.connect === "function") {
-        await provider.connect();
+        await provider.connect(); // ユーザー操作で QR モーダルを開く
       } else {
         await provider.request({ method: "eth_requestAccounts" });
       }
