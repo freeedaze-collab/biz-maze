@@ -1,5 +1,4 @@
-// src/pages/wallet/WalletSelection.tsx
-import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
 import { isAddress, recoverMessageAddress } from "viem";
@@ -52,7 +51,6 @@ export default function WalletSelection() {
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
   // ---- 共通：message取得（GET）
@@ -71,7 +69,6 @@ export default function WalletSelection() {
     return body.nonce as string;
   };
 
-  // ---- 共通：verify（POST）
   const postVerify = async (
     payload: { address: string; signature: string; message: string },
     token?: string
@@ -93,7 +90,6 @@ export default function WalletSelection() {
     return body;
   };
 
-  // ---- MetaMask（拡張機能）
   const handleLinkWithMetaMask = async () => {
     try {
       if (!user?.id) { alert("Please login again."); return; }
@@ -124,7 +120,6 @@ export default function WalletSelection() {
         params: [message, current], // message, signer
       });
 
-      // --- 署名直後に “ローカルrecover” で same:true を確認（デバッグ）
       const recovered = await recoverMessageAddress({ message, signature });
       if (recovered.toLowerCase() !== current.toLowerCase()) {
         throw new Error(`Local recover mismatch: ${recovered} != ${current}`);
@@ -142,7 +137,6 @@ export default function WalletSelection() {
     }
   };
 
-  // ---- WalletConnect（モバイル／拡張機能なし）
   const handleLinkWithWalletConnect = async () => {
     let provider: WCProvider | null = null;
     try {
@@ -181,7 +175,6 @@ export default function WalletSelection() {
         params: [message, current],
       })) as string;
 
-      // --- ローカルrecoverで確認
       const recovered = await recoverMessageAddress({ message, signature });
       if (recovered.toLowerCase() !== current.toLowerCase()) {
         throw new Error(`Local recover mismatch: ${recovered} != ${current}`);

@@ -1,8 +1,4 @@
-// src/lib/walletconnect.ts
-// ESM 版 WalletConnect v2。UMD/CDNは使わず、ビルドに完全同梱。
-// MetaMask 拡張なし（モバイル含む）でも QR モーダルで接続可能。
-
-import EthereumProvider from '@walletconnect/ethereum-provider';
+﻿import EthereumProvider from '@walletconnect/ethereum-provider';
 
 export type WCProvider = {
   connect?: () => Promise<void>;
@@ -16,7 +12,7 @@ export async function createWCProvider(): Promise<WCProvider> {
 
   const provider: WCProvider = await EthereumProvider.init({
     projectId,
-    showQrModal: true, // connect() でQRモーダルを表示
+    showQrModal: true,
     metadata: {
       name: 'BizMaze Wallet Link',
       description: 'Link your wallet',
