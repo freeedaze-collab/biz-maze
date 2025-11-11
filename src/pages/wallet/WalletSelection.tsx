@@ -1,8 +1,7 @@
-// src/pages/wallet/WalletSelection.tsx
-import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
-import { isAddress } from "viem";
+import { isAddress, recoverMessageAddress } from "viem";
 import { createWCProvider, WCProvider } from "@/lib/walletconnect";
 
 type WalletRow = {
@@ -52,11 +51,9 @@ export default function WalletSelection() {
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
-  // ---- 共通：nonce取得（GET）
-  const getNonce = async (token?: string) => {
+  const getMessage = async (token?: string) => {
     const r = await fetch(FN_URL, {
       method: "GET",
       headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
@@ -67,10 +64,9 @@ export default function WalletSelection() {
         `Nonce failed. status=${r.status}, body=${JSON.stringify(body)}`
       );
     }
-    return body.nonce as string;
+    return body.nonce as string; // そのまま personal_sign の message に使う
   };
 
-  // ---- 共通：verify（POST）
   const postVerify = async (
     payload: { address: string; signature: string; message: string },
     token?: string
@@ -92,7 +88,6 @@ export default function WalletSelection() {
     return body;
   };
 
-  // ---- MetaMask（拡張機能）
   const handleLinkWithMetaMask = async () => {
     try {
       if (!user?.id) { alert("Please login again."); return; }
@@ -117,11 +112,16 @@ export default function WalletSelection() {
         return;
       }
 
-      const message = await getNonce(token);
+      const message = await getMessage(token);
       const signature = await (window as any).ethereum.request({
         method: "personal_sign",
         params: [message, current],
       });
+
+      const recovered = await recoverMessageAddress({ message, signature });
+      if (recovered.toLowerCase() !== current.toLowerCase()) {
+        throw new Error(`Local recover mismatch: ${recovered} != ${current}`);
+      }
 
       await postVerify({ address: current, signature, message }, token);
       setAddressInput("");
@@ -135,7 +135,6 @@ export default function WalletSelection() {
     }
   };
 
-  // ---- WalletConnect（モバイル／拡張機能なし）
   const handleLinkWithWalletConnect = async () => {
     let provider: WCProvider | null = null;
     try {
@@ -151,8 +150,6 @@ export default function WalletSelection() {
       setLinking("wc");
 
       provider = await createWCProvider();
-
-      // ユーザー操作中にモーダルを開く
       if (typeof provider.connect === "function") {
         await provider.connect();
       } else {
@@ -170,11 +167,16 @@ export default function WalletSelection() {
         return;
       }
 
-      const message = await getNonce(token);
+      const message = await getMessage(token);
       const signature = (await provider.request({
         method: "personal_sign",
         params: [message, current],
       })) as string;
+
+      const recovered = await recoverMessageAddress({ message, signature });
+      if (recovered.toLowerCase() !== current.toLowerCase()) {
+        throw new Error(`Local recover mismatch: ${recovered} != ${current}`);
+      }
 
       await postVerify({ address: current, signature, message }, token);
       setAddressInput("");
@@ -225,7 +227,7 @@ export default function WalletSelection() {
           </button>
         </div>
         <p className="text-xs text-muted-foreground">
-          署名メッセージはサーバ発行の <code>nonce</code>（素の文字列）です。
+          署名メッセージはサーバ発行の <code>message</code>（素の文字列）です。
           入力アドレスと署名者のアドレスは<strong>必ず同じ</strong>にしてください。
         </p>
         {alreadyLinked && (
