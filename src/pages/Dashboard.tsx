@@ -88,18 +88,28 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Wallets */}
+        {/* Wallets / VCE */}
         <div className="border rounded-xl p-4">
           <h2 className="font-semibold mb-2">Wallets</h2>
-          <p className="text-sm text-muted-foreground mb-2">
+          <p className="text-sm text-muted-foreground mb-3">
             Manage connected wallets and verification.
           </p>
-          <Link
-            to="/wallets"
-            className="px-3 py-2 rounded bg-blue-600 text-white text-center inline-block"
-          >
-            Open Wallets
-          </Link>
+          <div className="flex flex-wrap items-center gap-2">
+            <Link
+              to="/wallets"
+              className="px-3 py-2 rounded bg-blue-600 text-white text-center inline-block"
+            >
+              Open Wallets
+            </Link>
+            {/* ここが追加分：VCE への導線 */}
+            <Link
+              to="/vce"
+              className="px-3 py-2 rounded border text-center inline-block"
+              title="Virtual Custody / Exchanges"
+            >
+              Open VCE
+            </Link>
+          </div>
         </div>
 
         {/* Payment Gateway */}
