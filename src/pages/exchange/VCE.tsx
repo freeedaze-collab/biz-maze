@@ -4,6 +4,8 @@ import { Link } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
 
+type Exchange = "binance" | "bybit" | "okx";
+
 type ExchangeConn = {
   id: number;
   user_id: string;
@@ -13,10 +15,13 @@ type ExchangeConn = {
   status?: string | null;
 };
 
+const FN_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/exchange-binance-proxy`;
+
 export default function VCE() {
   const { user } = useAuth();
   const [rows, setRows] = useState<ExchangeConn[]>([]);
   const [loading, setLoading] = useState(true);
+  const [linking, setLinking] = useState<Exchange | null>(null);
 
   const load = async () => {
     if (!user?.id) return;
@@ -41,6 +46,54 @@ export default function VCE() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
+  const linkExchange = async (exchange: Exchange) => {
+    try {
+      if (!user?.id) {
+        alert("Please login again.");
+        return;
+      }
+      setLinking(exchange);
+
+      const { data: sess } = await supabase.auth.getSession();
+      const token = sess?.session?.access_token;
+      if (!token) throw new Error("No session");
+
+      const res = await fetch(FN_URL, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ action: "link", exchange }), // ← ここだけ変えれば各社OK
+      });
+
+      const text = await res.text();
+      let body: any = null;
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = text;
+      }
+
+      if (!res.ok || body?.ok === false) {
+        throw new Error(
+          typeof body === "string" ? body : body?.error || `Link failed (${res.status})`
+        );
+      }
+
+      await load();
+      alert(`Linked ${exchange} ✔`);
+    } catch (e: any) {
+      console.error("[vce] link error:", e);
+      alert(e?.message ?? String(e));
+    } finally {
+      setLinking(null);
+    }
+  };
+
+  const label = (ex: Exchange) =>
+    ex === "binance" ? "Binance" : ex === "bybit" ? "Bybit" : "OKX";
+
   return (
     <div className="max-w-3xl mx-auto p-6 space-y-6">
       <div className="flex items-center justify-between">
@@ -55,32 +108,29 @@ export default function VCE() {
         deposits/withdrawals, and balances. (Early preview)
       </p>
 
-      {/* Connect buttons（実装の土台。後でOAuth/APIキー接続へ差し替え） */}
+      {/* Connect buttons */}
       <div className="border rounded-xl p-4 space-y-3">
         <div className="font-semibold mb-1">Add connection</div>
         <div className="flex flex-wrap gap-2">
-          <button
-            className="px-3 py-2 rounded border"
-            onClick={() => alert("Binance connector coming soon")}
-          >
-            Connect Binance
-          </button>
-          <button
-            className="px-3 py-2 rounded border"
-            onClick={() => alert("Bybit connector coming soon")}
-          >
-            Connect Bybit
-          </button>
-          <button
-            className="px-3 py-2 rounded border"
-            onClick={() => alert("OKX connector coming soon")}
-          >
-            Connect OKX
-          </button>
+          {(["binance", "bybit", "okx"] as Exchange[]).map((ex) => (
+            <button
+              key={ex}
+              className="px-3 py-2 rounded border disabled:opacity-50"
+              onClick={() => linkExchange(ex)}
+              disabled={!!linking}
+              title={`Connect ${label(ex)}`}
+            >
+              {linking === ex ? `Connecting ${label(ex)}...` : `Connect ${label(ex)}`}
+            </button>
+          ))}
         </div>
+        <p className="text-xs text-muted-foreground">
+          For now, linking just registers the connection in your account. API key / OAuth
+          screens will come next; you can still add multiple exchanges today.
+        </p>
       </div>
 
-      {/* 一覧 */}
+      {/* Connections list */}
       <div className="border rounded-xl p-4">
         <div className="font-semibold mb-2">Your connections</div>
         {loading ? (
@@ -93,10 +143,10 @@ export default function VCE() {
               <li key={r.id} className="border rounded p-3">
                 <div className="flex items-center justify-between gap-2">
                   <div>
-                    <div className="font-medium">{r.exchange}</div>
+                    <div className="font-medium">{r.exchange.toUpperCase()}</div>
                     <div className="text-xs text-muted-foreground">
                       ext_user: {r.external_user_id ?? "—"} • {r.created_at ?? "—"} •{" "}
-                      {r.status ?? "active"}
+                      {r.status ?? "linked"}
                     </div>
                   </div>
                   <button
