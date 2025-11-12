@@ -1,135 +1,144 @@
-// Deno Deploy ランタイムを想定（Supabase Edge Functions）
+// supabase/functions/exchange-binance-proxy/index.ts
+// Deno Edge Function (Dashboardでそのままデプロイ可)
+// - CORS対応
+// - 認証（Authorization: Bearer <access_token>）
+// - action: "link" … exchange_connections に upsert（ダミーでまずは通す）
+// - action: "sign" … Binance用の HMAC-SHA256 署名（WebCryptoで実装）
+
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { hmac } from "https://deno.land/x/hmac@v2.0.1/mod.ts";
 
-type Provider = "binance";
+type Json = Record<string, unknown>;
 
-const BINANCE_BASE = "https://api.binance.com";
-const KMS_KEY = Deno.env.get("EXCHANGE_KMS_KEY") ?? "";
+const cors = (origin: string | null) => ({
+  "access-control-allow-origin": origin ?? "*",
+  "access-control-allow-headers": "authorization, content-type, apikey, x-client-info",
+  "access-control-allow-methods": "GET,POST,OPTIONS",
+});
 
-function signBinance(query: string, secret: string) {
-  // Binance signature = HMAC SHA256 (query) hex
-  return hmac("sha256", secret, query, "hex").toString();
-}
-
-function qs(obj: Record<string, string | number>) {
-  return Object.entries(obj)
-    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
-    .join("&");
-}
-
-async function decryptSecret(supabase: any, enc: Uint8Array) {
-  // Postgres復号をRPCで実施（DB側で pgp_sym_decrypt）
-  const { data, error } = await supabase.rpc("decrypt_secret", {
-    enc_input: enc,
-    key_input: KMS_KEY,
-  });
-  if (error) throw error;
-  return data as string;
+// ---- HMAC-SHA256 (HEX) using WebCrypto ----
+async function hmacSha256Hex(key: string, message: string): Promise<string> {
+  const enc = new TextEncoder();
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(key),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const sig = await crypto.subtle.sign("HMAC", cryptoKey, enc.encode(message));
+  const bytes = new Uint8Array(sig);
+  // to hex
+  let hex = "";
+  for (let i = 0; i < bytes.length; i++) {
+    const h = bytes[i].toString(16).padStart(2, "0");
+    hex += h;
+  }
+  return hex;
 }
 
 Deno.serve(async (req) => {
+  const origin = req.headers.get("origin");
+
+  // Preflight
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: cors(origin), status: 200 });
+  }
+
+  const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
+  const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+  const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+
   try {
-    const supabase = createClient(
-      Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_ANON_KEY")!,
-      { global: { headers: { Authorization: req.headers.get("Authorization")! } } }
-    );
-
-    const url = new URL(req.url);
-    const action = url.searchParams.get("action") ?? "test";
-    const { data: user } = await supabase.auth.getUser();
-    if (!user?.user) return new Response("Unauthorized", { status: 401 });
-
-    if (req.method === "POST" && action === "link") {
-      const body = await req.json();
-      const { provider, api_key, api_secret, label } = body as {
-        provider: Provider; api_key: string; api_secret: string; label?: string;
-      };
-      if (provider !== "binance") throw new Error("Unsupported provider");
-
-      const { data, error } = await supabase.rpc("encrypt_secret", {
-        plain_input: api_secret,
-        key_input: KMS_KEY,
+    if (req.method === "GET") {
+      return new Response(JSON.stringify({ ok: true, service: "binance-proxy" }), {
+        headers: { "content-type": "application/json", ...cors(origin) },
+        status: 200,
       });
-      if (error) throw error;
+    }
 
-      const { error: insErr } = await supabase
+    if (req.method !== "POST") {
+      return new Response("Method Not Allowed", { headers: cors(origin), status: 405 });
+    }
+
+    // 認証
+    let userId: string | null = null;
+    const authz = req.headers.get("authorization") ?? req.headers.get("Authorization");
+    if (authz?.startsWith("Bearer ")) {
+      const accessToken = authz.slice("Bearer ".length);
+      const { data: userRes } = await supabase.auth.getUser(accessToken);
+      userId = userRes?.user?.id ?? null;
+    }
+    if (!userId) {
+      return new Response(JSON.stringify({ ok: false, error: "Unauthorized" }), {
+        headers: { "content-type": "application/json", ...cors(origin) },
+        status: 401,
+      });
+    }
+
+    // 本文
+    const body = (await req.json().catch(() => ({}))) as Json;
+    const action = String(body?.action ?? "link");
+
+    // 1) Link（まずは通す土台）
+    if (action === "link") {
+      const exchange = String(body?.exchange ?? "binance");
+      const external_user_id = (body?.external_user_id ?? null) as string | null;
+
+      const { error } = await supabase
         .from("exchange_connections")
-        .insert({
-          user_id: user.user.id,
-          provider,
-          label,
-          api_key,
-          api_secret_enc: data
+        .upsert(
+          {
+            user_id: userId,
+            exchange,
+            external_user_id,
+            status: "linked",
+          },
+          { onConflict: "user_id,exchange" },
+        );
+
+      if (error) {
+        return new Response(JSON.stringify({ ok: false, error: error.message }), {
+          headers: { "content-type": "application/json", ...cors(origin) },
+          status: 500,
         });
-      if (insErr) throw insErr;
-
-      return new Response(JSON.stringify({ ok: true }), { status: 200 });
-    }
-
-    // 以降は既存接続IDを使って実リクエスト
-    const connId = Number(url.searchParams.get("conn_id"));
-    if (!connId) throw new Error("conn_id required");
-
-    // 取得
-    const { data: conn, error: selErr } = await supabase
-      .from("exchange_connections")
-      .select("*")
-      .eq("id", connId)
-      .single();
-    if (selErr || !conn) throw selErr ?? new Error("connection not found");
-
-    // 復号
-    const secret = await decryptSecret(supabase, conn.api_secret_enc);
-    const apiKey: string = conn.api_key;
-
-    if (action === "test") {
-      const timestamp = Date.now();
-      const query = qs({ timestamp, recvWindow: 5000 });
-      const sig = signBinance(query, secret);
-
-      const res = await fetch(`${BINANCE_BASE}/api/v3/account?${query}&signature=${sig}`, {
-        headers: { "X-MBX-APIKEY": apiKey },
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json?.msg ?? res.statusText);
-
-      return new Response(JSON.stringify({ ok: true, account: json }), { status: 200 });
-    }
-
-    if (action === "sync-lite") {
-      const timestamp = Date.now();
-
-      // 残高
-      const q1 = qs({ timestamp, recvWindow: 5000 });
-      const s1 = signBinance(q1, secret);
-      const accRes = await fetch(`${BINANCE_BASE}/api/v3/account?${q1}&signature=${s1}`, {
-        headers: { "X-MBX-APIKEY": apiKey },
-      });
-      const acc = await accRes.json();
-      if (!accRes.ok) throw new Error(acc?.msg ?? accRes.statusText);
-
-      // （例）残高を exchange_balances にupsert（最低限）
-      const balances = (acc.balances ?? []).filter((b: any) => Number(b.free) > 0 || Number(b.locked) > 0);
-      const rows = balances.map((b: any) => ({
-        user_id: user.user.id,
-        provider: "binance",
-        asset: b.asset,
-        free: b.free,
-        locked: b.locked,
-        fetched_at: new Date().toISOString(),
-      }));
-      if (rows.length) {
-        await supabase.from("exchange_balances").upsert(rows, { onConflict: "user_id,provider,asset" });
       }
 
-      // TODO: 入出金/トレードは /sapi を順次カバー（本PRは“準一致”の足掛かり）
-      return new Response(JSON.stringify({ ok: true, balances: rows.length }), { status: 200 });
+      return new Response(JSON.stringify({ ok: true }), {
+        headers: { "content-type": "application/json", ...cors(origin) },
+        status: 200,
+      });
     }
 
-    return new Response("Unknown action", { status: 400 });
+    // 2) Sign（将来: Binance 署名テスト用）
+    //   body: { action: "sign", secret: "...", query: "recvWindow=5000&timestamp=..." }
+    if (action === "sign") {
+      const secret = String(body?.secret ?? "");
+      const query = String(body?.query ?? "");
+      if (!secret || !query) {
+        return new Response(JSON.stringify({ ok: false, error: "secret and query required" }), {
+          headers: { "content-type": "application/json", ...cors(origin) },
+          status: 400,
+        });
+      }
+      const signature = await hmacSha256Hex(secret, query);
+      return new Response(JSON.stringify({ ok: true, signature }), {
+        headers: { "content-type": "application/json", ...cors(origin) },
+        status: 200,
+      });
+    }
+
+    // 未対応
+    return new Response(JSON.stringify({ ok: false, error: "Unsupported action" }), {
+      headers: { "content-type": "application/json", ...cors(origin) },
+      status: 400,
+    });
   } catch (e) {
-    return new Response(JSON.stringify({ ok: false, error: String(e?.message ?? e) }), { status: 500 });
+    console.error("[exchange-binance-proxy] error:", e);
+    return new Response(JSON.stringify({ ok: false, error: String(e?.message ?? e) }), {
+      headers: { "content-type": "application/json", ...cors(origin) },
+      status: 500,
+    });
   }
 });
