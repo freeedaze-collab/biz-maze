@@ -20,6 +20,9 @@ import Accounting from "@/pages/Accounting";
 import Profile from "@/pages/Profile";
 import WalletSelection from "@/pages/wallet/WalletSelection";
 
+// Exchanges (VCE)
+import VCE from "@/pages/exchange/VCE";
+
 import SendMoney from "@/pages/SendMoney";
 import CreateInvoice from "@/pages/CreateInvoice";
 import PaymentGateway from "@/pages/PaymentGateway";
@@ -76,6 +79,15 @@ export default function App() {
         element={
           <AuthGuard>
             <WalletSelection />
+          </AuthGuard>
+        }
+      />
+      {/* 追加: VCE ルート */}
+      <Route
+        path="/vce"
+        element={
+          <AuthGuard>
+            <VCE />
           </AuthGuard>
         }
       />
