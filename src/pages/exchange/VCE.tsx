@@ -31,7 +31,7 @@ export default function VCE() {
   const [syncExch, setSyncExch] = useState<Exchange>("binance");
   const [since, setSince] = useState("");  // ISO 文字列 or unix ms
   const [until, setUntil] = useState("");  // ISO 文字列 or unix ms
-  const [symbols, setSymbols] = useState(""); // Binance は必須（"BTCUSDT,ETHUSDT"）
+  const [symbols, setSymbols] = useState(""); // Binance: 空欄=ALL（サーバ側が推定）
 
   const [busy, setBusy] = useState(false);
 
@@ -89,7 +89,14 @@ export default function VCE() {
     if (exch === "okx" && !passphrase) { toast("OKX は Passphrase が必須です。"); return; }
 
     setBusy(true);
+
+    // ★ JWT を付与して呼び出す
+    const { data: sess } = await supabase.auth.getSession();
+    const headers =
+      sess?.session?.access_token ? { Authorization: `Bearer ${sess.session.access_token}` } : {};
+
     const { error, data } = await supabase.functions.invoke("exchange-save-keys", {
+      headers,
       body: {
         exchange: exch,
         external_user_id: accountId || null,
@@ -110,17 +117,22 @@ export default function VCE() {
   // 2) 同期（Edge Function：exchange-sync）
   const onSync = async () => {
     if (!user?.id) { toast("Please login again."); return; }
-    if (syncExch === "binance" && !symbols.trim()) {
-      toast("Binance は symbols の指定が必須です（例: BTCUSDT,ETHUSDT）。");
-      return;
-    }
+
     setBusy(true);
+
+    // ★ JWT を付与して呼び出す
+    const { data: sess } = await supabase.auth.getSession();
+    const headers =
+      sess?.session?.access_token ? { Authorization: `Bearer ${sess.session.access_token}` } : {};
+
     const { error, data } = await supabase.functions.invoke("exchange-sync", {
+      headers,
       body: {
         exchange: syncExch,
         since: since || null,
         until: until || null,
-        symbols: symbols || null,
+        // Binance は「空欄=ALL」をサーバ側が自動推定
+        symbols: symbols.trim() ? symbols : null,
       },
     });
     setBusy(false);
@@ -179,7 +191,7 @@ export default function VCE() {
           <summary className="cursor-pointer font-medium">Sync の指定方法</summary>
           <ul className="list-disc ml-5 mt-2 space-y-1 text-sm">
             <li><b>since / until</b> は ISO 文字列（例: <code>2025-01-01T00:00:00Z</code>）か unix ミリ秒。</li>
-            <li><b>Binance は symbols が必須</b>（例: <code>BTCUSDT,ETHUSDT</code>）。Bybit / OKX は未指定でも可。</li>
+            <li><b>Binance は symbols を空欄にすると “ALL”</b>（保有資産などから自動推定）で同期します。</li>
             <li>同期では、トレード・入金・出金・一部残高の取得を行います（段階的拡張）。</li>
           </ul>
         </details>
@@ -285,7 +297,7 @@ export default function VCE() {
           <input
             className="border rounded px-2 py-1 min-w-[260px]"
             placeholder={syncExch === "binance"
-              ? "Binance symbols（例: BTCUSDT,ETHUSDT）"
+              ? "Binance symbols（空欄=ALL。例: BTCUSDT,ETHUSDT）"
               : "symbols（任意）"}
             value={symbols}
             onChange={(e) => setSymbols(e.target.value)}
@@ -300,7 +312,7 @@ export default function VCE() {
         </div>
 
         <ul className="text-xs text-muted-foreground list-disc ml-5">
-          <li><b>Binance の約定は symbol が必須</b>です。Bybit/OKX は未指定でも取得可能。</li>
+          <li>Binance の同期は、<b>symbols 未指定＝ALL</b> として自動推定します。</li>
           <li>入出金も同時に同期します。</li>
         </ul>
       </div>
