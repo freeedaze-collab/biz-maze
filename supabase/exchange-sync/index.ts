@@ -30,17 +30,18 @@ const cors = (origin: string | null) => ({
 });
 type Body = {
   exchange: "binance" | "bybit" | "okx";
-  symbols?: string;                 // Binance用: "BTCUSDT,ETHUSDT"
+  symbols?: string | null;          // Binance用: "BTCUSDT,ETHUSDT" / null=ALL
   since?: number | string;          // ms or ISO
   until?: number | string;          // ms or ISO
   kinds?: ("trades" | "deposits" | "withdrawals")[];
 };
-function toMs(v?: number|string) {
+function toMs(v?: number|string|null) {
   if (!v) return undefined;
   if (typeof v === "number") return v;
   const t = Date.parse(v); return Number.isFinite(t) ? t : undefined;
 }
 
+// ---------- 保存（簡易版：1件ずつ upsert） ----------
 async function saveTrades(supabase: any, userId: string, exchange: string, external_user_id: string | null, items: any[]) {
   for (const it of items) {
     const payload = {
@@ -63,7 +64,7 @@ async function saveTrades(supabase: any, userId: string, exchange: string, exter
   }
 }
 
-// ===== Binance =====
+// ================= Binance =================
 async function binanceSignedFetch(path: string, key: string, secret: string, params: Record<string,string>) {
   const qs = new URLSearchParams(params);
   qs.set("timestamp", String(Date.now()));
@@ -73,9 +74,44 @@ async function binanceSignedFetch(path: string, key: string, secret: string, par
   const hex = Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2,"0")).join("");
   const url = `https://api.binance.com${path}?${data}&signature=${hex}`;
   const res = await fetch(url, { headers: { "X-MBX-APIKEY": key } });
-  if (!res.ok) throw new Error(`binance ${path} ${res.status}: ${await res.text()}`);
-  return res.json();
+  const text = await res.text();
+  if (!res.ok) throw new Error(`binance ${path} ${res.status}: ${text}`);
+  return JSON.parse(text);
 }
+
+async function fetchBinanceExchangeInfo() {
+  const res = await fetch("https://api.binance.com/api/v3/exchangeInfo");
+  if (!res.ok) throw new Error(`binance exchangeInfo ${res.status}`);
+  const j = await res.json();
+  const set = new Set<string>();
+  for (const s of j?.symbols ?? []) set.add(String(s.symbol).toUpperCase());
+  return set;
+}
+
+/** symbols 未指定時、保有資産から USDT ペアを推定（なければ定番のバックアップ） */
+async function resolveBinanceSymbolsAll(key: string, secret: string) {
+  const infoSet = await fetchBinanceExchangeInfo();
+
+  // 1) アカウント残高から非ゼロ資産を抽出
+  const acct = await binanceSignedFetch("/api/v3/account", key, secret, {});
+  const nonZero: string[] = (acct?.balances ?? [])
+    .filter((b: any) => Number(b.free) > 0 || Number(b.locked) > 0)
+    .map((b: any) => String(b.asset).toUpperCase())
+    .filter((a: string) => a !== "USDT");
+
+  // 2) USDT ペアにして存在チェック
+  let syms = nonZero
+    .map((a) => `${a}USDT`)
+    .filter((s) => infoSet.has(s));
+
+  // 3) バックアップ（最低限）
+  if (syms.length === 0) {
+    const fallback = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT"];
+    syms = fallback.filter((s) => infoSet.has(s));
+  }
+  return syms;
+}
+
 async function fetchBinanceTrades(key: string, secret: string, symbols: string[], sinceMs?: number, untilMs?: number) {
   const out: any[] = [];
   for (const sym of symbols) {
@@ -131,7 +167,7 @@ async function fetchBinanceWithdraws(key: string, secret: string, sinceMs?: numb
   }));
 }
 
-// ===== Bybit (v5) =====
+// ================= Bybit (v5) =================
 async function bybitSignedFetch(path: string, key: string, secret: string, query?: URLSearchParams, method="GET", body="") {
   const ts = String(Date.now());
   const recvWindow = "5000";
@@ -207,7 +243,7 @@ async function fetchBybitWithdraws(key: string, secret: string, sinceMs?: number
   }));
 }
 
-// ===== OKX =====
+// ================= OKX =================
 async function okxSignedFetch(path: string, key: string, secret: string, passphrase: string, method="GET", query?: URLSearchParams, body="") {
   const ts = new Date().toISOString();
   const prehash = ts + method + path + (method === "GET" ? (query ? `?${query.toString()}` : "") : body);
@@ -280,6 +316,7 @@ async function fetchOkxWithdraws(key: string, secret: string, passphrase: string
   }));
 }
 
+// ================= Handler =================
 Deno.serve(async (req) => {
   const origin = req.headers.get("origin");
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors(origin) });
@@ -322,7 +359,7 @@ Deno.serve(async (req) => {
     const secretObj = await decryptBlob(credRow.enc_blob);
     const apiKey = secretObj.apiKey as string;
     const apiSecret = secretObj.apiSecret as string;
-    const apiPassphrase = secretObj.apiPassphrase as (string|null);
+    const apiPassphrase = (secretObj.apiPassphrase ?? null) as (string|null);
     const extId = credRow.external_user_id ?? null;
 
     let inserted = 0, errors = 0, total = 0;
@@ -334,9 +371,15 @@ Deno.serve(async (req) => {
 
     if (kinds.includes("trades")) {
       if (exchange === "binance") {
-        const symbols = (body.symbols || "").split(",").map(s => s.trim()).filter(Boolean);
-        if (symbols.length) {
-          const list = await fetchBinanceTrades(apiKey, apiSecret, symbols, sinceMs, untilMs);
+        // symbols が null/空欄なら ALL 推定
+        let symList: string[] = [];
+        if (body.symbols && body.symbols.trim()) {
+          symList = body.symbols.split(",").map(s => s.trim().toUpperCase()).filter(Boolean);
+        } else {
+          symList = await resolveBinanceSymbolsAll(apiKey, apiSecret);
+        }
+        if (symList.length) {
+          const list = await fetchBinanceTrades(apiKey, apiSecret, symList, sinceMs, untilMs);
           await save(list);
         }
       } else if (exchange === "bybit") {
