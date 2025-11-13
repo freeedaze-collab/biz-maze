@@ -1,13 +1,21 @@
 // supabase/functions/exchange-sync/index.ts
-// 依存なし（edge-runtime の import は不要）
+// 依存なし（edge-runtime の import 不要）
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-function b64decode(b64: string) {
+// ---------- 共通ユーティリティ ----------
+const cors = (origin: string | null) => ({
+  "access-control-allow-origin": origin ?? "*",
+  "access-control-allow-headers": "authorization, content-type, apikey, x-client-info",
+  "access-control-allow-methods": "POST,OPTIONS",
+  "content-type": "application/json",
+});
+
+function b64dec(b64: string) {
   const s = atob(b64); const u8 = new Uint8Array(s.length);
-  for (let i=0;i<s.length;i++) u8[i] = s.charCodeAt(i);
+  for (let i = 0; i < s.length; i++) u8[i] = s.charCodeAt(i);
   return u8;
 }
-async function getKey() {
+async function getDecryptKey() {
   const b64 = Deno.env.get("EDGE_KMS_KEY");
   if (!b64) throw new Error("EDGE_KMS_KEY missing");
   const raw = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
@@ -16,33 +24,31 @@ async function getKey() {
 async function decryptBlob(enc: string) {
   const [v, ivb64, ctb64] = enc.split(":");
   if (v !== "v1") throw new Error("unknown blob version");
-  const key = await getKey();
-  const iv = b64decode(ivb64);
-  const ct = b64decode(ctb64);
+  const key = await getDecryptKey();
+  const iv = b64dec(ivb64);
+  const ct = b64dec(ctb64);
   const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
   return JSON.parse(new TextDecoder().decode(new Uint8Array(pt)));
 }
-const cors = (origin: string | null) => ({
-  "access-control-allow-origin": origin ?? "*",
-  "access-control-allow-headers": "authorization, content-type, apikey, x-client-info",
-  "access-control-allow-methods": "POST,OPTIONS",
-  "content-type": "application/json",
-});
+
 type Body = {
   exchange: "binance" | "bybit" | "okx";
-  symbols?: string | null;          // Binance用: "BTCUSDT,ETHUSDT" / null=ALL
-  since?: number | string;          // ms or ISO
-  until?: number | string;          // ms or ISO
+  symbols?: string | null;      // Binance 用: "BTCUSDT,ETHUSDT"。null/空なら自動推定
+  since?: number | string | null;
+  until?: number | string | null;
   kinds?: ("trades" | "deposits" | "withdrawals")[];
 };
-function toMs(v?: number|string|null) {
+
+function toMs(v?: number | string | null) {
   if (!v) return undefined;
   if (typeof v === "number") return v;
-  const t = Date.parse(v); return Number.isFinite(t) ? t : undefined;
+  const t = Date.parse(v);
+  return Number.isFinite(t) ? t : undefined;
 }
 
-// ---------- 保存（簡易版：1件ずつ upsert） ----------
-async function saveTrades(supabase: any, userId: string, exchange: string, external_user_id: string | null, items: any[]) {
+async function saveTrades(
+  supabase: any, userId: string, exchange: string, external_user_id: string | null, items: any[],
+) {
   for (const it of items) {
     const payload = {
       user_id: userId,
@@ -64,14 +70,19 @@ async function saveTrades(supabase: any, userId: string, exchange: string, exter
   }
 }
 
-// ================= Binance =================
-async function binanceSignedFetch(path: string, key: string, secret: string, params: Record<string,string>) {
+// ---------- Binance helpers ----------
+async function binanceSignedFetch(
+  path: string, key: string, secret: string, params: Record<string, string>,
+) {
   const qs = new URLSearchParams(params);
   qs.set("timestamp", String(Date.now()));
   const data = qs.toString();
-  const sigKey = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sigKey = await crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
+  );
   const sig = await crypto.subtle.sign("HMAC", sigKey, new TextEncoder().encode(data));
-  const hex = Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2,"0")).join("");
+  const hex = Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, "0")).join("");
   const url = `https://api.binance.com${path}?${data}&signature=${hex}`;
   const res = await fetch(url, { headers: { "X-MBX-APIKEY": key } });
   const text = await res.text();
@@ -79,43 +90,28 @@ async function binanceSignedFetch(path: string, key: string, secret: string, par
   return JSON.parse(text);
 }
 
-async function fetchBinanceExchangeInfo() {
-  const res = await fetch("https://api.binance.com/api/v3/exchangeInfo");
-  if (!res.ok) throw new Error(`binance exchangeInfo ${res.status}`);
-  const j = await res.json();
-  const set = new Set<string>();
-  for (const s of j?.symbols ?? []) set.add(String(s.symbol).toUpperCase());
-  return set;
-}
-
-/** symbols 未指定時、保有資産から USDT ペアを推定（なければ定番のバックアップ） */
-async function resolveBinanceSymbolsAll(key: string, secret: string) {
-  const infoSet = await fetchBinanceExchangeInfo();
-
-  // 1) アカウント残高から非ゼロ資産を抽出
-  const acct = await binanceSignedFetch("/api/v3/account", key, secret, {});
-  const nonZero: string[] = (acct?.balances ?? [])
-    .filter((b: any) => Number(b.free) > 0 || Number(b.locked) > 0)
-    .map((b: any) => String(b.asset).toUpperCase())
-    .filter((a: string) => a !== "USDT");
-
-  // 2) USDT ペアにして存在チェック
-  let syms = nonZero
-    .map((a) => `${a}USDT`)
-    .filter((s) => infoSet.has(s));
-
-  // 3) バックアップ（最低限）
-  if (syms.length === 0) {
-    const fallback = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT"];
-    syms = fallback.filter((s) => infoSet.has(s));
+// symbols 未指定 → /api/v3/exchangeInfo から USDT建て現物の TRADING のみを抽出
+async function binanceAutoSymbols(): Promise<string[]> {
+  const url = "https://api.binance.com/api/v3/exchangeInfo";
+  const res = await fetch(url);
+  const text = await res.text();
+  if (!res.ok) throw new Error(`binance exchangeInfo ${res.status}: ${text}`);
+  const json = JSON.parse(text);
+  const arr: string[] = [];
+  for (const s of json.symbols ?? []) {
+    if (s.status === "TRADING" && s.quoteAsset === "USDT" && s.isSpotTradingAllowed) {
+      arr.push(s.symbol);
+    }
   }
-  return syms;
+  return arr;
 }
 
-async function fetchBinanceTrades(key: string, secret: string, symbols: string[], sinceMs?: number, untilMs?: number) {
+async function fetchBinanceTrades(
+  key: string, secret: string, symbols: string[], sinceMs?: number, untilMs?: number,
+) {
   const out: any[] = [];
   for (const sym of symbols) {
-    const params: Record<string,string> = { symbol: sym, limit: "1000" };
+    const params: Record<string, string> = { symbol: sym, limit: "1000" };
     if (sinceMs) params.startTime = String(sinceMs);
     if (untilMs) params.endTime = String(untilMs);
     const arr = await binanceSignedFetch("/api/v3/myTrades", key, secret, params);
@@ -134,8 +130,9 @@ async function fetchBinanceTrades(key: string, secret: string, symbols: string[]
   }
   return out;
 }
+
 async function fetchBinanceDeposits(key: string, secret: string, sinceMs?: number, untilMs?: number) {
-  const params: Record<string,string> = {};
+  const params: Record<string, string> = {};
   if (sinceMs) params.startTime = String(sinceMs);
   if (untilMs) params.endTime = String(untilMs);
   const arr = await binanceSignedFetch("/sapi/v1/capital/deposit/hisrec", key, secret, params);
@@ -150,8 +147,9 @@ async function fetchBinanceDeposits(key: string, secret: string, sinceMs?: numbe
     fee_asset: d.coin,
   }));
 }
+
 async function fetchBinanceWithdraws(key: string, secret: string, sinceMs?: number, untilMs?: number) {
-  const params: Record<string,string> = {};
+  const params: Record<string, string> = {};
   if (sinceMs) params.startTime = String(sinceMs);
   if (untilMs) params.endTime = String(untilMs);
   const arr = await binanceSignedFetch("/sapi/v1/capital/withdraw/history", key, secret, params);
@@ -167,15 +165,19 @@ async function fetchBinanceWithdraws(key: string, secret: string, sinceMs?: numb
   }));
 }
 
-// ================= Bybit (v5) =================
-async function bybitSignedFetch(path: string, key: string, secret: string, query?: URLSearchParams, method="GET", body="") {
+// ---------- Bybit ----------
+async function bybitSignedFetch(
+  path: string, key: string, secret: string, query?: URLSearchParams, method = "GET", body = "",
+) {
   const ts = String(Date.now());
   const recvWindow = "5000";
   const signPayload = ts + key + recvWindow + (method === "GET" ? (query?.toString() ?? "") : body);
-  const sigKey = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sigKey = await crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
+  );
   const sigRaw = await crypto.subtle.sign("HMAC", sigKey, new TextEncoder().encode(signPayload));
-  const sign = Array.from(new Uint8Array(sigRaw)).map(b => b.toString(16).padStart(2,"0")).join("");
-  const url = `https://api.bybit.com${path}${method==="GET" && query ? `?${query.toString()}` : ""}`;
+  const sign = Array.from(new Uint8Array(sigRaw)).map(b => b.toString(16).padStart(2, "0")).join("");
+  const url = `https://api.bybit.com${path}${method === "GET" && query ? `?${query.toString()}` : ""}`;
   const res = await fetch(url, {
     method,
     headers: {
@@ -243,14 +245,16 @@ async function fetchBybitWithdraws(key: string, secret: string, sinceMs?: number
   }));
 }
 
-// ================= OKX =================
-async function okxSignedFetch(path: string, key: string, secret: string, passphrase: string, method="GET", query?: URLSearchParams, body="") {
+// ---------- OKX ----------
+async function okxSignedFetch(
+  path: string, key: string, secret: string, passphrase: string, method = "GET", query?: URLSearchParams, body = "",
+) {
   const ts = new Date().toISOString();
   const prehash = ts + method + path + (method === "GET" ? (query ? `?${query.toString()}` : "") : body);
   const sigKey = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const signRaw = await crypto.subtle.sign("HMAC", sigKey, new TextEncoder().encode(prehash));
   const sign = btoa(String.fromCharCode(...new Uint8Array(signRaw)));
-  const url = `https://www.okx.com${path}${method==="GET" && query ? `?${query.toString()}` : ""}`;
+  const url = `https://www.okx.com${path}${method === "GET" && query ? `?${query.toString()}` : ""}`;
   const res = await fetch(url, {
     method,
     headers: {
@@ -316,100 +320,134 @@ async function fetchOkxWithdraws(key: string, secret: string, passphrase: string
   }));
 }
 
-// ================= Handler =================
+// ---------- Handler ----------
 Deno.serve(async (req) => {
   const origin = req.headers.get("origin");
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors(origin) });
+
+  const step = (s: string, obj: any = {}) =>
+    new Response(JSON.stringify({ error: "internal_error", step: s, ...obj }), { status: 500, headers: cors(origin) });
+
   try {
     if (req.method !== "POST") {
-      return new Response(JSON.stringify({ error: "Method Not Allowed" }), { status: 405, headers: cors(origin) });
+      return new Response(JSON.stringify({ error: "method_not_allowed" }), { status: 405, headers: cors(origin) });
     }
 
-    const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-    const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    // Secrets の存在確認（不足なら 500 で具体的に返す）
+    const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
+    const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    const EDGE_KMS_KEY = Deno.env.get("EDGE_KMS_KEY");
+    if (!SUPABASE_URL) return step("missing_SUPABASE_URL");
+    if (!SERVICE_ROLE) return step("missing_SERVICE_ROLE_KEY");
+    if (!EDGE_KMS_KEY) return step("missing_EDGE_KMS_KEY");
+
     const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { persistSession: false } });
 
     // 認証
     const authz = req.headers.get("authorization") ?? req.headers.get("Authorization");
-    if (!authz?.startsWith("Bearer ")) return new Response(JSON.stringify({ error: "no token" }), { status: 401, headers: cors(origin) });
+    if (!authz?.startsWith("Bearer ")) {
+      return new Response(JSON.stringify({ error: "no_token" }), { status: 401, headers: cors(origin) });
+    }
     const token = authz.slice("Bearer ".length);
-    const { data: u } = await supabase.auth.getUser(token);
+    const { data: u, error: uerr } = await supabase.auth.getUser(token);
+    if (uerr) return step("getUser_failed", { details: uerr.message });
     const userId = u?.user?.id;
-    if (!userId) return new Response(JSON.stringify({ error: "bad token" }), { status: 401, headers: cors(origin) });
+    if (!userId) return new Response(JSON.stringify({ error: "bad_token" }), { status: 401, headers: cors(origin) });
 
-    const body = (await req.json()) as Body;
+    // 入力
+    let body: Body;
+    try { body = await req.json() as Body; }
+    catch { return new Response(JSON.stringify({ error: "invalid_json" }), { status: 400, headers: cors(origin) }); }
+
     const exchange = body.exchange;
     if (!["binance","bybit","okx"].includes(exchange)) {
-      return new Response(JSON.stringify({ error: "bad exchange" }), { status: 400, headers: cors(origin) });
+      return new Response(JSON.stringify({ error: "bad_exchange" }), { status: 400, headers: cors(origin) });
     }
     const sinceMs = toMs(body.since);
     const untilMs = toMs(body.until);
-    const kinds = body.kinds?.length ? body.kinds : ["trades","deposits","withdrawals"];
+    const kinds = body.kinds?.length ? body.kinds : ["trades", "deposits", "withdrawals"];
 
-    // 鍵読み出し
-    const { data: credRow } = await supabase
+    // 資格情報の取得 & 復号
+    const { data: credRow, error: credErr } = await supabase
       .from("exchange_api_credentials")
       .select("enc_blob, external_user_id")
       .eq("user_id", userId)
       .eq("exchange", exchange)
       .maybeSingle();
+    if (credErr) return step("select_credentials_failed", { details: credErr.message });
     if (!credRow?.enc_blob) {
-      return new Response(JSON.stringify({ error: "no credentials" }), { status: 400, headers: cors(origin) });
+      return new Response(JSON.stringify({ error: "no_credentials" }), { status: 400, headers: cors(origin) });
     }
-    const secretObj = await decryptBlob(credRow.enc_blob);
+
+    let secretObj: any;
+    try { secretObj = await decryptBlob(credRow.enc_blob); }
+    catch (e) { return step("decrypt_failed", { details: String(e?.message ?? e) }); }
+
     const apiKey = secretObj.apiKey as string;
     const apiSecret = secretObj.apiSecret as string;
-    const apiPassphrase = (secretObj.apiPassphrase ?? null) as (string|null);
+    const apiPassphrase = secretObj.apiPassphrase as (string | null);
     const extId = credRow.external_user_id ?? null;
 
+    // 実行
     let inserted = 0, errors = 0, total = 0;
     async function save(list: any[]) {
       total += list.length;
       try { await saveTrades(supabase, userId, exchange, extId, list); inserted += list.length; }
-      catch { errors += list.length; }
+      catch (e) { errors += list.length; }
     }
 
     if (kinds.includes("trades")) {
       if (exchange === "binance") {
-        // symbols が null/空欄なら ALL 推定
-        let symList: string[] = [];
+        let symbols: string[] = [];
         if (body.symbols && body.symbols.trim()) {
-          symList = body.symbols.split(",").map(s => s.trim().toUpperCase()).filter(Boolean);
+          symbols = body.symbols.split(",").map(s => s.trim()).filter(Boolean);
         } else {
-          symList = await resolveBinanceSymbolsAll(apiKey, apiSecret);
+          try { symbols = await binanceAutoSymbols(); }
+          catch (e) { return step("binance_auto_symbols_failed", { details: String(e?.message ?? e) }); }
         }
-        if (symList.length) {
-          const list = await fetchBinanceTrades(apiKey, apiSecret, symList, sinceMs, untilMs);
-          await save(list);
-        }
+        try { await save(await fetchBinanceTrades(apiKey, apiSecret, symbols, sinceMs, untilMs)); }
+        catch (e) { return step("binance_trades_failed", { details: String(e?.message ?? e) }); }
       } else if (exchange === "bybit") {
-        const list = await fetchBybitTrades(apiKey, apiSecret, sinceMs, untilMs);
-        await save(list);
+        try { await save(await fetchBybitTrades(apiKey, apiSecret, sinceMs, untilMs)); }
+        catch (e) { return step("bybit_trades_failed", { details: String(e?.message ?? e) }); }
       } else if (exchange === "okx") {
-        if (!apiPassphrase) throw new Error("okx: api_passphrase missing");
-        const list = await fetchOkxTrades(apiKey, apiSecret, apiPassphrase, sinceMs, untilMs);
-        await save(list);
+        if (!apiPassphrase) return step("okx_passphrase_missing");
+        try { await save(await fetchOkxTrades(apiKey, apiSecret, apiPassphrase, sinceMs, untilMs)); }
+        catch (e) { return step("okx_trades_failed", { details: String(e?.message ?? e) }); }
       }
     }
+
     if (kinds.includes("deposits")) {
-      if (exchange === "binance")       await save(await fetchBinanceDeposits(apiKey, apiSecret, sinceMs, untilMs));
-      else if (exchange === "bybit")    await save(await fetchBybitDeposits(apiKey, apiSecret, sinceMs, untilMs));
-      else if (exchange === "okx") {
-        if (!apiPassphrase) throw new Error("okx: api_passphrase missing");
-        await save(await fetchOkxDeposits(apiKey, apiSecret, apiPassphrase, sinceMs));
+      try {
+        if (exchange === "binance") await save(await fetchBinanceDeposits(apiKey, apiSecret, sinceMs, untilMs));
+        else if (exchange === "bybit") await save(await fetchBybitDeposits(apiKey, apiSecret, sinceMs, untilMs));
+        else {
+          if (!apiPassphrase) return step("okx_passphrase_missing");
+          await save(await fetchOkxDeposits(apiKey, apiSecret, apiPassphrase, sinceMs));
+        }
+      } catch (e) {
+        return step(`${exchange}_deposits_failed`, { details: String(e?.message ?? e) });
       }
     }
+
     if (kinds.includes("withdrawals")) {
-      if (exchange === "binance")       await save(await fetchBinanceWithdraws(apiKey, apiSecret, sinceMs, untilMs));
-      else if (exchange === "bybit")    await save(await fetchBybitWithdraws(apiKey, apiSecret, sinceMs, untilMs));
-      else if (exchange === "okx") {
-        if (!apiPassphrase) throw new Error("okx: api_passphrase missing");
-        await save(await fetchOkxWithdraws(apiKey, apiSecret, apiPassphrase, sinceMs));
+      try {
+        if (exchange === "binance") await save(await fetchBinanceWithdraws(apiKey, apiSecret, sinceMs, untilMs));
+        else if (exchange === "bybit") await save(await fetchBybitWithdraws(apiKey, apiSecret, sinceMs, untilMs));
+        else {
+          if (!apiPassphrase) return step("okx_passphrase_missing");
+          await save(await fetchOkxWithdraws(apiKey, apiSecret, apiPassphrase, sinceMs));
+        }
+      } catch (e) {
+        return step(`${exchange}_withdrawals_failed`, { details: String(e?.message ?? e) });
       }
     }
 
     return new Response(JSON.stringify({ ok: true, total, inserted, errors }), { status: 200, headers: cors(origin) });
   } catch (e) {
-    return new Response(JSON.stringify({ error: String(e?.message ?? e) }), { status: 500, headers: cors(origin) });
+    // 想定外例外
+    return new Response(JSON.stringify({ error: "panic", details: String(e?.message ?? e) }), {
+      status: 500, headers: cors(null),
+    });
   }
 });
