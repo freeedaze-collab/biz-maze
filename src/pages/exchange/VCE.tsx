@@ -15,18 +15,6 @@ type ExchangeConn = {
   status?: string | null;           // active | linked_id | linked_keys など
 };
 
-// ---- Functions エラー本文を確実に表示するためのユーティリティ ----
-async function readFnErrorDetail(e: any): Promise<string> {
-  try {
-    const res = e?.context?.response;
-    if (res && typeof res.text === "function") {
-      const t = await res.text();
-      return t || e?.message || String(e);
-    }
-  } catch {}
-  return e?.message || String(e);
-}
-
 export default function VCE() {
   const { user } = useAuth();
   const [rows, setRows] = useState<ExchangeConn[]>([]);
@@ -34,20 +22,18 @@ export default function VCE() {
 
   // 入力欄（1. Link & Save Keys）
   const [exch, setExch] = useState<Exchange>("binance");
-  const [accountId, setAccountId] = useState("");  // UID / UserID など（任意だが推奨）
+  const [accountId, setAccountId] = useState("");  // UID / UserID（任意だが推奨）
   const [apiKey, setApiKey] = useState("");
   const [apiSecret, setApiSecret] = useState("");
   const [passphrase, setPassphrase] = useState(""); // OKX のみ必須
 
   // 入力欄（2. Sync）
   const [syncExch, setSyncExch] = useState<Exchange>("binance");
-  const [since, setSince] = useState("");  // ISO 文字列 or unix ms
-  const [until, setUntil] = useState("");  // ISO 文字列 or unix ms
-  const [symbols, setSymbols] = useState(""); // Binance は必須（"BTCUSDT,ETHUSDT"）ただし空欄はALL(サーバ推定)
+  const [since, setSince] = useState("");   // ISO 文字列 or unix ms
+  const [until, setUntil] = useState("");   // ISO 文字列 or unix ms
+  const [symbols, setSymbols] = useState(""); // 例: "BTCUSDT,ETHUSDT"（省略可：サーバで自動推定）
 
   const [busy, setBusy] = useState(false);
-
-  const toast = (msg: string) => alert(msg);
 
   const load = async () => {
     if (!user?.id) return;
@@ -71,6 +57,8 @@ export default function VCE() {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
+
+  const toast = (msg: string) => alert(msg);
 
   // 1-a) ID のみ保存（外部 UID ／UserID）
   const onSaveId = async () => {
@@ -101,12 +89,7 @@ export default function VCE() {
     if (exch === "okx" && !passphrase) { toast("OKX は Passphrase が必須です。"); return; }
 
     setBusy(true);
-    const { data: sess } = await supabase.auth.getSession();
-    const headers =
-      sess?.session?.access_token ? { Authorization: `Bearer ${sess.session.access_token}` } : {};
-
     const { error, data } = await supabase.functions.invoke("exchange-save-keys", {
-      headers,
       body: {
         exchange: exch,
         external_user_id: accountId || null,
@@ -118,11 +101,18 @@ export default function VCE() {
     setBusy(false);
 
     if (error) {
-      console.error(error);
-      const detail = await readFnErrorDetail(error);
-      toast("Save Keys failed: " + detail);
+      // エッジ関数の本文も拾って表示
+      let details = "";
+      const anyErr = error as any;
+      const resp = anyErr?.context?.response;
+      if (resp && typeof resp.text === "function") {
+        try { details = await resp.text(); } catch {}
+      }
+      console.error("[save-keys] error:", error, details);
+      toast(`Save Keys failed: ${error.message}${details ? `\n\n${details}` : ""}`);
       return;
     }
+
     console.log("[save-keys] result:", data);
     toast("API Keys を保存しました。（サーバ側で暗号化）");
     setApiKey(""); setApiSecret(""); setPassphrase("");
@@ -130,32 +120,40 @@ export default function VCE() {
   };
 
   // 2) 同期（Edge Function：exchange-sync）
+  // ★ここが差し替え箇所：非2xx時にレスポンス本文（step/details）を表示して原因特定を容易にする
   const onSync = async () => {
     if (!user?.id) { toast("Please login again."); return; }
-    setBusy(true);
-    const { data: sess } = await supabase.auth.getSession();
-    const headers =
-      sess?.session?.access_token ? { Authorization: `Bearer ${sess.session.access_token}` } : {};
 
-    const { error, data } = await supabase.functions.invoke("exchange-sync", {
-      headers,
-      body: {
-        exchange: syncExch,
-        since: since || null,
-        until: until || null,
-        // Binance: 空欄なら ALL（サーバ側で自動推定）
-        symbols: symbols.trim() ? symbols : null,
-      },
-    });
-    setBusy(false);
-    if (error) {
-      console.error(error);
-      const detail = await readFnErrorDetail(error);
-      toast("Sync failed: " + detail);
-      return;
+    setBusy(true);
+    try {
+      const { error, data } = await supabase.functions.invoke("exchange-sync", {
+        body: {
+          exchange: syncExch,
+          since: since || null,
+          until: until || null,
+          // Binance も空でOK（サーバ側が USDT 建てペアを自動推定）
+          symbols: symbols || null,
+        },
+      });
+
+      if (error) {
+        // Edge の Response 本文をできるだけ吸い上げる
+        let details = "";
+        const anyErr = error as any;
+        const resp = anyErr?.context?.response;
+        if (resp && typeof resp.text === "function") {
+          try { details = await resp.text(); } catch {}
+        }
+        console.error("[sync] error:", error, details);
+        toast(`Sync failed: ${error.message}${details ? `\n\n${details}` : ""}`);
+        return;
+        }
+
+      console.log("[sync] result:", data);
+      toast("同期キック完了。完了まで数十秒〜数分かかる場合があります。");
+    } finally {
+      setBusy(false);
     }
-    console.log("[sync] result:", data);
-    toast("同期キック完了。完了まで数十秒〜数分かかる場合があります。");
   };
 
   return (
@@ -176,7 +174,7 @@ export default function VCE() {
             <li><b>Create API</b> → 「System generated」等を選び、任意のラベルを付ける。</li>
             <li>Permissions で <b>Enable Reading（読み取りのみ）</b> を有効化（<u>取引/出金は無効</u>）。</li>
             <li>（任意）IP 制限を有効化する場合は、後で Edge の送信元 IP を追加してください。</li>
-            <li>作成後に表示される <b>API Key / Secret Key</b> を控える（Secret は一度しか表示されません）。</li>
+            <li>作成後の <b>API Key / Secret Key</b> を控える（Secret は一度しか表示されません）。</li>
             <li>UID（プロフィールの <b>UID</b>）も控えておくと、外部IDとして紐付けできます。</li>
           </ol>
         </details>
@@ -208,7 +206,7 @@ export default function VCE() {
           <summary className="cursor-pointer font-medium">Sync の指定方法</summary>
           <ul className="list-disc ml-5 mt-2 space-y-1 text-sm">
             <li><b>since / until</b> は ISO 文字列（例: <code>2025-01-01T00:00:00Z</code>）か unix ミリ秒。</li>
-            <li><b>Binance は symbols が必須</b>（例: <code>BTCUSDT,ETHUSDT</code>）。未入力なら ALL（サーバで推定）。</li>
+            <li><b>Binance は symbols 省略でもOK</b>（サーバ側で USDT 建て現物ペアを自動推定）。</li>
             <li>同期では、トレード・入金・出金・一部残高の取得を行います（段階的拡張）。</li>
           </ul>
         </details>
@@ -313,9 +311,11 @@ export default function VCE() {
           />
           <input
             className="border rounded px-2 py-1 min-w-[260px]"
-            placeholder={syncExch === "binance"
-              ? "Binance symbols（例: BTCUSDT,ETHUSDT）空欄=ALL"
-              : "symbols（任意）"}
+            placeholder={
+              syncExch === "binance"
+                ? "Binance symbols（省略可：例 BTCUSDT,ETHUSDT）"
+                : "symbols（任意）"
+            }
             value={symbols}
             onChange={(e) => setSymbols(e.target.value)}
           />
@@ -329,7 +329,7 @@ export default function VCE() {
         </div>
 
         <ul className="text-xs text-muted-foreground list-disc ml-5">
-          <li>Binance の約定は symbol を指定しない場合、サーバ側が ALL を推定します。</li>
+          <li>Binance も <b>symbols 省略可</b>（サーバ側で USDT 建て現物ペアを自動推定）。</li>
           <li>入出金も同時に同期します。</li>
         </ul>
       </div>
@@ -355,7 +355,10 @@ export default function VCE() {
                   </div>
                   <button
                     className="px-3 py-1.5 rounded border text-xs"
-                    onClick={() => { setSyncExch(r.exchange); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+                    onClick={() => {
+                      setSyncExch(r.exchange);
+                      window.scrollTo({ top: 0, behavior: "smooth" });
+                    }}
                     title="Sync セクションに移動してこの取引所を選択"
                   >
                     Prepare Sync
