@@ -1,68 +1,80 @@
 // src/pages/auth/Login.tsx
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/useAuth";
 
 export default function Login() {
   const nav = useNavigate();
-  const [email, setEmail] = useState("");
-  const [pw, setPw] = useState("");
-  const [err, setErr] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const { user } = useAuth();
 
-  const onLogin = async (e: React.FormEvent) => {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [sending, setSending] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setSending(true);
     setErr(null);
-    setLoading(true);
     try {
       const { error } = await supabase.auth.signInWithPassword({
         email,
-        password: pw,
+        password,
       });
       if (error) throw error;
-      nav("/dashboard");
+
+      // ✅ 成功時のみ dashboard へ
+      nav("/dashboard", { replace: true });
     } catch (e: any) {
-      setErr(e?.message ?? String(e));
+      setErr(e.message ?? String(e));
     } finally {
-      setLoading(false);
+      setSending(false);
     }
   };
 
   return (
-    <div className="max-w-md mx-auto p-6 space-y-6">
-      <h1 className="text-3xl font-extrabold">Sign in</h1>
-      <form onSubmit={onLogin} className="space-y-3">
+    <div className="max-w-sm mx-auto p-6 space-y-6">
+      <h1 className="text-2xl font-bold">Sign in</h1>
+
+      <form onSubmit={onSubmit} className="space-y-4">
         <input
-          className="w-full border rounded px-3 py-2"
           type="email"
-          placeholder="you@example.com"
+          placeholder="Email address"
+          className="w-full border rounded px-3 py-2"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           required
+          autoComplete="email"
         />
         <input
-          className="w-full border rounded px-3 py-2"
           type="password"
           placeholder="Password"
-          value={pw}
-          onChange={(e) => setPw(e.target.value)}
+          className="w-full border rounded px-3 py-2"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
           required
+          autoComplete="current-password"
         />
+
         <button
-          className="w-full rounded bg-blue-600 text-white py-2 disabled:opacity-50"
-          disabled={loading}
+          type="submit"
+          className="w-full bg-blue-600 text-white rounded py-2 disabled:opacity-60"
+          disabled={sending}
         >
-          {loading ? "Signing in..." : "Sign in"}
+          {sending ? "Signing in..." : "Sign in"}
         </button>
       </form>
-      {err && <div className="text-red-600 text-sm">{err}</div>}
 
-      <div className="text-sm flex gap-4">
-        <Link to="/signup" className="underline">
-          Create account
-        </Link>
-        <Link to="/" className="underline">
+      {err && <div className="text-red-600 text-sm whitespace-pre-wrap">{err}</div>}
+
+      <div className="flex items-center justify-between text-sm">
+        <Link to="/" className="underline text-muted-foreground">
           Back to home
+        </Link>
+        {/* ✅ Create account は /signup */}
+        <Link to="/signup" className="text-blue-600 underline">
+          Create account
         </Link>
       </div>
     </div>

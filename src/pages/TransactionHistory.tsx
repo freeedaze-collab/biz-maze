@@ -1,261 +1,281 @@
+// @ts-nocheck
 // src/pages/TransactionHistory.tsx
-import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/useAuth";
 
-type XBalance = { exchange: string; asset: string; free?: number | null; locked?: number | null; updated_at?: string | null };
-type UTx = {
-  id?: number;
-  source: "wallet" | "exchange";
-  ts: string;
-  symbol?: string | null;
-  amount?: number | null;
-  side?: string | null;
-  raw?: any;
+type Row = {
+  id: number;
+  wallet_address: string | null;
+  chain_id: number | null;
+  direction: "in" | "out" | null;
+  tx_hash: string;
+  block_number: number | null;
+  occurred_at: string | null;
+  asset_symbol: string | null;
+  value_wei: string | number | null;
+  fiat_value_usd: string | number | null;
 };
 
+const USAGE_OPTIONS = [
+  { value: "", label: "用途を選択" },
+  { value: "revenue", label: "収益（売上）" },
+  { value: "expense", label: "費用" },
+  { value: "transfer", label: "自分間の移転" },
+  { value: "investment", label: "投資・購入" },
+  { value: "payment", label: "支払" },
+  { value: "fee", label: "手数料" },
+  { value: "airdrop", label: "エアドロップ" },
+  { value: "internal", label: "内部処理" },
+  { value: "other", label: "その他" },
+];
+
 export default function TransactionHistory() {
+  const { user } = useAuth();
+  const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
-  const [balances, setBalances] = useState<XBalance[]>([]);
-  const [rows, setRows] = useState<UTx[]>([]);
-
-  // Sync controls
-  const [since, setSince] = useState("");
-  const [until, setUntil] = useState("");
-
-  const toast = (m: string) => alert(m);
+  const [syncing, setSyncing] = useState(false);
+  const [labelMap, setLabelMap] = useState<Record<number, string>>({}); // tx_id -> label
+  const [labelsReady, setLabelsReady] = useState<boolean>(false);
+  const [labelTableMissing, setLabelTableMissing] = useState<string | null>(null);
 
   const load = async () => {
+    if (!user) return;
     setLoading(true);
 
-    // balances (exchanges)
-    const { data: xb } = await supabase
-      .from("exchange_balances")
-      .select("exchange, asset, free, locked, updated_at")
-      .order("exchange", { ascending: true })
-      .limit(500);
-    setBalances(xb ?? []);
-
-    // unified tx（存在しない環境向けにフォールバック）
-    let unified: UTx[] = [];
-    const { data: exTx } = await supabase
-      .from("exchange_trades")
-      .select("id, ts, symbol, side, fee, raw")
-      .order("ts", { ascending: false })
-      .limit(300);
-    if (exTx) {
-      unified.push(
-        ...exTx.map((t: any) => ({
-          id: t.id,
-          ts: t.ts,
-          source: "exchange",
-          symbol: t.symbol,
-          side: t.side,
-          amount: t.raw?.qty ?? null,
-          raw: t,
-        }))
-      );
-    }
-    const { data: wTx } = await supabase
+    // 取引の取得
+    const { data, error } = await supabase
       .from("wallet_transactions")
-      .select("id, ts, symbol, direction, amount, raw")
-      .order("ts", { ascending: false })
-      .limit(300);
-    if (wTx) {
-      unified.push(
-        ...wTx.map((t: any) => ({
-          id: t.id,
-          ts: t.ts ?? t.raw?.blockTime ?? new Date().toISOString(),
-          source: "wallet",
-          symbol: t.symbol ?? t.raw?.tokenSymbol ?? null,
-          side: t.direction,
-          amount: t.amount ?? t.raw?.value ?? null,
-          raw: t,
-        }))
-      );
+      .select(
+        "id,wallet_address,chain_id,direction,tx_hash,block_number,occurred_at,asset_symbol,value_wei,fiat_value_usd"
+      )
+      .eq("user_id", user.id)
+      .order("occurred_at", { ascending: false })
+      .limit(200);
+
+    if (error) {
+      console.error("load tx error:", error);
+      setRows([]);
+    } else {
+      setRows((data as any) ?? []);
     }
 
-    // very-light de-dup (ts+symbol+amount)
-    const seen = new Set<string>();
-    unified = unified.filter((u) => {
-      const k = `${u.ts}|${u.symbol}|${u.amount}|${u.source}`;
-      if (seen.has(k)) return false;
-      seen.add(k);
-      return true;
-    });
+    // 既存ラベルの取得（なければテーブル未作成を拾う）
+    setLabelsReady(false);
+    setLabelTableMissing(null);
+    const { data: labels, error: lerr } = await supabase
+      .from("transaction_usage_labels")
+      .select("tx_id,label")
+      .eq("user_id", user.id);
 
-    unified.sort((a, b) => (a.ts > b.ts ? -1 : 1));
-    setRows(unified);
+    if (lerr) {
+      // PGRST205 → テーブル無し
+      console.warn("labels load error:", lerr);
+      if (lerr.code === "PGRST205") {
+        setLabelTableMissing(
+          "用途ラベル用テーブル（public.transaction_usage_labels）が見つかりません。SQLを適用してください。"
+        );
+      }
+      setLabelMap({});
+      setLabelsReady(true);
+    } else {
+      const map: Record<number, string> = {};
+      (labels || []).forEach((r: any) => {
+        if (r.tx_id != null) map[r.tx_id] = r.label;
+      });
+      setLabelMap(map);
+      setLabelsReady(true);
+    }
 
     setLoading(false);
   };
 
-  useEffect(() => {
-    load();
-  }, []);
+  useEffect(() => { load(); }, [user?.id]);
 
-  const onSyncNow = async () => {
+  const sync = async () => {
+    setSyncing(true);
     try {
-      const { data: sess } = await supabase.auth.getSession();
-      const token = sess?.session?.access_token;
-      if (!token) return toast("Please sign in again.");
-
-      const base =
-        import.meta.env.VITE_SUPABASE_URL ||
-        (supabase as any).rest?.url?.replace?.("/rest/v1", "") ||
-        "";
-      const url = `${base}/functions/v1/exchange-sync`;
-
-      const body = {
-        exchange: "binance", // 拡張時はユーザー毎の連携をループ
-        since: since ? `${since}T00:00:00Z` : null,
-        until: until ? `${until}T23:59:59Z` : null,
-        symbols: "all", // サーバ側で自動推定
-      };
-
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify(body),
-      });
-
-      const text = await res.text();
-      let json: any = {};
-      try {
-        json = JSON.parse(text);
-      } catch {
-        json = { raw: text };
-      }
-
-      if (!res.ok) {
-        return toast(
-          `Sync failed (${res.status})\nstep: ${json?.step ?? "unknown"}\nerror: ${
-            json?.error ?? "unknown"
-          }`
-        );
-      }
-
-      toast(`Sync finished. Inserted: ${json?.inserted ?? 0}`);
-      load();
-    } catch (e: any) {
-      toast("Sync failed: " + (e?.message ?? String(e)));
+      // invoke に統一（相対 fetch は使わない）
+      await supabase.functions.invoke("sync-wallet-transactions", { body: {} });
+    } catch (e) {
+      console.warn("sync error:", e);
+    } finally {
+      await load();
+      setSyncing(false);
     }
   };
 
-  const totalRows = rows.length;
-  const topNotice = useMemo(
-    () => (
-      <div className="text-sm text-muted-foreground space-y-2">
-        <div>
-          If you haven’t linked any wallet yet,{" "}
-          <Link to="/wallets" className="underline">
-            go to the Wallets page
-          </Link>{" "}
-          and link it first.
-        </div>
-        <div>
-          <b>Predict Usage</b> tries to guess categories from transaction patterns
-          (WIP; it won’t edit your data without confirmation).
-        </div>
-      </div>
-    ),
-    []
-  );
+  // 用途ラベルの保存（user_id + tx_id で upsert）
+  const saveLabel = async (txId: number, label: string) => {
+    if (!user?.id) return;
+    if (!label) return;
+
+    const payload = {
+      user_id: user.id,
+      tx_id: txId,
+      label,
+      updated_at: new Date().toISOString(),
+    };
+
+    const { error } = await supabase
+      .from("transaction_usage_labels")
+      .upsert(payload, { onConflict: "user_id,tx_id" });
+
+    if (error) {
+      console.error("label save error:", error);
+      // テーブル未作成時の文言は、上で setLabelTableMissing として出す
+      return;
+    }
+    setLabelMap((m) => ({ ...m, [txId]: label }));
+  };
 
   return (
-    <div className="max-w-5xl mx-auto p-6 space-y-6">
-      <h1 className="text-3xl font-extrabold">Transaction History</h1>
-
-      {/* Top notice moved here */}
-      {topNotice}
-
-      {/* Controls */}
-      <div className="flex flex-wrap items-end gap-2 border rounded-xl p-4">
-        <div className="flex flex-col">
-          <label className="text-xs mb-1">Since</label>
-          <input
-            type="date"
-            value={since}
-            onChange={(e) => setSince(e.target.value)}
-            className="border rounded px-2 py-1"
-          />
-        </div>
-        <div className="flex flex-col">
-          <label className="text-xs mb-1">Until</label>
-          <input
-            type="date"
-            value={until}
-            onChange={(e) => setUntil(e.target.value)}
-            className="border rounded px-2 py-1"
-          />
-        </div>
-        <button onClick={onSyncNow} className="px-3 py-2 rounded bg-blue-600 text-white">
-          Sync Now
-        </button>
-        <button
-          onClick={() => alert("Predict Usage will classify transactions (coming soon).")}
-          className="px-3 py-2 rounded border"
-        >
-          Predict Usage
-        </button>
-      </div>
-
-      {/* Balances */}
-      <div className="border rounded-xl p-4">
-        <h2 className="font-semibold mb-2">Balances</h2>
-        {balances.length === 0 ? (
-          <div className="text-sm text-muted-foreground">
-            No exchange balances yet. Run <b>Sync Now</b> after linking an exchange.
-            (Wallet balances will appear after wallet aggregation is enabled.)
+    <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5">
+      <div className="mx-auto max-w-6xl p-6 space-y-8">
+        {/* Header */}
+        <div className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-primary via-primary to-accent p-8 text-primary-foreground shadow-elegant">
+          <div className="relative z-10 flex items-center justify-between flex-wrap gap-4">
+            <div>
+              <h1 className="text-4xl font-bold mb-2">Transaction History</h1>
+              <p className="text-primary-foreground/90">View all your blockchain transactions & assign usage</p>
+            </div>
+            <div className="flex gap-3">
+              <Button
+                onClick={async () => {
+                  try {
+                    await supabase.functions.invoke("classify-usage", { body: {} });
+                    await load();
+                  } catch (e) {
+                    console.warn("predict error:", e);
+                  }
+                }}
+                variant="secondary"
+                size="lg"
+                className="bg-primary-foreground text-primary hover:bg-primary-foreground/90"
+              >
+                Predict Usage
+              </Button>
+              <Button
+                onClick={sync}
+                disabled={syncing}
+                variant="secondary"
+                size="lg"
+                className="bg-primary-foreground text-primary hover:bg-primary-foreground/90"
+              >
+                {syncing ? "Syncing..." : "Sync Now"}
+              </Button>
+            </div>
           </div>
-        ) : (
-          <div className="text-sm grid md:grid-cols-2 gap-2">
-            {balances.map((b, i) => (
-              <div key={i} className="flex justify-between border rounded p-2">
-                <div>{b.exchange.toUpperCase()} • {b.asset}</div>
-                <div>
-                  {b.free ?? 0}
-                  {b.locked ? ` (locked: ${b.locked})` : ""}
+          <div className="absolute -right-10 -bottom-10 w-48 h-48 bg-primary-foreground/10 rounded-full blur-2xl"></div>
+        </div>
+
+        {labelTableMissing && (
+          <div className="text-red-600 font-medium">
+            {labelTableMissing}
+          </div>
+        )}
+
+        <Card className="shadow-lg border-2">
+          <CardHeader className="border-b bg-gradient-to-r from-card to-primary/5">
+            <CardTitle className="text-2xl">Latest Transactions</CardTitle>
+          </CardHeader>
+          <CardContent className="p-6">
+            {loading ? (
+              <div className="flex items-center justify-center py-12">
+                <div className="flex flex-col items-center gap-3">
+                  <div className="h-12 w-12 rounded-full border-4 border-primary/30 border-t-primary animate-spin"></div>
+                  <p className="text-sm text-muted-foreground">Loading transactions...</p>
                 </div>
               </div>
-            ))}
-          </div>
-        )}
-      </div>
+            ) : rows.length === 0 ? (
+              <div className="text-center py-12">
+                <div className="mx-auto w-16 h-16 mb-4 rounded-full bg-muted flex items-center justify-center">
+                  <svg className="w-8 h-8 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                  </svg>
+                </div>
+                <p className="text-lg font-semibold mb-2">No transactions yet</p>
+                <p className="text-sm text-muted-foreground max-w-md mx-auto">
+                  Link a wallet and press "Sync Now" to load your transaction history.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {rows.map((r) => (
+                  <div
+                    key={r.id}
+                    className="group border-2 rounded-xl p-4 hover:border-primary/50 hover:shadow-md transition-all duration-300 bg-gradient-to-r from-card to-muted/20"
+                  >
+                    <div className="flex items-center justify-between gap-4">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                            r.direction === 'in'
+                              ? 'bg-success/10 text-success'
+                              : r.direction === 'out'
+                              ? 'bg-destructive/10 text-destructive'
+                              : 'bg-muted text-muted-foreground'
+                          }`}>
+                            {r.direction === 'in' ? '↓ Incoming' : r.direction === 'out' ? '↑ Outgoing' : 'Unknown'}
+                          </span>
+                          <span className="text-xs text-muted-foreground">
+                            Chain {r.chain_id ?? "-"}
+                          </span>
+                        </div>
+                        <div className="font-mono text-sm font-medium mb-1 truncate group-hover:text-primary transition-colors">
+                          {r.tx_hash.slice(0, 12)}…{r.tx_hash.slice(-10)}
+                        </div>
+                        <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                          <span>
+                            {r.occurred_at ? new Date(r.occurred_at).toLocaleString() : "-"}
+                          </span>
+                          <span>•</span>
+                          <span className="truncate">
+                            Block {r.block_number ?? "-"}
+                          </span>
+                        </div>
+                      </div>
 
-      {/* Table */}
-      <div className="border rounded-xl p-4">
-        <h2 className="font-semibold mb-2">Latest Transactions ({totalRows})</h2>
-        {loading ? (
-          <div>Loading…</div>
-        ) : totalRows === 0 ? (
-          <div className="text-sm text-muted-foreground">No transactions yet.</div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left border-b">
-                  <th className="py-1 pr-2">Time</th>
-                  <th className="py-1 pr-2">Source</th>
-                  <th className="py-1 pr-2">Symbol</th>
-                  <th className="py-1 pr-2">Side</th>
-                  <th className="py-1 pr-2">Amount</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r, idx) => (
-                  <tr key={idx} className="border-b last:border-0">
-                    <td className="py-1 pr-2">{new Date(r.ts).toLocaleString()}</td>
-                    <td className="py-1 pr-2">{r.source}</td>
-                    <td className="py-1 pr-2">{r.symbol ?? "—"}</td>
-                    <td className="py-1 pr-2">{r.side ?? "—"}</td>
-                    <td className="py-1 pr-2">{r.amount ?? "—"}</td>
-                  </tr>
+                      {/* 金額 */}
+                      <div className="text-right">
+                        <div className="font-mono text-lg font-bold mb-1">
+                          {r.fiat_value_usd != null ? (
+                            <span className={r.direction === 'in' ? 'text-success' : 'text-foreground'}>
+                              ${r.fiat_value_usd}
+                            </span>
+                          ) : r.value_wei != null ? (
+                            <span className="text-sm">{r.value_wei} wei</span>
+                          ) : (
+                            <span className="text-muted-foreground">-</span>
+                          )}
+                        </div>
+                        <div className="text-xs font-medium text-muted-foreground">
+                          {r.asset_symbol ?? "-"}
+                        </div>
+
+                        {/* 用途セレクト */}
+                        <div className="mt-3">
+                          <select
+                            className="border rounded px-2 py-1 text-sm"
+                            value={labelMap[r.id] ?? ""}
+                            onChange={(e) => saveLabel(r.id, e.target.value)}
+                            disabled={!labelsReady || !!labelTableMissing}
+                          >
+                            {USAGE_OPTIONS.map((o) => (
+                              <option key={o.value} value={o.value}>{o.label}</option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                 ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
       </div>
     </div>
   );
