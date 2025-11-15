@@ -1,219 +1,102 @@
-import React, { useEffect, useMemo, useState } from 'react'
-import { supabase } from '@/integrations/supabase/client'
-import { useUser } from '@/hooks/useUser'
+// src/pages/Profile.tsx
+import { useEffect, useState } from "react";
+import { supabase } from "@/integrations/supabase/client";
+
+type Profile = {
+  id?: string;
+  country?: string | null;
+  entity_type?: "individual" | "company" | null;
+  company_type?: string | null;
+  company_state?: string | null;
+};
 
 export default function Profile() {
-  const { user, loading: userLoading } = useUser()
-  const [loading, setLoading] = useState(true)
+  const [p, setP] = useState<Profile>({});
+  const [saving, setSaving] = useState(false);
+  const toast = (m: string) => alert(m);
 
-  // UI state
-  const [country, setCountry] = useState('')               // 'japan' | 'usa' | ''
-  const [userType, setUserType] = useState('')             // 'individual' | 'corporate' | ''
-  const [incomeBracket, setIncomeBracket] = useState('')   // 'under800' | 'over800' | ''
-  const [entityType, setEntityType] = useState('')         // 'C-Corp' | 'S-Corp' | 'LLC' | 'Partnership' | 'PC/PA' | 'PBC'
-  const [stateOfIncorp, setStateOfIncorp] = useState('')   // 50州＋DC
-  const [message, setMessage] = useState<string>('')
-
-  const showIncomeBracket = useMemo(
-    () => country === 'japan' && userType === 'individual',
-    [country, userType]
-  )
-  const showUsCorpExtras = useMemo(
-    () => country === 'usa' && userType === 'corporate',
-    [country, userType]
-  )
-
-  // 初回ロード: user_id 基準で取得（RLSにより自分の行のみ返る）
+  const load = async () => {
+    const { data } = await supabase.from("profiles").select("*").maybeSingle();
+    if (data) setP(data as Profile);
+  };
   useEffect(() => {
-    if (userLoading) return
-    if (!user?.id) {
-      setMessage('ログイン情報が取得できませんでした')
-      setLoading(false)
-      return
+    load();
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const { error } = await supabase.from("profiles").upsert(p, { onConflict: "id" });
+      if (error) throw error;
+      toast("Saved.");
+    } catch (e: any) {
+      toast(e?.message ?? String(e));
+    } finally {
+      setSaving(false);
     }
-
-    const load = async () => {
-      setLoading(true)
-      setMessage('')
-
-      const { data, error } = await supabase
-        .from('profiles')
-        .select(`
-          country,
-          account_type,
-          income_bracket,
-          entity_type,
-          us_entity_type,
-          state_of_incorporation,
-          us_state_of_incorporation
-        `)
-        .eq('user_id', user.id)
-        .maybeSingle()
-
-      if (error) {
-        console.warn('[Profile] load error:', error.message)
-      } else if (data) {
-        setCountry(data.country ?? '')
-        setUserType(data.account_type ?? '')
-        setIncomeBracket(data.income_bracket ?? '')
-        // 互換: us_* があれば優先、無ければ非us_* を採用
-        setEntityType(data.us_entity_type ?? data.entity_type ?? '')
-        setStateOfIncorp(data.us_state_of_incorporation ?? data.state_of_incorporation ?? '')
-      }
-
-      setLoading(false)
-    }
-
-    load()
-  }, [userLoading, user?.id])
-
-  // 保存
-  const handleSave = async () => {
-    const { data: { user: freshUser }, error: uErr } = await supabase.auth.getUser()
-    if (uErr || !freshUser?.id) {
-      setMessage('ユーザーが取得できません。ログインし直してください。')
-      return
-    }
-
-    setLoading(true)
-    setMessage('')
-
-    const normalized = {
-      country: country || null,
-      account_type: userType || null,
-      income_bracket: showIncomeBracket ? (incomeBracket || null) : null,
-
-      // 互換のため、両系統に同値を書き込む
-      entity_type: showUsCorpExtras ? (entityType || null) : null,
-      us_entity_type: showUsCorpExtras ? (entityType || null) : null,
-
-      state_of_incorporation: showUsCorpExtras ? (stateOfIncorp || null) : null,
-      us_state_of_incorporation: showUsCorpExtras ? (stateOfIncorp || null) : null,
-
-      updated_at: new Date().toISOString(),
-    }
-
-    const payload = {
-      id: freshUser.id,
-      user_id: freshUser.id,
-      ...normalized,
-    }
-
-    const { error } = await supabase.from('profiles').upsert(payload, {
-      onConflict: 'user_id',   // ← user_id を一意キーとして扱う
-    })
-
-    if (error) {
-      console.error('[Profile] save error:', error)
-      setMessage('保存に失敗しました。設定や権限をご確認ください。')
-    } else {
-      setMessage('保存しました。')
-    }
-    setLoading(false)
-  }
-
-  if (userLoading || loading) {
-    return <div className="p-4">読み込み中...</div>
-  }
-
-  if (!user?.id) {
-    return <div className="p-4 text-red-500">ユーザー情報が取得できません</div>
-  }
+  };
 
   return (
-    <div className="p-6 max-w-xl mx-auto">
-      <h1 className="text-2xl font-bold mb-4">プロフィール編集</h1>
+    <div className="max-w-xl mx-auto p-6 space-y-4">
+      <h1 className="text-3xl font-extrabold">Edit Profile</h1>
 
-      <label className="block mb-2">国:</label>
-      <select
-        className="w-full border p-2 mb-4"
-        value={country}
-        onChange={(e) => setCountry(e.target.value)}
-      >
-        <option value="">選択してください</option>
-        <option value="japan">日本</option>
-        <option value="usa">アメリカ</option>
-      </select>
+      <div className="flex flex-col gap-3">
+        <label className="text-sm">Country</label>
+        <select
+          className="border rounded px-3 py-2"
+          value={p.country ?? ""}
+          onChange={(e) => setP((s) => ({ ...s, country: e.target.value }))}
+        >
+          <option value="">—</option>
+          <option value="US">United States</option>
+          <option value="JP">Japan</option>
+          <option value="PH">Philippines</option>
+        </select>
 
-      <label className="block mb-2">ユーザー種別:</label>
-      <select
-        className="w-full border p-2 mb-4"
-        value={userType}
-        onChange={(e) => setUserType(e.target.value)}
-      >
-        <option value="">選択してください</option>
-        <option value="individual">個人</option>
-        <option value="corporate">法人</option>
-      </select>
+        <label className="text-sm">User Type</label>
+        <select
+          className="border rounded px-3 py-2"
+          value={p.entity_type ?? ""}
+          onChange={(e) =>
+            setP((s) => ({ ...s, entity_type: e.target.value as Profile["entity_type"] }))
+          }
+        >
+          <option value="">—</option>
+          <option value="individual">Individual</option>
+          <option value="company">Company</option>
+        </select>
 
-      {/* 日本×個人 → 課税所得区分 */}
-      {showIncomeBracket && (
-        <>
-          <label className="block mb-2">課税所得:</label>
-          <select
-            className="w-full border p-2 mb-4"
-            value={incomeBracket}
-            onChange={(e) => setIncomeBracket(e.target.value)}
-          >
-            <option value="">選択してください</option>
-            <option value="under800">800万円以下</option>
-            <option value="over800">800万円以上</option>
-          </select>
-        </>
-      )}
+        {p.entity_type === "company" && (
+          <>
+            <label className="text-sm">Company Type</label>
+            <select
+              className="border rounded px-3 py-2"
+              value={p.company_type ?? ""}
+              onChange={(e) => setP((s) => ({ ...s, company_type: e.target.value }))}
+            >
+              <option value="">—</option>
+              <option value="C Corporation">C Corporation</option>
+              <option value="LLC">LLC</option>
+            </select>
 
-      {/* 米国×法人 → 法人形態 & 州 */}
-      {showUsCorpExtras && (
-        <>
-          <label className="block mb-2">法人形態:</label>
-          <select
-            className="w-full border p-2 mb-4"
-            value={entityType}
-            onChange={(e) => setEntityType(e.target.value)}
-          >
-            <option value="">選択してください</option>
-            <option value="C-Corp">C Corporation</option>
-            <option value="S-Corp">S Corporation</option>
-            <option value="LLC">Limited Liability Company</option>
-            <option value="Partnership">Partnership</option>
-            <option value="PC/PA">Professional Corporation / Association</option>
-            <option value="PBC">Public Benefit Corporation</option>
-          </select>
+            <label className="text-sm">Company State/Prefecture</label>
+            <input
+              className="border rounded px-3 py-2"
+              placeholder="e.g. California"
+              value={p.company_state ?? ""}
+              onChange={(e) => setP((s) => ({ ...s, company_state: e.target.value }))}
+            />
+          </>
+        )}
 
-          <label className="block mb-2">法人州:</label>
-          <select
-            className="w-full border p-2 mb-4"
-            value={stateOfIncorp}
-            onChange={(e) => setStateOfIncorp(e.target.value)}
-          >
-            <option value="">選択してください</option>
-            {[
-              'Alabama','Alaska','Arizona','Arkansas','California','Colorado',
-              'Connecticut','Delaware','Florida','Georgia','Hawaii','Idaho',
-              'Illinois','Indiana','Iowa','Kansas','Kentucky','Louisiana',
-              'Maine','Maryland','Massachusetts','Michigan','Minnesota',
-              'Mississippi','Missouri','Montana','Nebraska','Nevada',
-              'New Hampshire','New Jersey','New Mexico','New York',
-              'North Carolina','North Dakota','Ohio','Oklahoma','Oregon',
-              'Pennsylvania','Rhode Island','South Carolina','South Dakota',
-              'Tennessee','Texas','Utah','Vermont','Virginia','Washington',
-              'West Virginia','Wisconsin','Wyoming','District of Columbia'
-            ].map((state) => (
-              <option key={state} value={state}>{state}</option>
-            ))}
-          </select>
-        </>
-      )}
-
-      <button
-        className="bg-blue-600 text-white px-4 py-2 rounded"
-        onClick={handleSave}
-        disabled={loading}
-      >
-        保存
-      </button>
-
-      {message && <div className="mt-4">{message}</div>}
+        <button
+          onClick={save}
+          className="rounded bg-blue-600 text-white py-2 disabled:opacity-50"
+          disabled={saving}
+        >
+          {saving ? "Saving..." : "Save"}
+        </button>
+      </div>
     </div>
-  )
+  );
 }
