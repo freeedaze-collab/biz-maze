@@ -1,124 +1,103 @@
 // src/pages/Accounting.tsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { useAuth } from "@/hooks/useAuth";
 
-type TxRow = {
-  source: string;   // "ex:binance" / "wa:137" など
-  ts: string;       // ISO
-  asset?: string | null;
-  amount?: number | null;
-  side?: string | null; // buy/sell など（無ければ null）
-  gross?: number | null; // 任意
+type Statements = {
+  pl: { lines: { account_code: string; amount: number }[]; net_income: number };
+  bs: { lines: { account_code: string; amount: number }[] };
+  cf: { method: "indirect"; operating: number; adjustments: number };
 };
 
 export default function Accounting() {
-  const { user } = useAuth();
-  const [since, setSince] = useState("");
-  const [until, setUntil] = useState("");
-  const [rows, setRows] = useState<TxRow[]>([]);
-  const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [s, setS] = useState<Statements | null>(null);
 
-  const parseDate = (s: string) => {
-    if (!s.trim()) return null;
-    const p = s.replaceAll("/", "-");
-    const d = new Date(p);
-    return isNaN(d.getTime()) ? null : d.toISOString();
-  };
-
-  const load = async () => {
-    if (!user?.id) return;
-    setBusy(true);
-    const out: TxRow[] = [];
-    try {
-      // 既存の履歴テーブルから取得（名前は例。存在しない場合はスキップ）
-      const ex = await supabase
-        .from("exchange_trades")
-        .select("exchange, ts, symbol, qty")
-        .eq("user_id", user.id)
-        .limit(5000);
-      if (!ex.error && ex.data) {
-        for (const r of ex.data as any[]) {
-          out.push({ source: `ex:${r.exchange}`, ts: r.ts, asset: r.symbol, amount: Number(r.qty ?? 0), side: null });
-        }
-      }
-    } catch {}
-    try {
-      const w = await supabase
-        .from("wallet_transactions")
-        .select("chain_id, timestamp, asset_symbol, amount")
-        .eq("user_id", user.id)
-        .limit(5000);
-      if (!w.error && w.data) {
-        for (const r of w.data as any[]) {
-          out.push({ source: `wa:${r.chain_id}`, ts: r.timestamp, asset: r.asset_symbol, amount: Number(r.amount ?? 0), side: null });
-        }
-      }
-    } catch {}
-    setRows(out);
-    setBusy(false);
-  };
-
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [user?.id]);
-
-  const sinceIso = parseDate(since);
-  const untilIso = parseDate(until);
-
-  const filtered = useMemo(() => {
-    return rows.filter(r => {
-      const t = new Date(r.ts).getTime();
-      if (sinceIso && t < new Date(sinceIso).getTime()) return false;
-      if (untilIso && t > new Date(untilIso).getTime()) return false;
-      return true;
+  const run = async () => {
+    setLoading(true);
+    setErr(null);
+    setS(null);
+    const { data, error } = await supabase.functions.invoke("build-statements", {
+      body: {}, // 期間指定を付けるならここに {dateFrom,dateTo}
     });
-  }, [rows, sinceIso, untilIso]);
-
-  // 超ざっくり合算（デモ集計）
-  const totals = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const r of filtered) {
-      const key = r.asset ?? "UNKNOWN";
-      m.set(key, (m.get(key) ?? 0) + (r.amount ?? 0));
+    if (error) {
+      setErr(error.message ?? String(error));
+      setLoading(false);
+      return;
     }
-    return Array.from(m.entries()).map(([asset, amount]) => ({ asset, amount }));
-  }, [filtered]);
+    setS(data as Statements);
+    setLoading(false);
+  };
+
+  useEffect(() => { run(); }, []);
 
   return (
-    <div className="max-w-4xl mx-auto p-6 space-y-6">
-      <h1 className="text-4xl font-bold">Accounting</h1>
+    <div className="p-6 space-y-8">
+      <h1 className="text-2xl font-bold">Accounting / Tax</h1>
+      <button
+        className="bg-blue-600 text-white px-4 py-2 rounded"
+        onClick={run}
+        disabled={loading}
+      >
+        {loading ? "Building..." : "Build Statements"}
+      </button>
 
-      <div className="flex items-center gap-3 flex-wrap">
-        <div className="flex items-center gap-2">
-          <span>Since</span>
-          <input
-            className="border rounded px-2 py-1 min-w-[110px]"
-            placeholder="yyyy/mm/dd"
-            value={since} onChange={(e)=>setSince(e.target.value)}
-          />
-        </div>
-        <div className="flex items-center gap-2">
-          <span>Until</span>
-          <input
-            className="border rounded px-2 py-1 min-w-[110px]"
-            placeholder="yyyy/mm/dd"
-            value={until} onChange={(e)=>setUntil(e.target.value)}
-          />
-        </div>
-        <button className="px-3 py-2 rounded border" onClick={load} disabled={busy}>
-          {busy ? "Building..." : "Build statements"}
-        </button>
-      </div>
+      {err && <div className="text-red-600">{err}</div>}
 
-      <h2 className="text-2xl font-bold">Totals (demo)</h2>
-      {totals.length === 0 ? (
-        <p className="text-muted-foreground">No data in the selected period.</p>
-      ) : (
-        <div className="border rounded p-3">
-          <ul className="space-y-1">
-            {totals.map((t, i)=>(
-              <li key={i} className="text-sm">{t.asset}: <b>{t.amount}</b></li>
-            ))}
-          </ul>
+      {s && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          {/* Profit & Loss */}
+          <div className="border rounded p-4">
+            <h2 className="font-semibold mb-3">Profit & Loss</h2>
+            <table className="w-full text-sm">
+              <tbody>
+                {s.pl.lines.map((l) => (
+                  <tr key={l.account_code}>
+                    <td className="py-1">{l.account_code}</td>
+                    <td className="py-1 text-right">${l.amount.toLocaleString()}</td>
+                  </tr>
+                ))}
+                <tr className="border-t">
+                  <td className="py-1 font-semibold">Net Income</td>
+                  <td className="py-1 text-right font-semibold">
+                    ${s.pl.net_income.toLocaleString()}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          {/* Balance Sheet */}
+          <div className="border rounded p-4">
+            <h2 className="font-semibold mb-3">Balance Sheet</h2>
+            <table className="w-full text-sm">
+              <tbody>
+                {s.bs.lines.map((l, i) => (
+                  <tr key={`${l.account_code}-${i}`}>
+                    <td className="py-1">{l.account_code}</td>
+                    <td className="py-1 text-right">${l.amount.toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Cash Flow */}
+          <div className="border rounded p-4">
+            <h2 className="font-semibold mb-3">Cash Flow (Indirect)</h2>
+            <table className="w-full text-sm">
+              <tbody>
+                <tr>
+                  <td className="py-1">Operating Cash Flow</td>
+                  <td className="py-1 text-right">${s.cf.operating.toLocaleString()}</td>
+                </tr>
+                <tr>
+                  <td className="py-1">Adjustments</td>
+                  <td className="py-1 text-right">${s.cf.adjustments.toLocaleString()}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>
