@@ -43,24 +43,19 @@ export default function Dashboard() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {/* Money */}
+        {/* Money (temporarily hidden)
         <div className="border rounded-xl p-4">
           <h2 className="font-semibold mb-2">Money</h2>
           <div className="flex flex-col gap-2">
-            <Link
-              to="/send-money"
-              className="px-3 py-2 rounded bg-blue-600 text-white text-center"
-            >
+            <Link to="/send-money" className="px-3 py-2 rounded bg-blue-600 text-white text-center">
               Send money
             </Link>
-            <Link
-              to="/create-invoice"
-              className="px-3 py-2 rounded border text-center"
-            >
+            <Link to="/create-invoice" className="px-3 py-2 rounded border text-center">
               Create invoice
             </Link>
           </div>
         </div>
+        */}
 
         {/* Records */}
         <div className="border rounded-xl p-4">
@@ -83,33 +78,34 @@ export default function Dashboard() {
               Profile
             </Link>
             <Link to="/pricing" className="px-3 py-2 rounded border text-center">
-              Upgrade Plan
+              Pricing / Change Plan
             </Link>
           </div>
         </div>
 
-        {/* Wallets / VCE */}
+        {/* Wallets */}
         <div className="border rounded-xl p-4">
           <h2 className="font-semibold mb-2">Wallets</h2>
-          <p className="text-sm text-muted-foreground mb-3">
+          <p className="text-sm text-muted-foreground mb-2">
             Manage connected wallets and verification.
           </p>
-          <div className="flex flex-wrap items-center gap-2">
-            <Link
-              to="/wallets"
-              className="px-3 py-2 rounded bg-blue-600 text-white text-center inline-block"
-            >
-              Open Wallets
-            </Link>
-            {/* ここが追加分：VCE への導線 */}
-            <Link
-              to="/vce"
-              className="px-3 py-2 rounded border text-center inline-block"
-              title="Virtual Custody / Exchanges"
-            >
-              Open VCE
-            </Link>
-          </div>
+          <Link
+            to="/wallets"
+            className="px-3 py-2 rounded bg-blue-600 text-white text-center inline-block"
+          >
+            Open Wallets
+          </Link>
+        </div>
+
+        {/* Exchanges */}
+        <div className="border rounded-xl p-4">
+          <h2 className="font-semibold mb-2">Virtual Custody / Exchanges</h2>
+          <p className="text-sm text-muted-foreground mb-2">
+            Connect Binance / Bybit / OKX for read-only sync.
+          </p>
+          <Link to="/vce" className="px-3 py-2 rounded border text-center inline-block">
+            Open VCE
+          </Link>
         </div>
 
         {/* Payment Gateway */}
