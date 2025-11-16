@@ -1,4 +1,3 @@
-// src/pages/Dashboard.tsx
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
@@ -34,7 +33,7 @@ export default function Dashboard() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {/* Money/Send money/Create invoice → 一時非表示（復帰しやすいようコメントで残置）
+        {/* Money/Send money/Create invoice → 一時非表示（復帰用にコメントで残置）
         <div className="border rounded-xl p-4">…Money…</div>
         <div className="border rounded-xl p-4">…Send money…</div>
         <div className="border rounded-xl p-4">…Create invoice…</div>
@@ -50,6 +49,17 @@ export default function Dashboard() {
               Accounting / Tax
             </Link>
           </div>
+        </div>
+
+        {/* ▼ 復活：VCE（取引所連携）への導線 */}
+        <div className="border rounded-xl p-4">
+          <h2 className="font-semibold mb-2">Exchanges</h2>
+          <p className="text-sm text-muted-foreground mb-2">
+            Link read-only API keys and sync trades/deposits/withdrawals.
+          </p>
+          <Link to="/exchange" className="px-3 py-2 rounded bg-blue-600 text-white text-center inline-block">
+            Open Virtual Custody / Exchanges (VCE)
+          </Link>
         </div>
 
         <div className="border rounded-xl p-4">
