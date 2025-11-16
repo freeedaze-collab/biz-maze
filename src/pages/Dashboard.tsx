@@ -1,3 +1,4 @@
+// src/pages/Dashboard.tsx
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
@@ -33,7 +34,7 @@ export default function Dashboard() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {/* Money/Send money/Create invoice → 一時非表示（復帰用にコメントで残置）
+        {/* Money/Send money/Create invoice → 一時非表示（復帰しやすいようコメントで残置）
         <div className="border rounded-xl p-4">…Money…</div>
         <div className="border rounded-xl p-4">…Send money…</div>
         <div className="border rounded-xl p-4">…Create invoice…</div>
