@@ -16,17 +16,17 @@ export default function EmailSignUp() {
     setErr(null);
 
     if (!email || !pw) {
-      setErr("Email と Password を入力してください。");
+      setErr("Please enter Email and Password.");
       return;
     }
     if (pw !== pw2) {
-      setErr("Password が一致しません。");
+      setErr("Password does not match.");
       return;
     }
 
     setLoading(true);
     try {
-      // HashRouter を使用しているため、確認後の遷移は /#/auth/confirm に戻す
+      // HashRouter を使用しているため、確認後の遷移は /#/auth/confirm に戻す（挙動は既存のまま）
       const redirectTo = `${window.location.origin}/#/auth/confirm`;
 
       const { error } = await supabase.auth.signUp({
@@ -36,16 +36,23 @@ export default function EmailSignUp() {
       });
 
       if (error) {
-        setErr(error.message);
+        setErr(`Error sending confirmation email: ${error.message}`);
         return;
       }
-      setMsg("確認メールを送信しました。受信メールのリンクから続行してください。");
+      setMsg("We’ve sent a confirmation link to your email. Please continue from the link.");
     } catch (e: any) {
       setErr(e?.message ?? String(e));
     } finally {
       setLoading(false);
     }
   };
+
+  // --- FYI（挙動は変えない）：メール不達時のチェック項目 ---
+  // 1) Supabase Auth > Providers > Email: provider ON, Email confirmations ON
+  // 2) Project Settings > Auth > Site URL/Redirect URLs に <origin>/#/auth/confirm を登録
+  // 3) Project Settings > Notifications: SMTP 設定/From ドメインの SPF&DKIM OK
+  // 4) Auth > Templates > Confirm signup テンプレ内に {{ .ConfirmationURL }}
+  // ----------------------------------------------------------
 
   return (
     <div className="max-w-md mx-auto p-6">
@@ -96,7 +103,7 @@ export default function EmailSignUp() {
       </form>
 
       {msg && <div className="mt-4 text-green-700">{msg}</div>}
-      {err && <div className="mt-4 text-red-600">{err}</div>}
+      {err && <div className="mt-4 text-red-600 whitespace-pre-wrap">{err}</div>}
     </div>
   );
 }
