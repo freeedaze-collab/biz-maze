@@ -13,12 +13,28 @@ export default function Accounting() {
   const [err, setErr] = useState<string | null>(null);
   const [s, setS] = useState<Statements | null>(null);
 
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+
+  const toISO = (v: string) => {
+    if (!v.trim()) return undefined;
+    const d = new Date(v.replaceAll("/", "-"));
+    return isNaN(d.getTime()) ? undefined : d.toISOString();
+  };
+
   const run = async () => {
     setLoading(true);
     setErr(null);
     setS(null);
+    const body: any = {};
+    // 期間指定は「付けるだけ」。サーバ未対応でも影響なし（既存仕様はそのまま）
+    const f = toISO(dateFrom);
+    const t = toISO(dateTo);
+    if (f) body.dateFrom = f;
+    if (t) body.dateTo = t;
+
     const { data, error } = await supabase.functions.invoke("build-statements", {
-      body: {}, // 期間指定を付けるならここに {dateFrom,dateTo}
+      body,
     });
     if (error) {
       setErr(error.message ?? String(error));
@@ -29,18 +45,38 @@ export default function Accounting() {
     setLoading(false);
   };
 
-  useEffect(() => { run(); }, []);
+  useEffect(() => { run(); }, []); // 既存の自動ビルド挙動は維持
 
   return (
     <div className="p-6 space-y-8">
       <h1 className="text-2xl font-bold">Accounting / Tax</h1>
-      <button
-        className="bg-blue-600 text-white px-4 py-2 rounded"
-        onClick={run}
-        disabled={loading}
-      >
-        {loading ? "Building..." : "Build Statements"}
-      </button>
+
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="flex items-center gap-2">
+          <span>Since</span>
+          <input
+            className="border rounded px-2 py-1 min-w-[120px]"
+            placeholder="yyyy/mm/dd"
+            value={dateFrom}
+            onChange={(e)=>setDateFrom(e.target.value)}
+          />
+        </div>
+        <div className="flex items-center gap-2">
+          <span>Until</span>
+          <input
+            className="border rounded px-2 py-1 min-w-[120px]"
+            placeholder="yyyy/mm/dd"
+            value={dateTo}
+            onChange={(e)=>setDateTo(e.target.value)}
+          />
+        </div>
+        <button className="bg-blue-600 text-white px-4 py-2 rounded disabled:opacity-50"
+          onClick={run}
+          disabled={loading}
+        >
+          {loading ? "Building..." : "Build Statements"}
+        </button>
+      </div>
 
       {err && <div className="text-red-600">{err}</div>}
 
