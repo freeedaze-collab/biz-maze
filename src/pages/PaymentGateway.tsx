@@ -10,8 +10,8 @@ type Merchant = {
   store_name: string | null;
   default_currency: string | null;
   allowed_networks: string[] | null; // e.g., ["Polygon","Ethereum"]
-  webhook_secret: string | null;     // for verifying incoming webhooks
-  webhook_url: string | null;        // your endpoint on merchant EC
+  webhook_secret: string | null;
+  webhook_url: string | null;
   created_at?: string;
   updated_at?: string;
 };
@@ -46,14 +46,8 @@ export default function PaymentGateway() {
 
   useEffect(() => {
     const load = async () => {
-      if (!user?.id) {
-        setLoading(false);
-        return;
-      }
-      setLoading(true);
-      setMsg(null);
-      setErr(null);
-      // テーブルが無い場合は try-catch で握りつぶし
+      if (!user?.id) { setLoading(false); return; }
+      setLoading(true); setMsg(null); setErr(null);
       try {
         const { data, error } = await supabase
           .from("payment_merchants")
@@ -77,7 +71,6 @@ export default function PaymentGateway() {
           });
         }
       } catch (e: any) {
-        // 初回はテーブルが未作成でも UI は表示（②でSQL提供）
         console.warn("[PaymentGateway] load warn:", e?.message ?? e);
       } finally {
         setLoading(false);
@@ -89,9 +82,7 @@ export default function PaymentGateway() {
   const onSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user?.id) return;
-    setSaving(true);
-    setMsg(null);
-    setErr(null);
+    setSaving(true); setMsg(null); setErr(null);
     try {
       const payload = {
         user_id: user.id,
@@ -101,66 +92,37 @@ export default function PaymentGateway() {
         webhook_secret: merchant.webhook_secret || null,
         webhook_url: merchant.webhook_url || null,
       };
-
-      const { error } = await supabase
-        .from("payment_merchants")
-        .upsert(payload, { onConflict: "user_id" });
-
+      const { error } = await supabase.from("payment_merchants").upsert(payload, { onConflict: "user_id" });
       if (error) throw error;
       setMsg("Saved merchant settings.");
     } catch (e: any) {
       setErr(e.message ?? String(e));
-    } finally {
-      setSaving(false);
-    }
+    } finally { setSaving(false); }
   };
 
   const onCreateLink = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user?.id) return;
-    setMsg(null);
-    setErr(null);
+    setMsg(null); setErr(null);
     try {
-      // テーブルがない環境でも壊れないように try-catch
-      // 実際は Edge Function を呼んで署名付きURL/Checkoutを返す実装を②で入れます
-      const payload = {
-        title: description,
-        amount: Number(amount),
-        currency: merchant.default_currency || "USD",
-      };
+      const payload = { title: description, amount: Number(amount), currency: merchant.default_currency || "USD" };
       const { data, error } = await supabase
         .from("payment_links")
-        .insert({
-          user_id: user.id,
-          title: payload.title,
-          amount: payload.amount,
-          currency: payload.currency,
-          status: "draft",
-        })
+        .insert({ user_id: user.id, title: payload.title, amount: payload.amount, currency: payload.currency, status: "draft" })
         .select()
         .single();
-
       if (error) throw error;
-
-      setMsg(
-        `Created payment link draft (id: ${data.id}). Implement checkout in Edge Function after confirmation.`
-      );
-    } catch (e: any) {
-      setErr(e.message ?? String(e));
-    }
+      setMsg(`Created payment link draft (id: ${data.id}).`);
+    } catch (e: any) { setErr(e.message ?? String(e)); }
   };
 
-  if (loading) {
-    return <div className="p-6">Loading merchant settings...</div>;
-  }
+  if (loading) return <div className="p-6">Loading merchant settings...</div>;
 
   return (
     <div className="max-w-3xl mx-auto p-6 space-y-8">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Payment Gateway</h1>
-        <Link to="/dashboard" className="text-sm underline text-muted-foreground">
-          Back to Dashboard
-        </Link>
+        <Link to="/dashboard" className="text-sm underline text-muted-foreground">Back to Dashboard</Link>
       </div>
 
       <form onSubmit={onSave} className="space-y-4 border rounded-xl p-4">
@@ -171,9 +133,7 @@ export default function PaymentGateway() {
           <input
             className="w-full border rounded px-3 py-2"
             value={merchant.store_name ?? ""}
-            onChange={(e) =>
-              setMerchant((m) => ({ ...m, store_name: e.target.value }))
-            }
+            onChange={(e) => setMerchant((m) => ({ ...m, store_name: e.target.value }))}
             placeholder="My Crypto Shop"
             required
           />
@@ -185,9 +145,7 @@ export default function PaymentGateway() {
             <select
               className="w-full border rounded px-3 py-2"
               value={merchant.default_currency ?? "USD"}
-              onChange={(e) =>
-                setMerchant((m) => ({ ...m, default_currency: e.target.value }))
-              }
+              onChange={(e) => setMerchant((m) => ({ ...m, default_currency: e.target.value }))}
             >
               <option>USD</option>
               <option>JPY</option>
@@ -197,7 +155,7 @@ export default function PaymentGateway() {
           </div>
 
           <div className="md:col-span-2">
-            <label className="block text-sm mb-1">Allowed networks</label>
+            <label className="block text-sm mb-1">Allowed networks / assets</label>
             <select
               className="w-full border rounded px-3 py-2"
               multiple
@@ -207,14 +165,16 @@ export default function PaymentGateway() {
                 setMerchant((m) => ({ ...m, allowed_networks: vals }));
               }}
             >
+              {/* 既存 + 追加（BTC / USDC / JPYC） */}
               <option>Polygon</option>
               <option>Ethereum</option>
               <option>Arbitrum</option>
               <option>Base</option>
+              <option>BTC</option>
+              <option>USDC</option>
+              <option>JPYC</option>
             </select>
-            <p className="text-xs text-muted-foreground mt-1">
-              Hold Ctrl/Cmd to select multiple.
-            </p>
+            <p className="text-xs text-muted-foreground mt-1">Hold Ctrl/Cmd to select multiple.</p>
           </div>
         </div>
 
@@ -224,9 +184,7 @@ export default function PaymentGateway() {
             <input
               className="w-full border rounded px-3 py-2"
               value={merchant.webhook_secret ?? ""}
-              onChange={(e) =>
-                setMerchant((m) => ({ ...m, webhook_secret: e.target.value }))
-              }
+              onChange={(e) => setMerchant((m) => ({ ...m, webhook_secret: e.target.value }))}
               placeholder="e.g. whsec_***"
             />
           </div>
@@ -235,20 +193,14 @@ export default function PaymentGateway() {
             <input
               className="w-full border rounded px-3 py-2"
               value={merchant.webhook_url ?? ""}
-              onChange={(e) =>
-                setMerchant((m) => ({ ...m, webhook_url: e.target.value }))
-              }
+              onChange={(e) => setMerchant((m) => ({ ...m, webhook_url: e.target.value }))}
               placeholder="https://your-ec.example.com/api/crypto-webhook"
             />
           </div>
         </div>
 
         <div className="flex items-center gap-3">
-          <button
-            type="submit"
-            disabled={!canSave || saving}
-            className="bg-blue-600 text-white px-4 py-2 rounded disabled:opacity-60"
-          >
+          <button type="submit" disabled={!canSave || saving} className="bg-blue-600 text-white px-4 py-2 rounded disabled:opacity-60">
             {saving ? "Saving..." : "Save settings"}
           </button>
           {msg && <div className="text-green-700 text-sm">{msg}</div>}
@@ -284,14 +236,23 @@ export default function PaymentGateway() {
           </div>
         </div>
 
-        <button
-          type="submit"
-          disabled={!canCreateLink}
-          className="bg-blue-600 text-white px-4 py-2 rounded disabled:opacity-60"
-        >
+        <button type="submit" disabled={!canCreateLink} className="bg-blue-600 text-white px-4 py-2 rounded disabled:opacity-60">
           Create draft link
         </button>
       </form>
+
+      <section className="border rounded-xl p-4 space-y-2">
+        <h3 className="font-semibold">How to integrate</h3>
+        <ol className="list-decimal ml-5 space-y-1 text-sm">
+          <li>Add the currency to your product/price table (if applicable) and expose it in the checkout form.</li>
+          <li>At server side, build a pricing map for <code>BTC / USDC / JPYC</code> and convert to quote currency at payment time.</li>
+          <li>For on-chain payments, generate a unique deposit address (or memo/tag) per invoice and watch for confirmations.</li>
+          <li>Mark the invoice paid when the expected amount (after fees) is confirmed.</li>
+        </ol>
+        <div className="text-xs text-muted-foreground">
+          * Place images under <code>public/gateway/</code> (e.g., <code>checkout.png</code>, <code>onchain-flow.png</code>) and reference them here.
+        </div>
+      </section>
     </div>
   );
 }
