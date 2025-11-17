@@ -51,13 +51,14 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* ▼ 復活：VCE（取引所連携）への導線 */}
+        {/* 復活：VCE（取引所連携） */}
         <div className="border rounded-xl p-4">
           <h2 className="font-semibold mb-2">Exchanges</h2>
           <p className="text-sm text-muted-foreground mb-2">
             Link read-only API keys and sync trades/deposits/withdrawals.
           </p>
-          <Link to="/exchange" className="px-3 py-2 rounded bg-blue-600 text-white text-center inline-block">
+          {/* ここを /vce に（App 側は /exchange, /exchange/vce でも開けるようエイリアス済み） */}
+          <Link to="/vce" className="px-3 py-2 rounded bg-blue-600 text-white text-center inline-block">
             Open Virtual Custody / Exchanges (VCE)
           </Link>
         </div>
