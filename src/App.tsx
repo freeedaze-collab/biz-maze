@@ -82,9 +82,27 @@ export default function App() {
           </AuthGuard>
         }
       />
-      {/* 追加: VCE ルート */}
+
+      {/* VCE: 本来のパス */}
       <Route
         path="/vce"
+        element={
+          <AuthGuard>
+            <VCE />
+          </AuthGuard>
+        }
+      />
+      {/* VCE: 互換エイリアス（以前のリンク /exchange, /exchange/vce でも開けるように） */}
+      <Route
+        path="/exchange"
+        element={
+          <AuthGuard>
+            <VCE />
+          </AuthGuard>
+        }
+      />
+      <Route
+        path="/exchange/vce"
         element={
           <AuthGuard>
             <VCE />
