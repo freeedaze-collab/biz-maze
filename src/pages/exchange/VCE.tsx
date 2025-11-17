@@ -5,13 +5,14 @@ import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
 
 type Exchange = "binance" | "bybit" | "okx";
+
 type ExchangeConn = {
   id: number;
   user_id: string;
   exchange: Exchange;
-  external_user_id?: string | null; // Exchange-side UID / UserID (optional but recommended)
+  external_user_id?: string | null; // 取引所側の UID / UserID など
   created_at?: string | null;
-  status?: string | null;           // active | linked_id | linked_keys, etc.
+  status?: string | null;           // active | linked_id | linked_keys など
 };
 
 export default function VCE() {
@@ -19,15 +20,20 @@ export default function VCE() {
   const [rows, setRows] = useState<ExchangeConn[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Section 1: Link ID & Save API Keys
+  // 入力欄（1. Link & Save Keys）
   const [exch, setExch] = useState<Exchange>("binance");
-  const [accountId, setAccountId] = useState("");  // UID / UserID (optional but recommended)
+  const [accountId, setAccountId] = useState("");  // UID / UserID など（任意だが推奨）
   const [apiKey, setApiKey] = useState("");
   const [apiSecret, setApiSecret] = useState("");
-  const [passphrase, setPassphrase] = useState(""); // OKX only
+  const [passphrase, setPassphrase] = useState(""); // OKX のみ必須
+
+  // 入力欄（2. Sync）
+  const [syncExch, setSyncExch] = useState<Exchange>("binance");
+  const [since, setSince] = useState("");  // ISO 文字列 or unix ms
+  const [until, setUntil] = useState("");  // ISO 文字列 or unix ms
+  const [symbols, setSymbols] = useState(""); // Binance: 空欄=ALL（サーバ側が推定）
 
   const [busy, setBusy] = useState(false);
-  const toast = (msg: string) => alert(msg);
 
   const load = async () => {
     if (!user?.id) return;
@@ -52,10 +58,12 @@ export default function VCE() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
-  // 1-a) Save external ID only (Exchange UID / UserID)
+  const toast = (msg: string) => alert(msg);
+
+  // 1-a) ID のみ保存（外部 UID ／UserID）
   const onSaveId = async () => {
     if (!user?.id) { toast("Please login again."); return; }
-    if (!accountId.trim()) { toast("Please enter the Exchange UID / UserID."); return; }
+    if (!accountId.trim()) { toast("ID / UID を入力してください。"); return; }
     setBusy(true);
     const { error } = await supabase
       .from("exchange_connections")
@@ -70,18 +78,25 @@ export default function VCE() {
       );
     setBusy(false);
     if (error) { console.error(error); toast("Save ID failed: " + error.message); return; }
-    toast("Saved the external ID.");
+    toast("ID を保存しました。");
     load();
   };
 
-  // 1-b) Save API Keys (encrypted at Edge Function side)
+  // 1-b) API Keys 保存（Edge Function 経由で暗号化保存）
   const onSaveKeys = async () => {
     if (!user?.id) { toast("Please login again."); return; }
-    if (!apiKey || !apiSecret) { toast("Please enter API Key / Secret."); return; }
-    if (exch === "okx" && !passphrase) { toast("OKX requires a Passphrase."); return; }
+    if (!apiKey || !apiSecret) { toast("API Key / Secret を入力してください。"); return; }
+    if (exch === "okx" && !passphrase) { toast("OKX は Passphrase が必須です。"); return; }
 
     setBusy(true);
+
+    // ★ JWT を付与して呼び出す
+    const { data: sess } = await supabase.auth.getSession();
+    const headers =
+      sess?.session?.access_token ? { Authorization: `Bearer ${sess.session.access_token}` } : {};
+
     const { error, data } = await supabase.functions.invoke("exchange-save-keys", {
+      headers,
       body: {
         exchange: exch,
         external_user_id: accountId || null,
@@ -92,22 +107,38 @@ export default function VCE() {
     });
     setBusy(false);
 
-    if (error) {
-      let details = "";
-      const anyErr = error as any;
-      const resp = anyErr?.context?.response;
-      if (resp && typeof resp.text === "function") {
-        try { details = await resp.text(); } catch {}
-      }
-      console.error("[save-keys] error:", error, details);
-      toast(`Save Keys failed: ${error.message}${details ? `\n\n${details}` : ""}`);
-      return;
-    }
-
+    if (error) { console.error(error); toast("Save Keys failed: " + (error.message || "")); return; }
     console.log("[save-keys] result:", data);
-    toast("Saved API Keys (server-side encryption).");
+    toast("API Keys を保存しました。（サーバ側で暗号化）");
     setApiKey(""); setApiSecret(""); setPassphrase("");
     load();
+  };
+
+  // 2) 同期（Edge Function：exchange-sync）
+  const onSync = async () => {
+    if (!user?.id) { toast("Please login again."); return; }
+
+    setBusy(true);
+
+    // ★ JWT を付与して呼び出す
+    const { data: sess } = await supabase.auth.getSession();
+    const headers =
+      sess?.session?.access_token ? { Authorization: `Bearer ${sess.session.access_token}` } : {};
+
+    const { error, data } = await supabase.functions.invoke("exchange-sync", {
+      headers,
+      body: {
+        exchange: syncExch,
+        since: since || null,
+        until: until || null,
+        // Binance は「空欄=ALL」をサーバ側が自動推定
+        symbols: symbols.trim() ? symbols : null,
+      },
+    });
+    setBusy(false);
+    if (error) { console.error(error); toast("Sync failed: " + (error.message || "")); return; }
+    console.log("[sync] result:", data);
+    toast("同期キック完了。完了まで数十秒〜数分かかる場合があります。");
   };
 
   return (
@@ -117,52 +148,61 @@ export default function VCE() {
         <Link to="/dashboard" className="text-sm underline">Back to Dashboard</Link>
       </div>
 
-      {/* ====== Guide (English) ====== */}
+      {/* ====== ガイド（上部に常時表示） ====== */}
       <div className="border rounded-xl p-4 space-y-3 bg-muted/20">
-        <div className="font-semibold">Step 1: Create read-only API keys on each exchange</div>
+        <div className="font-semibold">まずは API Key / Secret を各取引所で発行します</div>
 
         <details className="border rounded p-3 bg-white/30">
-          <summary className="cursor-pointer font-medium">How to get API keys for Binance</summary>
+          <summary className="cursor-pointer font-medium">Binance の API キー取得手順</summary>
           <ol className="list-decimal ml-5 mt-2 space-y-1 text-sm">
-            <li>Log in to Binance → Profile → <b>API Management</b>.</li>
-            <li>Click <b>Create API</b> (e.g., “System generated”) and give it a label.</li>
-            <li>Enable <b>Read-only</b> permission (do <u>not</u> enable trading/withdrawal).</li>
-            <li>If you enable IP restriction, add the server IP(s) later.</li>
-            <li>Copy the <b>API Key</b> and <b>Secret Key</b> (Secret is only shown once).</li>
-            <li>Optionally copy your profile <b>UID</b> as “External ID”.</li>
+            <li>Binance にログイン → 右上プロフィール → <b>API Management</b>。</li>
+            <li><b>Create API</b> → 「System generated」等を選び、任意のラベルを付ける。</li>
+            <li>Permissions で <b>Enable Reading（読み取りのみ）</b> を有効化（<u>取引/出金は無効</u>）。</li>
+            <li>（任意）IP 制限を有効化する場合は、後で Edge の送信元 IP を追加してください。</li>
+            <li>作成後に表示される <b>API Key / Secret Key</b> を控える（Secret は一度しか表示されません）。</li>
+            <li>UID（プロフィールの <b>UID</b>）も控えておくと、外部IDとして紐付けできます。</li>
           </ol>
         </details>
 
         <details className="border rounded p-3 bg-white/30">
-          <summary className="cursor-pointer font-medium">How to get API keys for Bybit</summary>
+          <summary className="cursor-pointer font-medium">Bybit の API キー取得手順</summary>
           <ol className="list-decimal ml-5 mt-2 space-y-1 text-sm">
-            <li>Log in to Bybit → User menu → <b>API</b>.</li>
-            <li><b>Create New Key</b> → Key Type: <b>System-generated</b>, Permission: <b>Read-only</b>.</li>
-            <li>Enable reading for spot/derivatives (do not enable Trading/Withdrawal).</li>
-            <li>Copy <b>API Key</b>, <b>Secret</b>, and your <b>UID</b>.</li>
+            <li>Bybit にログイン → 右上アイコン → <b>API</b>。</li>
+            <li><b>Create New Key</b> → Key Type: <b>System-generated</b>、権限は <b>Read-only</b>。</li>
+            <li>現物/デリバティブの読み取りを有効化（Trading/Withdrawalは無効）。</li>
+            <li>作成後の <b>API Key / Secret</b> を控える。ユーザーの <b>UID</b> も控える。</li>
           </ol>
         </details>
 
         <details className="border rounded p-3 bg-white/30">
-          <summary className="cursor-pointer font-medium">How to get API keys for OKX</summary>
+          <summary className="cursor-pointer font-medium">OKX の API キー取得手順</summary>
           <ol className="list-decimal ml-5 mt-2 space-y-1 text-sm">
-            <li>Log in to OKX → Profile → <b>API</b> → <b>Create V5 API Key</b>.</li>
-            <li>Use <b>Read</b> permissions (Account / Trading data, etc.).</li>
-            <li>Create and keep your <b>Passphrase</b> carefully.</li>
-            <li>Copy <b>API Key</b>, <b>Secret</b>, <b>Passphrase</b>, and your <b>UID</b>.</li>
+            <li>OKX にログイン → 右上プロフィール → <b>API</b> → <b>Create V5 API Key</b>。</li>
+            <li>権限は <b>Read</b>（Account / Trading data など読み取り系）を選択。</li>
+            <li><b>Passphrase</b> を自分で作成（<u>必ず控える</u>）。</li>
+            <li>生成された <b>API Key / Secret Key / Passphrase</b> を控える。<b>UID</b> も控える。</li>
           </ol>
           <p className="mt-2 text-xs text-muted-foreground">
-            * For OKX, <b>Passphrase</b> is required in the input below.
+            ※ OKX はこのページの入力でも <b>Passphrase</b> が必須です。
           </p>
         </details>
 
+        <details className="border rounded p-3 bg-white/30">
+          <summary className="cursor-pointer font-medium">Sync の指定方法</summary>
+          <ul className="list-disc ml-5 mt-2 space-y-1 text-sm">
+            <li><b>since / until</b> は ISO 文字列（例: <code>2025-01-01T00:00:00Z</code>）か unix ミリ秒。</li>
+            <li><b>Binance は symbols を空欄にすると “ALL”</b>（保有資産などから自動推定）で同期します。</li>
+            <li>同期では、トレード・入金・出金・一部残高の取得を行います（段階的拡張）。</li>
+          </ul>
+        </details>
+
         <p className="text-xs text-muted-foreground">
-          Security: API Key/Secret are saved via an Edge Function using <code>EDGE_KMS_KEY</code> for encryption.
-          Do not grant trading/withdrawal permissions (read-only only).
+          セキュリティ: API Key/Secret は Edge Functions 側で <code>EDGE_KMS_KEY</code> を用いた暗号化で保存されます。
+          取引/出金権限は付与しないでください（読み取りのみ）。
         </p>
       </div>
 
-      {/* ===== 1) Link ID & Save API Keys (unchanged behavior) ===== */}
+      {/* ===== 1) Link ID & Save API Keys ===== */}
       <div className="border rounded-xl p-4 space-y-3">
         <div className="font-semibold">1) Link ID &amp; Save API Keys</div>
 
@@ -179,7 +219,7 @@ export default function VCE() {
 
           <input
             className="border rounded px-2 py-1 min-w-[220px]"
-            placeholder="Exchange UID / UserID (optional)"
+            placeholder="取引所の UID / UserID（推奨）"
             value={accountId}
             onChange={(e) => setAccountId(e.target.value)}
           />
@@ -187,7 +227,7 @@ export default function VCE() {
             className="px-3 py-1.5 rounded border"
             onClick={onSaveId}
             disabled={busy}
-            title="Save external ID only"
+            title="外部IDのみ保存（オプション）"
           >
             Save ID
           </button>
@@ -224,13 +264,60 @@ export default function VCE() {
         </div>
 
         <p className="text-xs text-muted-foreground">
-          * For OKX, <b>passphrase</b> is required. After saving, connection status becomes <code>linked_keys</code>.
+          * OKX は <b>passphrase</b> が必須です。保存後、接続のステータスは <code>linked_keys</code> になります。
         </p>
       </div>
 
-      {/* ===== NOTE: Requested “2) Sync” section has been removed per spec ===== */}
+      {/* ===== 2) Sync ===== */}
+      <div className="border rounded-xl p-4 space-y-3">
+        <div className="font-semibold">2) Sync</div>
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            value={syncExch}
+            onChange={(e) => setSyncExch(e.target.value as Exchange)}
+            className="border rounded px-2 py-1"
+          >
+            <option value="binance">Binance</option>
+            <option value="bybit">Bybit</option>
+            <option value="okx">OKX</option>
+          </select>
 
-      {/* ===== Connections list (unchanged) ===== */}
+          <input
+            className="border rounded px-2 py-1 min-w-[210px]"
+            placeholder="since (ISO or ms)"
+            value={since}
+            onChange={(e) => setSince(e.target.value)}
+          />
+          <input
+            className="border rounded px-2 py-1 min-w-[210px]"
+            placeholder="until (ISO or ms)"
+            value={until}
+            onChange={(e) => setUntil(e.target.value)}
+          />
+          <input
+            className="border rounded px-2 py-1 min-w-[260px]"
+            placeholder={syncExch === "binance"
+              ? "Binance symbols（空欄=ALL。例: BTCUSDT,ETHUSDT）"
+              : "symbols（任意）"}
+            value={symbols}
+            onChange={(e) => setSymbols(e.target.value)}
+          />
+          <button
+            className="px-3 py-1.5 rounded border"
+            onClick={onSync}
+            disabled={busy}
+          >
+            Sync now
+          </button>
+        </div>
+
+        <ul className="text-xs text-muted-foreground list-disc ml-5">
+          <li>Binance の同期は、<b>symbols 未指定＝ALL</b> として自動推定します。</li>
+          <li>入出金も同時に同期します。</li>
+        </ul>
+      </div>
+
+      {/* ===== 一覧 ===== */}
       <div className="border rounded-xl p-4">
         <div className="font-semibold mb-2">Your connections</div>
         {loading ? (
@@ -251,10 +338,10 @@ export default function VCE() {
                   </div>
                   <button
                     className="px-3 py-1.5 rounded border text-xs"
-                    onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
-                    title="Scroll to top"
+                    onClick={() => { setSyncExch(r.exchange); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+                    title="Sync セクションに移動してこの取引所を選択"
                   >
-                    Top
+                    Prepare Sync
                   </button>
                 </div>
               </li>

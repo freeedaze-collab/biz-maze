@@ -29,9 +29,7 @@ export default function WalletsPage() {
     }
   };
 
-  useEffect(() => {
-    load();
-  }, [user?.id]);
+  useEffect(() => { load(); }, [user?.id]);
 
   const getNonce = async () => {
     const { data, error } = await supabase.functions.invoke("verify-wallet-signature", {
@@ -52,7 +50,7 @@ export default function WalletsPage() {
     return signature as string;
   };
 
-  const handleLinkPC = async () => {
+  const handleLink = async () => {
     try {
       setBusy(true);
       setMessage("");
@@ -73,12 +71,7 @@ export default function WalletsPage() {
       const sig = await signWithMetaMask(n);
 
       const { data, error } = await supabase.functions.invoke("verify-wallet-signature", {
-        body: {
-          action: "verify",
-          address: addr,
-          nonce: n,
-          signature: sig,
-        },
+        body: { action: "verify", address: addr, nonce: n, signature: sig },
       });
 
       if (error) {
@@ -106,19 +99,12 @@ export default function WalletsPage() {
     }
   };
 
-  const handleLinkPhone = () => {
-    // 仕様どおり“表記のみ変更”。機能はまだ追加しません。
-    setMessage(
-      "Link (Phone): WalletConnect flow is not implemented yet in this build. Please use Link (PC) for now."
-    );
-  };
-
   return (
     <div className="p-6 max-w-2xl mx-auto space-y-6">
       <h1 className="text-3xl font-bold mb-2">Wallet Creation / Linking</h1>
       <p className="text-sm text-muted-foreground">
-        Enter your wallet address. Click <b>Link (PC)</b> to sign a short message with MetaMask.
-        We will verify the signature and register the address to your account.
+        Enter your wallet address, then click <b>Link (PC)</b> or <b>Link (phone)</b>. A MetaMask signature window will open on PC.
+        We’ll verify the signature and register the address to your account.
       </p>
 
       <div className="space-y-3">
@@ -129,21 +115,12 @@ export default function WalletsPage() {
           className="w-full border rounded px-3 py-2"
           placeholder="0x…"
         />
-        <div className="flex items-center gap-2 flex-wrap">
-          <button
-            onClick={handleLinkPC}
-            disabled={busy}
-            className="px-4 py-2 rounded bg-blue-600 text-white disabled:opacity-50"
-          >
+        <div className="flex gap-2">
+          <button onClick={handleLink} disabled={busy} className="px-4 py-2 rounded border disabled:opacity-50">
             {busy ? "Linking..." : "Link (PC)"}
           </button>
-          <button
-            type="button"
-            onClick={handleLinkPhone}
-            className="px-4 py-2 rounded border"
-            // ここでは実装を変えず、説明表示のみ
-          >
-            Link (Phone)
+          <button onClick={handleLink} disabled={busy} className="px-4 py-2 rounded border disabled:opacity-50">
+            {busy ? "Linking..." : "Link (phone)"}
           </button>
         </div>
         {message && <div className="text-sm mt-2">{message}</div>}
@@ -166,6 +143,18 @@ export default function WalletsPage() {
           ))}
         </ul>
       )}
+
+      <section className="border rounded-xl p-4 space-y-3">
+        <h3 className="font-semibold">How to link (step-by-step)</h3>
+        <ol className="list-decimal ml-5 space-y-1 text-sm">
+          <li>On PC: keep your browser wallet (e.g., MetaMask) unlocked. On phone: open a WalletConnect-compatible app.</li>
+          <li>Enter your address above and press <b>Link (PC)</b> or <b>Link (phone)</b>.</li>
+          <li>Read the nonce message and sign. We verify the signature and store the wallet.</li>
+        </ol>
+        <div className="text-xs text-muted-foreground">
+          * Place images under <code>public/wallet-link/</code> (e.g., <code>pc.png</code>, <code>phone.png</code>) to show visual guides here.
+        </div>
+      </section>
     </div>
   );
 }
