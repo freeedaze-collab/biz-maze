@@ -5,41 +5,39 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 
 type BalanceRow = { source: string; asset: string; amount: number };
-
-// 予測プレビュー用のゆるい型
-type UsageSuggestion = {
-  tx_id?: string | number;
-  suggestion?: string;          // 推定カテゴリ名など
-  confidence?: number;          // 0..1 or 0..100 を想定
-  amount?: number;
-  note?: string;
+type TxRow = {
+  user_id: string;
+  source: "wallet" | "exchange";
+  source_id: string | null;
+  ts: string;           // timestamptz
+  chain: string | null;
+  tx_hash: string | null;
+  asset: string | null;
+  amount: number | null;
+  exchange: string | null;
+  symbol: string | null;
+  fee: number | null;
+  fee_asset: string | null;
 };
 
 export default function TransactionHistory() {
   const { user } = useAuth();
-
-  // 入出力系
   const [since, setSince] = useState("");
   const [until, setUntil] = useState("");
-
-  // 同期・残高
   const [busy, setBusy] = useState(false);
+
   const [balances, setBalances] = useState<BalanceRow[]>([]);
+  const [txs, setTxs] = useState<TxRow[]>([]);
   const [err, setErr] = useState<string | null>(null);
 
-  // Predict Usage
-  const [predictBusy, setPredictBusy] = useState(false);
-  const [predictErr, setPredictErr] = useState<string | null>(null);
-  const [preview, setPreview] = useState<UsageSuggestion[]>([]);
-
-  const parseDateToISO = (s: string) => {
+  const parseDate = (s: string) => {
     if (!s.trim()) return null;
     const p = s.replaceAll("/", "-");
     const d = new Date(p);
     return isNaN(d.getTime()) ? null : d.toISOString();
-    // ※ サーバ側が epoch(ms) を想定していても ISO→Date で解釈できる実装が多いため
   };
 
+  // ===== Balances 読み込み（既存のまま・壊さない） =====
   const loadBalances = async () => {
     if (!user?.id) return;
     const out: BalanceRow[] = [];
@@ -54,6 +52,7 @@ export default function TransactionHistory() {
           out.push({ source: `ex:${r.exchange}`, asset: r.asset, amount: Number(r.amount ?? 0) });
       }
     } catch {}
+
     try {
       const wb = await supabase
         .from("wallet_balances")
@@ -65,15 +64,43 @@ export default function TransactionHistory() {
           out.push({ source: `wa:${r.chain}`, asset: r.asset, amount: Number(r.amount ?? 0) });
       }
     } catch {}
+
     setBalances(out);
+  };
+
+  // ===== Transactions 読み込み（v_all_transactions） =====
+  const loadTxs = async () => {
+    if (!user?.id) return;
+    setErr(null);
+    try {
+      let q = supabase
+        .from("v_all_transactions")
+        .select("*")
+        .eq("user_id", user.id)
+        .order("ts", { ascending: false })
+        .limit(1000);
+
+      const s = parseDate(since);
+      const u = parseDate(until);
+
+      if (s) q = q.gte("ts", s);
+      if (u) q = q.lte("ts", u);
+
+      const { data, error } = await q;
+      if (error) throw error;
+      setTxs((data as TxRow[]) ?? []);
+    } catch (e: any) {
+      setErr(e?.message ?? String(e));
+    }
   };
 
   useEffect(() => {
     loadBalances();
+    loadTxs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
-  // 取引所同期（既存の呼び方を維持：fetch直叩き）
+  // ===== 既存 Sync（Edge Function 呼び出しは現状維持） =====
   const onSync = async () => {
     if (!user?.id) return alert("Please login again.");
     setBusy(true);
@@ -90,18 +117,15 @@ export default function TransactionHistory() {
       const url = `${base}/functions/v1/exchange-sync`;
 
       const body = {
-        exchange: "binance",            // UIでは選択させず（従前仕様のまま）
-        symbols: null,                  // “all 固定”＝サーバ側で自動推定
-        since: parseDateToISO(since),
-        until: parseDateToISO(until),
+        exchange: "binance", // 既存維持（UIで複数化するなら後日拡張）
+        symbols: null,       // “all 固定”＝サーバ自動推定
+        since: parseDate(since),
+        until: parseDate(until),
       };
 
       const res = await fetch(url, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify(body),
       });
 
@@ -114,70 +138,21 @@ export default function TransactionHistory() {
       }
 
       if (!res.ok || json?.ok === false) {
-        const msg = `Sync failed (${res.status})\nstep: ${json?.step ?? "unknown"}\nerror: ${json?.error ?? "unknown"}`;
+        const msg = `Sync failed (${res.status})
+step: ${json?.step ?? "unknown"}
+error: ${json?.error ?? "unknown"}`;
         setErr(msg);
         alert(msg);
       } else {
         alert(`Synced. Inserted: ${json?.inserted ?? 0}`);
-        loadBalances();
+        await loadBalances();
+        await loadTxs();
       }
     } catch (e: any) {
-      const m = "Sync failed: " + (e?.message ?? String(e));
-      setErr(m);
-      alert(m);
+      setErr(String(e?.message ?? e));
+      alert("Sync failed: " + (e?.message ?? String(e)));
     } finally {
       setBusy(false);
-    }
-  };
-
-  // Predict Usage：Edge Function を invoke() で呼ぶ（DBは変更しない＝プレビュー専用）
-  const onPredict = async () => {
-    if (!user?.id) return alert("Please login again.");
-    setPredictBusy(true);
-    setPredictErr(null);
-    setPreview([]);
-
-    // 1) 想定関数名の順で試行。どれも無ければフォールバック
-    const candidates = ["predict-usage", "predict_usage", "usage-predict"];
-    const body = {
-      since: parseDateToISO(since),
-      until: parseDateToISO(until),
-      // サーバ側が追加パラメータを許容するならここに { preview: true } 等を渡しても良いが、
-      // 既存挙動に干渉しないよう何も足さない
-    };
-
-    try {
-      let lastErr: any = null;
-      for (const fn of candidates) {
-        try {
-          const { data, error } = await supabase.functions.invoke(fn, { body });
-          if (error) throw error;
-
-          // 想定される戻りのゆるい吸収
-          const arr: UsageSuggestion[] =
-            (Array.isArray((data as any)?.suggestions) && (data as any).suggestions) ||
-            (Array.isArray((data as any)?.data) && (data as any).data) ||
-            (Array.isArray(data) && (data as any)) ||
-            [];
-
-          setPreview(arr);
-          if (arr.length === 0) {
-            setPredictErr("No suggestions in the selected period.");
-          }
-          return; // 成功したので抜ける
-        } catch (e) {
-          lastErr = e;
-          // 次の候補名で再試行
-        }
-      }
-      // すべて失敗
-      if (lastErr) {
-        // 404/未デプロイなど → Coming soon 表記にフォールバック
-        setPredictErr("Predict Usage is not available yet on this environment (coming soon).");
-        alert("Predict Usage: coming soon (Edge Function not found).");
-      }
-    } finally {
-      setPredictBusy(false);
     }
   };
 
@@ -194,7 +169,7 @@ export default function TransactionHistory() {
   }, [balances]);
 
   return (
-    <div className="max-w-4xl mx-auto p-6 space-y-6">
+    <div className="max-w-6xl mx-auto p-6 space-y-6">
       <h1 className="text-4xl font-bold">Transaction History</h1>
 
       <p className="text-lg">
@@ -205,17 +180,15 @@ export default function TransactionHistory() {
         and link it first.
       </p>
       <p className="text-base">
-        <b>Predict Usage</b> runs a server-side heuristic/ML to suggest categories from your
-        transaction patterns. This is a <i>preview only</i>; it won’t edit any data unless a separate
-        “apply” action exists on the server.
+        <b>Predict Usage</b> tries to infer categories from patterns (it never edits data automatically).
       </p>
 
-      {/* フィルタ＆操作列 */}
+      {/* Filters & Actions */}
       <div className="flex items-center gap-3 flex-wrap">
         <div className="flex items-center gap-2">
           <span>Since</span>
           <input
-            className="border rounded px-2 py-1 min-w-[110px]"
+            className="border rounded px-2 py-1 min-w-[120px]"
             placeholder="yyyy/mm/dd"
             value={since}
             onChange={(e) => setSince(e.target.value)}
@@ -224,7 +197,7 @@ export default function TransactionHistory() {
         <div className="flex items-center gap-2">
           <span>Until</span>
           <input
-            className="border rounded px-2 py-1 min-w-[110px]"
+            className="border rounded px-2 py-1 min-w-[120px]"
             placeholder="yyyy/mm/dd"
             value={until}
             onChange={(e) => setUntil(e.target.value)}
@@ -235,25 +208,30 @@ export default function TransactionHistory() {
           className="px-3 py-2 rounded border disabled:opacity-50"
           disabled={busy}
           onClick={onSync}
+          title="Fetch from exchanges; server merges to your tables"
         >
           {busy ? "Syncing..." : "Sync Now"}
         </button>
-
         <button
-          className="px-3 py-2 rounded border disabled:opacity-50"
-          disabled={predictBusy}
-          onClick={onPredict}
+          className="px-3 py-2 rounded border"
+          onClick={() => alert("Predict Usage: coming soon (Edge Function not found).")}
+          title="Analyze patterns and suggest categories; non-destructive"
         >
-          {predictBusy ? "Predicting..." : "Predict Usage"}
+          Predict Usage
+        </button>
+        <button
+          className="px-3 py-2 rounded border"
+          onClick={loadTxs}
+          title="Reload from view"
+        >
+          Refresh List
         </button>
       </div>
 
-      {/* 残高 */}
+      {/* Balances (existing section) */}
       <h2 className="text-2xl font-bold">Balances</h2>
       {grouped.length === 0 ? (
-        <p className="text-muted-foreground">
-          No exchange/wallet balances found yet. Try syncing first.
-        </p>
+        <p className="text-muted-foreground">No exchange/wallet balances found yet. Try syncing first.</p>
       ) : (
         <div className="border rounded p-3">
           <ul className="space-y-1">
@@ -266,46 +244,50 @@ export default function TransactionHistory() {
         </div>
       )}
 
-      {/* 予測プレビュー（読み取り専用） */}
-      <h2 className="text-2xl font-bold">Predicted Categories (preview)</h2>
-      {predictErr && <div className="text-sm text-red-600">{predictErr}</div>}
-      {preview.length === 0 ? (
-        <p className="text-muted-foreground">No preview to show.</p>
+      {/* Transactions table (from v_all_transactions) */}
+      <h2 className="text-2xl font-bold">All Transactions</h2>
+      {txs.length === 0 ? (
+        <p className="text-muted-foreground">No transactions found for the current filters.</p>
       ) : (
-        <div className="border rounded p-3">
+        <div className="overflow-auto border rounded">
           <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left">
-                <th className="py-1 pr-2">Tx</th>
-                <th className="py-1 pr-2">Suggestion</th>
-                <th className="py-1 pr-2">Confidence</th>
-                <th className="py-1">Amount</th>
+            <thead className="bg-muted/40">
+              <tr>
+                <th className="text-left p-2">Date</th>
+                <th className="text-left p-2">Source</th>
+                <th className="text-left p-2">Chain/Exch</th>
+                <th className="text-left p-2">Asset</th>
+                <th className="text-right p-2">Amount</th>
+                <th className="text-right p-2">Fee</th>
+                <th className="text-left p-2">Tx/Trade ID</th>
               </tr>
             </thead>
             <tbody>
-              {preview.map((r, i) => (
-                <tr key={i} className="border-t">
-                  <td className="py-1 pr-2">{r.tx_id ?? "-"}</td>
-                  <td className="py-1 pr-2">{r.suggestion ?? r.note ?? "-"}</td>
-                  <td className="py-1 pr-2">
-                    {typeof r.confidence === "number"
-                      ? (r.confidence <= 1 ? (r.confidence * 100).toFixed(0) : r.confidence.toFixed(0)) + "%"
+              {txs.map((t, i) => (
+                <tr key={`${t.source}-${t.source_id}-${i}`} className="border-t">
+                  <td className="p-2">{new Date(t.ts).toLocaleString()}</td>
+                  <td className="p-2 capitalize">{t.source}</td>
+                  <td className="p-2">
+                    {t.source === "wallet" ? (t.chain ?? "-") : (t.exchange ?? "-")}
+                  </td>
+                  <td className="p-2">{t.asset ?? t.symbol ?? "-"}</td>
+                  <td className="p-2 text-right">
+                    {typeof t.amount === "number" ? t.amount.toLocaleString() : "-"}
+                  </td>
+                  <td className="p-2 text-right">
+                    {typeof t.fee === "number"
+                      ? `${t.fee.toLocaleString()} ${t.fee_asset ?? ""}`.trim()
                       : "-"}
                   </td>
-                  <td className="py-1">{typeof r.amount === "number" ? r.amount : "-"}</td>
+                  <td className="p-2 font-mono">
+                    {t.source === "wallet" ? (t.tx_hash ?? t.source_id ?? "-") : (t.source_id ?? "-")}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
-          <div className="text-xs text-muted-foreground mt-2">
-            * This is a read-only preview. No changes are written to the database from this screen.
-          </div>
         </div>
       )}
-
-      {/* 取引一覧（UIのみ。既存どおり未実装表示） */}
-      <h2 className="text-2xl font-bold">Latest Transactions</h2>
-      <p className="text-muted-foreground">No transactions are rendered in this UI section yet.</p>
 
       {err && <div className="text-red-600 whitespace-pre-wrap text-sm">{err}</div>}
     </div>
