@@ -252,6 +252,23 @@ export default function PaymentGateway() {
         <div className="text-xs text-muted-foreground">
           * Place images under <code>public/gateway/</code> (e.g., <code>checkout.png</code>, <code>onchain-flow.png</code>) and reference them here.
         </div>
+        <div className="bg-muted/40 border rounded p-3 text-xs space-y-2">
+          <div className="font-semibold">EC-side checklist</div>
+          <ul className="list-disc ml-5 space-y-1">
+            <li>Use the <code>payment-create-checkout</code> Edge Function to mint checkout sessions; it accepts <code>title</code>, <code>amount</code>, and <code>currency</code>.</li>
+            <li>Store the returned checkout ID and redirect buyers to <code>/checkout/:id</code> (hosted by this app) or embed via iframe.</li>
+            <li>Set <em>Webhook URL</em> above to your EC endpoint; validate signatures with the <em>Webhook secret</em> and reconcile orders when events arrive.</li>
+          </ul>
+          <pre className="whitespace-pre-wrap bg-background border rounded p-2">{`// server-side example (Node/Edge)
+const res = await fetch(process.env.SUPABASE_URL + '/functions/v1/payment-create-checkout', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + serviceRole },
+  body: JSON.stringify({ title: 'EC order #123', amount: 120, currency: 'JPY' })
+});
+const checkout = await res.json(); // { id, status, ... }
+// Redirect buyer to https://yourapp/checkout/\${checkout.id}
+`}</pre>
+        </div>
       </section>
     </div>
   );
