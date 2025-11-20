@@ -7,6 +7,7 @@ import { useAuth } from "@/hooks/useAuth";
 type BalanceRow = { source: string; asset: string; amount: number };
 type TxRow = {
   tx_id?: number | null;
+  ctx_id?: string | null; // wallet:123, exchange:abc
   user_id: string;
   source: "wallet" | "exchange";
   source_id: string | null;
@@ -19,6 +20,12 @@ type TxRow = {
   symbol: string | null;
   fee: number | null;
   fee_asset: string | null;
+};
+
+const makeUsageKey = (t: TxRow) => {
+  if (typeof t.tx_id === "number") return `tx:${t.tx_id}`;
+  if (t.ctx_id) return `ctx:${t.ctx_id}`;
+  return undefined;
 };
 
 type UsageCategory = { key: string; ifrs_standard: string | null; description: string | null };
@@ -124,44 +131,89 @@ export default function TransactionHistory() {
     const ids = rows
       .map((t) => (typeof t.tx_id === "number" ? t.tx_id : null))
       .filter((v): v is number => v !== null);
-    if (ids.length === 0) {
+    const ctxIds = rows
+      .map((t) => (t.ctx_id ? t.ctx_id : null))
+      .filter((v): v is string => !!v);
+    if (ids.length === 0 && ctxIds.length === 0) {
       setUsageDrafts({});
       return;
     }
 
     try {
-      const [{ data: labels }, { data: preds }] = await Promise.all([
-        supabase
-          .from("transaction_usage_labels")
-          .select("tx_id, predicted_key, confirmed_key, confidence")
-          .in("tx_id", ids),
-        supabase
-          .from("transaction_usage_predictions")
-          .select("tx_id, label, score")
-          .in("tx_id", ids),
+      const [{ data: labelsByTx }, { data: labelsByCtx }, { data: predsByTx }, { data: predsByCtx }] = await Promise.all([
+        ids.length
+          ? supabase
+              .from("transaction_usage_labels")
+              .select("tx_id, predicted_key, confirmed_key, confidence")
+              .in("tx_id", ids)
+          : Promise.resolve({ data: [] }),
+        ctxIds.length
+          ? supabase
+              .from("transaction_usage_labels")
+              .select("ctx_id, predicted_key, confirmed_key, confidence")
+              .in("ctx_id", ctxIds)
+          : Promise.resolve({ data: [] }),
+        ids.length
+          ? supabase
+              .from("transaction_usage_predictions")
+              .select("tx_id, label, score")
+              .in("tx_id", ids)
+          : Promise.resolve({ data: [] }),
+        ctxIds.length
+          ? supabase
+              .from("transaction_usage_predictions")
+              .select("ctx_id, label, score")
+              .in("ctx_id", ctxIds)
+          : Promise.resolve({ data: [] }),
       ]);
 
       const next: Record<string, UsageDraft> = {};
 
-      for (const p of preds ?? []) {
+      for (const p of predsByTx ?? []) {
         if (!p?.tx_id) continue;
-        next[p.tx_id] = {
-          ...next[p.tx_id],
+        const key = `tx:${p.tx_id}`;
+        next[key] = {
+          ...next[key],
           predicted: (p as any).label ?? null,
           confidence: typeof (p as any).score === "number" ? Number((p as any).score) : null,
         };
       }
 
-      for (const l of labels ?? []) {
+      for (const p of predsByCtx ?? []) {
+        if (!(p as any)?.ctx_id) continue;
+        const key = `ctx:${(p as any).ctx_id}`;
+        next[key] = {
+          ...next[key],
+          predicted: (p as any).label ?? null,
+          confidence: typeof (p as any).score === "number" ? Number((p as any).score) : null,
+        };
+      }
+
+      for (const l of labelsByTx ?? []) {
         if (!l?.tx_id) continue;
-        next[l.tx_id] = {
-          ...next[l.tx_id],
-          predicted: (l as any).predicted_key ?? next[l.tx_id]?.predicted ?? null,
+        const key = `tx:${l.tx_id}`;
+        next[key] = {
+          ...next[key],
+          predicted: (l as any).predicted_key ?? next[key]?.predicted ?? null,
           confirmed: (l as any).confirmed_key ?? null,
           confidence:
             typeof (l as any).confidence === "number"
               ? Number((l as any).confidence)
-              : next[l.tx_id]?.confidence ?? null,
+              : next[key]?.confidence ?? null,
+        };
+      }
+
+      for (const l of labelsByCtx ?? []) {
+        if (!(l as any)?.ctx_id) continue;
+        const key = `ctx:${(l as any).ctx_id}`;
+        next[key] = {
+          ...next[key],
+          predicted: (l as any).predicted_key ?? next[key]?.predicted ?? null,
+          confirmed: (l as any).confirmed_key ?? null,
+          confidence:
+            typeof (l as any).confidence === "number"
+              ? Number((l as any).confidence)
+              : next[key]?.confidence ?? null,
         };
       }
 
@@ -287,14 +339,20 @@ error: ${json?.error ?? "unknown"}`;
       const suggestions = Array.isArray(json?.suggestions) ? json.suggestions : [];
       const next = { ...usageDrafts } as Record<string, UsageDraft>;
       for (const s of suggestions) {
+        const ctxId = (s?.ctx_id ?? s?.context_id ?? s?.source_ref ?? null) as any;
         const txIdRaw = (s?.tx_id ?? s?.txId ?? s?.id) as any;
         const txIdNum = Number(txIdRaw);
-        if (!Number.isFinite(txIdNum)) continue;
+        const key = Number.isFinite(txIdNum)
+          ? `tx:${txIdNum}`
+          : ctxId
+          ? `ctx:${ctxId}`
+          : undefined;
+        if (!key) continue;
         const predictedKey = normalizeSuggestedKey(s?.suggestion ?? s?.label ?? null);
-        next[txIdNum] = {
-          ...next[txIdNum],
+        next[key] = {
+          ...next[key],
           predicted: predictedKey,
-          confidence: typeof s?.confidence === "number" ? Number(s.confidence) : next[txIdNum]?.confidence ?? null,
+          confidence: typeof s?.confidence === "number" ? Number(s.confidence) : next[key]?.confidence ?? null,
         };
       }
       setUsageDrafts(next);
@@ -317,35 +375,57 @@ error: ${json?.error ?? "unknown"}`;
     try {
       const labelsPayload = entries.map(([txId, v]) => ({
         user_id: user.id,
-        tx_id: Number(txId),
+        tx_id: txId.startsWith("tx:") ? Number(txId.replace("tx:", "")) : null,
+        ctx_id: txId.startsWith("ctx:") ? txId.replace("ctx:", "") : null,
         predicted_key: v.predicted ?? null,
         confirmed_key: v.confirmed ?? null,
         confidence: v.confidence ?? null,
         updated_at: new Date().toISOString(),
       }));
 
+      const labelsByTx = labelsPayload.filter((p) => typeof p.tx_id === "number");
+      const labelsByCtx = labelsPayload.filter((p) => !p.tx_id && p.ctx_id);
+
       const predsPayload = entries
         .filter(([, v]) => v.predicted)
         .map(([txId, v]) => ({
           user_id: user.id,
-          tx_id: Number(txId),
+          tx_id: txId.startsWith("tx:") ? Number(txId.replace("tx:", "")) : null,
+          ctx_id: txId.startsWith("ctx:") ? txId.replace("ctx:", "") : null,
           model: "edge",
           label: v.predicted,
           score: v.confidence ?? 1,
           created_at: new Date().toISOString(),
         }));
 
-      if (labelsPayload.length) {
+      const predsByTx = predsPayload.filter((p) => typeof p.tx_id === "number");
+      const predsByCtx = predsPayload.filter((p) => !p.tx_id && p.ctx_id);
+
+      if (labelsByTx.length) {
         const { error } = await supabase
           .from("transaction_usage_labels")
-          .upsert(labelsPayload, { onConflict: "tx_id" });
+          .upsert(labelsByTx, { onConflict: "user_id,tx_id" });
         if (error) throw error;
       }
 
-      if (predsPayload.length) {
+      if (labelsByCtx.length) {
+        const { error } = await supabase
+          .from("transaction_usage_labels")
+          .upsert(labelsByCtx, { onConflict: "user_id,ctx_id" });
+        if (error) throw error;
+      }
+
+      if (predsByTx.length) {
         const { error } = await supabase
           .from("transaction_usage_predictions")
-          .upsert(predsPayload, { onConflict: "user_id,tx_id,model" });
+          .upsert(predsByTx, { onConflict: "user_id,tx_id,model" });
+        if (error) throw error;
+      }
+
+      if (predsByCtx.length) {
+        const { error } = await supabase
+          .from("transaction_usage_predictions")
+          .upsert(predsByCtx, { onConflict: "user_id,ctx_id,model" });
         if (error) throw error;
       }
 
@@ -477,7 +557,7 @@ error: ${json?.error ?? "unknown"}`;
             </thead>
             <tbody>
               {txs.map((t, i) => {
-                const key = usageKey(t);
+                const key = makeUsageKey(t);
                 const draft = key ? usageDrafts[key] : undefined;
                 return (
                   <tr key={`${t.source}-${t.source_id ?? key ?? i}-${i}`} className="border-t">
@@ -500,7 +580,6 @@ error: ${json?.error ?? "unknown"}`;
                   </td>
                   <td className="p-2 max-w-[220px]">
                     {(() => {
-                      const draft = t.tx_id ? usageDrafts[t.tx_id] : undefined;
                       if (!draft?.predicted) return <span className="text-muted-foreground">(none)</span>;
                       const opt = usageOptions.find((o) => o.key === draft.predicted);
                       return (
@@ -517,17 +596,17 @@ error: ${json?.error ?? "unknown"}`;
                     })()}
                   </td>
                   <td className="p-2">
-                    {typeof t.tx_id === "number" ? (
+                    {key ? (
                       <select
                         className="border rounded px-2 py-1 text-sm"
-                        value={usageDrafts[t.tx_id]?.confirmed ?? usageDrafts[t.tx_id]?.predicted ?? ""}
+                        value={draft?.confirmed ?? draft?.predicted ?? ""}
                         onChange={(e) =>
                           setUsageDrafts((prev) => ({
                             ...prev,
-                            [t.tx_id as number]: {
-                              ...prev[t.tx_id as number],
+                            [key]: {
+                              ...prev[key],
                               confirmed: e.target.value || null,
-                              predicted: prev[t.tx_id as number]?.predicted ?? null,
+                              predicted: prev[key]?.predicted ?? null,
                             },
                           }))
                         }
@@ -548,7 +627,7 @@ error: ${json?.error ?? "unknown"}`;
                         ))}
                       </select>
                     ) : (
-                      <span className="text-xs text-muted-foreground">Labeling not available (exchange-only)</span>
+                      <span className="text-xs text-muted-foreground">No stable ID yet</span>
                     )}
                   </td>
                 </tr>
