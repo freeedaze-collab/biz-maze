@@ -476,8 +476,11 @@ error: ${json?.error ?? "unknown"}`;
               </tr>
             </thead>
             <tbody>
-              {txs.map((t, i) => (
-                <tr key={`${t.source}-${t.source_id}-${i}`} className="border-t">
+              {txs.map((t, i) => {
+                const key = usageKey(t);
+                const draft = key ? usageDrafts[key] : undefined;
+                return (
+                  <tr key={`${t.source}-${t.source_id ?? key ?? i}-${i}`} className="border-t">
                   <td className="p-2">{new Date(t.ts).toLocaleString()}</td>
                   <td className="p-2 capitalize">{t.source}</td>
                   <td className="p-2">
@@ -549,7 +552,8 @@ error: ${json?.error ?? "unknown"}`;
                     )}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
