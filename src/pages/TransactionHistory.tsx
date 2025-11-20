@@ -6,6 +6,7 @@ import { useAuth } from "@/hooks/useAuth";
 
 type BalanceRow = { source: string; asset: string; amount: number };
 type TxRow = {
+  tx_id?: number | null;
   user_id: string;
   source: "wallet" | "exchange";
   source_id: string | null;
@@ -20,6 +21,9 @@ type TxRow = {
   fee_asset: string | null;
 };
 
+type UsageCategory = { key: string; ifrs_standard: string | null; description: string | null };
+type UsageDraft = { predicted?: string | null; confirmed?: string | null; confidence?: number | null };
+
 export default function TransactionHistory() {
   const { user } = useAuth();
   const [since, setSince] = useState("");
@@ -29,12 +33,31 @@ export default function TransactionHistory() {
   const [balances, setBalances] = useState<BalanceRow[]>([]);
   const [txs, setTxs] = useState<TxRow[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  const [usageOptions, setUsageOptions] = useState<UsageCategory[]>([]);
+  const [usageDrafts, setUsageDrafts] = useState<Record<string, UsageDraft>>({});
+  const [predicting, setPredicting] = useState(false);
+  const [savingUsage, setSavingUsage] = useState(false);
 
   const parseDate = (s: string) => {
     if (!s.trim()) return null;
     const p = s.replaceAll("/", "-");
     const d = new Date(p);
     return isNaN(d.getTime()) ? null : d.toISOString();
+  };
+
+  // ===== 用途カテゴリの読み込み（IFRS ラベルを選択肢化） =====
+  const loadUsageOptions = async () => {
+    if (!user?.id) return;
+    try {
+      const { data, error } = await supabase
+        .from("usage_categories")
+        .select("key, ifrs_standard, description")
+        .order("key", { ascending: true });
+      if (error) throw error;
+      setUsageOptions((data as UsageCategory[]) ?? []);
+    } catch (e: any) {
+      console.warn("[TransactionHistory] loadUsageOptions warn", e?.message ?? e);
+    }
   };
 
   // ===== Balances 読み込み（既存のまま・壊さない） =====
@@ -88,14 +111,69 @@ export default function TransactionHistory() {
 
       const { data, error } = await q;
       if (error) throw error;
-      setTxs((data as TxRow[]) ?? []);
+      const rows = (data as TxRow[]) ?? [];
+      setTxs(rows);
+      await loadUsageDrafts(rows);
     } catch (e: any) {
       setErr(e?.message ?? String(e));
     }
   };
 
+  const loadUsageDrafts = async (rows: TxRow[]) => {
+    if (!user?.id) return;
+    const ids = rows
+      .map((t) => (typeof t.tx_id === "number" ? t.tx_id : null))
+      .filter((v): v is number => v !== null);
+    if (ids.length === 0) {
+      setUsageDrafts({});
+      return;
+    }
+
+    try {
+      const [{ data: labels }, { data: preds }] = await Promise.all([
+        supabase
+          .from("transaction_usage_labels")
+          .select("tx_id, predicted_key, confirmed_key, confidence")
+          .in("tx_id", ids),
+        supabase
+          .from("transaction_usage_predictions")
+          .select("tx_id, label, score")
+          .in("tx_id", ids),
+      ]);
+
+      const next: Record<string, UsageDraft> = {};
+
+      for (const p of preds ?? []) {
+        if (!p?.tx_id) continue;
+        next[p.tx_id] = {
+          ...next[p.tx_id],
+          predicted: (p as any).label ?? null,
+          confidence: typeof (p as any).score === "number" ? Number((p as any).score) : null,
+        };
+      }
+
+      for (const l of labels ?? []) {
+        if (!l?.tx_id) continue;
+        next[l.tx_id] = {
+          ...next[l.tx_id],
+          predicted: (l as any).predicted_key ?? next[l.tx_id]?.predicted ?? null,
+          confirmed: (l as any).confirmed_key ?? null,
+          confidence:
+            typeof (l as any).confidence === "number"
+              ? Number((l as any).confidence)
+              : next[l.tx_id]?.confidence ?? null,
+        };
+      }
+
+      setUsageDrafts(next);
+    } catch (e: any) {
+      console.warn("[TransactionHistory] loadUsageDrafts warn", e?.message ?? e);
+    }
+  };
+
   useEffect(() => {
     loadBalances();
+    loadUsageOptions();
     loadTxs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
@@ -156,6 +234,130 @@ error: ${json?.error ?? "unknown"}`;
     }
   };
 
+  // ===== Predict Usage (Edge Function: predict-usage) =====
+  const normalizeSuggestedKey = (label?: string | null) => {
+    if (!label) return null;
+    const l = label.toLowerCase();
+    if (l.includes("mining")) return "mining";
+    if (l.includes("stake")) return "staking";
+    if (l.includes("impair")) return "impairment";
+    if (l.includes("inventory")) return "inventory_trader";
+    if (l.includes("non cash") || l.includes("non-cash")) return "ifrs15_non_cash";
+    if (l.includes("disposal")) return "disposal_sale";
+    if (l.includes("broker")) return "inventory_broker";
+    // 売買・入出金系は投資（inventory_trader）を初期値に
+    if (l.includes("trade")) return "investment";
+    if (l.includes("deposit") || l.includes("payment") || l.includes("fee")) return "inventory_trader";
+    return "investment";
+  };
+
+  const onPredictUsage = async () => {
+    if (!user?.id) return alert("Please login again.");
+    setPredicting(true);
+    setErr(null);
+    try {
+      const { data: sess } = await supabase.auth.getSession();
+      const token = sess?.session?.access_token;
+      if (!token) return alert("No auth token. Please re-login.");
+
+      const base =
+        import.meta.env.VITE_SUPABASE_URL ||
+        (supabase as any).rest?.url?.replace?.("/rest/v1", "") ||
+        "";
+      const url = `${base}/functions/v1/predict-usage`;
+
+      const body = { since: parseDate(since), until: parseDate(until) };
+
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify(body),
+      });
+
+      const text = await res.text();
+      let json: any = {};
+      try { json = JSON.parse(text); } catch { json = { raw: text }; }
+
+      if (!res.ok || json?.error) {
+        const msg = `Predict failed (${res.status})\nstep: ${json?.error ?? "unknown"}\ndetail: ${json?.details ?? json?.raw ?? "n/a"}`;
+        setErr(msg);
+        return alert(msg);
+      }
+
+      const suggestions = Array.isArray(json?.suggestions) ? json.suggestions : [];
+      const next = { ...usageDrafts } as Record<string, UsageDraft>;
+      for (const s of suggestions) {
+        const txIdRaw = (s?.tx_id ?? s?.txId ?? s?.id) as any;
+        const txIdNum = Number(txIdRaw);
+        if (!Number.isFinite(txIdNum)) continue;
+        const predictedKey = normalizeSuggestedKey(s?.suggestion ?? s?.label ?? null);
+        next[txIdNum] = {
+          ...next[txIdNum],
+          predicted: predictedKey,
+          confidence: typeof s?.confidence === "number" ? Number(s.confidence) : next[txIdNum]?.confidence ?? null,
+        };
+      }
+      setUsageDrafts(next);
+      alert(`Predicted usage for ${suggestions.length} transactions. Review and Save to keep.`);
+    } catch (e: any) {
+      setErr(e?.message ?? String(e));
+      alert("Predict failed: " + (e?.message ?? String(e)));
+    } finally {
+      setPredicting(false);
+    }
+  };
+
+  // ===== Save usage (predicted + confirmed) =====
+  const onSaveUsage = async () => {
+    if (!user?.id) return alert("Please login again.");
+    const entries = Object.entries(usageDrafts).filter(([, v]) => v.predicted || v.confirmed);
+    if (entries.length === 0) return alert("Nothing to save yet.");
+    setSavingUsage(true);
+    setErr(null);
+    try {
+      const labelsPayload = entries.map(([txId, v]) => ({
+        user_id: user.id,
+        tx_id: Number(txId),
+        predicted_key: v.predicted ?? null,
+        confirmed_key: v.confirmed ?? null,
+        confidence: v.confidence ?? null,
+        updated_at: new Date().toISOString(),
+      }));
+
+      const predsPayload = entries
+        .filter(([, v]) => v.predicted)
+        .map(([txId, v]) => ({
+          user_id: user.id,
+          tx_id: Number(txId),
+          model: "edge",
+          label: v.predicted,
+          score: v.confidence ?? 1,
+          created_at: new Date().toISOString(),
+        }));
+
+      if (labelsPayload.length) {
+        const { error } = await supabase
+          .from("transaction_usage_labels")
+          .upsert(labelsPayload, { onConflict: "tx_id" });
+        if (error) throw error;
+      }
+
+      if (predsPayload.length) {
+        const { error } = await supabase
+          .from("transaction_usage_predictions")
+          .upsert(predsPayload, { onConflict: "user_id,tx_id,model" });
+        if (error) throw error;
+      }
+
+      alert("Saved usage predictions/labels.");
+    } catch (e: any) {
+      setErr(e?.message ?? String(e));
+      alert("Save failed: " + (e?.message ?? String(e)));
+    } finally {
+      setSavingUsage(false);
+    }
+  };
+
   const grouped = useMemo(() => {
     const m = new Map<string, number>();
     for (const b of balances) {
@@ -213,11 +415,12 @@ error: ${json?.error ?? "unknown"}`;
           {busy ? "Syncing..." : "Sync Now"}
         </button>
         <button
-          className="px-3 py-2 rounded border"
-          onClick={() => alert("Predict Usage: coming soon (Edge Function not found).")}
+          className="px-3 py-2 rounded border disabled:opacity-50"
+          onClick={onPredictUsage}
+          disabled={predicting}
           title="Analyze patterns and suggest categories; non-destructive"
         >
-          Predict Usage
+          {predicting ? "Predicting..." : "Predict Usage"}
         </button>
         <button
           className="px-3 py-2 rounded border"
@@ -225,6 +428,14 @@ error: ${json?.error ?? "unknown"}`;
           title="Reload from view"
         >
           Refresh List
+        </button>
+        <button
+          className="px-3 py-2 rounded border bg-blue-600 text-white disabled:opacity-50"
+          onClick={onSaveUsage}
+          disabled={savingUsage}
+          title="Store predicted + confirmed usage labels for the listed transactions"
+        >
+          {savingUsage ? "Saving..." : "Save Usage Labels"}
         </button>
       </div>
 
@@ -260,6 +471,8 @@ error: ${json?.error ?? "unknown"}`;
                 <th className="text-right p-2">Amount</th>
                 <th className="text-right p-2">Fee</th>
                 <th className="text-left p-2">Tx/Trade ID</th>
+                <th className="text-left p-2">Predicted usage</th>
+                <th className="text-left p-2">Your selection</th>
               </tr>
             </thead>
             <tbody>
@@ -281,6 +494,59 @@ error: ${json?.error ?? "unknown"}`;
                   </td>
                   <td className="p-2 font-mono">
                     {t.source === "wallet" ? (t.tx_hash ?? t.source_id ?? "-") : (t.source_id ?? "-")}
+                  </td>
+                  <td className="p-2 max-w-[220px]">
+                    {(() => {
+                      const draft = t.tx_id ? usageDrafts[t.tx_id] : undefined;
+                      if (!draft?.predicted) return <span className="text-muted-foreground">(none)</span>;
+                      const opt = usageOptions.find((o) => o.key === draft.predicted);
+                      return (
+                        <div className="space-y-1">
+                          <div className="font-semibold">{draft.predicted}</div>
+                          {opt?.ifrs_standard && (
+                            <div className="text-xs text-muted-foreground">{opt.ifrs_standard}: {opt.description}</div>
+                          )}
+                          {typeof draft.confidence === "number" && (
+                            <div className="text-xs text-muted-foreground">confidence: {draft.confidence.toFixed(2)}</div>
+                          )}
+                        </div>
+                      );
+                    })()}
+                  </td>
+                  <td className="p-2">
+                    {typeof t.tx_id === "number" ? (
+                      <select
+                        className="border rounded px-2 py-1 text-sm"
+                        value={usageDrafts[t.tx_id]?.confirmed ?? usageDrafts[t.tx_id]?.predicted ?? ""}
+                        onChange={(e) =>
+                          setUsageDrafts((prev) => ({
+                            ...prev,
+                            [t.tx_id as number]: {
+                              ...prev[t.tx_id as number],
+                              confirmed: e.target.value || null,
+                              predicted: prev[t.tx_id as number]?.predicted ?? null,
+                            },
+                          }))
+                        }
+                      >
+                        <option value="">(select usage)</option>
+                        {(usageOptions.length
+                          ? usageOptions
+                          : [
+                              { key: "investment", ifrs_standard: "IAS38", description: "General holding" },
+                              { key: "inventory_trader", ifrs_standard: "IAS2", description: "Trading stock" },
+                              { key: "staking", ifrs_standard: "Conceptual", description: "Staking rewards" },
+                              { key: "mining", ifrs_standard: "Conceptual", description: "Mining rewards" },
+                            ]
+                        ).map((o) => (
+                          <option key={o.key} value={o.key}>
+                            {o.key} ({o.ifrs_standard})
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">Labeling not available (exchange-only)</span>
+                    )}
                   </td>
                 </tr>
               ))}
