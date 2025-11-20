@@ -21,7 +21,6 @@ BEGIN
           'wallet'::text AS source,
           (to_jsonb(w)->>'id') AS source_id,
           w.id AS tx_id,
-          concat('wallet:', coalesce(to_jsonb(w)->>'id', w.id::text, 'unknown')) AS ctx_id,
           COALESCE(
             (to_jsonb(w)->>'timestamp')::timestamptz,
             (to_jsonb(w)->>'ts')::timestamptz,
@@ -49,8 +48,7 @@ BEGIN
           e.user_id,
           'exchange'::text AS source,
           COALESCE(to_jsonb(e)->>'id', to_jsonb(e)->>'trade_id', to_jsonb(e)->>'txid', to_jsonb(e)->>'order_id') AS source_id,
-          nullif((to_jsonb(e)->>'id')::bigint, 0) AS tx_id,
-          concat('exchange:', coalesce(to_jsonb(e)->>'id', to_jsonb(e)->>'trade_id', to_jsonb(e)->>'txid', to_jsonb(e)->>'order_id', 'unknown')) AS ctx_id,
+          NULL::bigint AS tx_id,
           COALESCE(
             (to_jsonb(e)->>'ts')::timestamptz,
             (to_jsonb(e)->>'timestamp')::timestamptz,
@@ -81,7 +79,6 @@ BEGIN
         'wallet'::text AS source,
         (to_jsonb(w)->>'id') AS source_id,
         w.id AS tx_id,
-        concat('wallet:', coalesce(to_jsonb(w)->>'id', w.id::text, 'unknown')) AS ctx_id,
         COALESCE(
           (to_jsonb(w)->>'timestamp')::timestamptz,
           (to_jsonb(w)->>'ts')::timestamptz,
