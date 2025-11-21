@@ -102,6 +102,7 @@ export default function TransactionHistory() {
   const loadTxs = async () => {
     if (!user?.id) return;
     setErr(null);
+    setUsageDrafts({});
     try {
       let q = supabase
         .from("v_all_transactions")
@@ -120,7 +121,6 @@ export default function TransactionHistory() {
       if (error) throw error;
       const rows = (data as TxRow[]) ?? [];
       setTxs(rows);
-      await loadUsageDrafts(rows);
     } catch (e: any) {
       setErr(e?.message ?? String(e));
     }
@@ -546,8 +546,9 @@ error: ${json?.error ?? "unknown"}`;
               <tr>
                 <th className="text-left p-2">Date</th>
                 <th className="text-left p-2">Source</th>
-                <th className="text-left p-2">Chain/Exch</th>
-                <th className="text-left p-2">Asset</th>
+                <th className="text-left p-2">Chain</th>
+                <th className="text-left p-2">Exchange</th>
+                <th className="text-left p-2">Asset/Symbol</th>
                 <th className="text-right p-2">Amount</th>
                 <th className="text-right p-2">Fee</th>
                 <th className="text-left p-2">Tx/Trade ID</th>
@@ -563,9 +564,8 @@ error: ${json?.error ?? "unknown"}`;
                   <tr key={`${t.source}-${t.source_id ?? key ?? i}-${i}`} className="border-t">
                   <td className="p-2">{new Date(t.ts).toLocaleString()}</td>
                   <td className="p-2 capitalize">{t.source}</td>
-                  <td className="p-2">
-                    {t.source === "wallet" ? (t.chain ?? "-") : (t.exchange ?? "-")}
-                  </td>
+                  <td className="p-2">{t.chain ?? "-"}</td>
+                  <td className="p-2">{t.exchange ?? "-"}</td>
                   <td className="p-2">{t.asset ?? t.symbol ?? "-"}</td>
                   <td className="p-2 text-right">
                     {typeof t.amount === "number" ? t.amount.toLocaleString() : "-"}
