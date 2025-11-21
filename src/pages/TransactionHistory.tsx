@@ -126,6 +126,103 @@ export default function TransactionHistory() {
     }
   };
 
+  const loadUsageDrafts = async (rows: TxRow[]) => {
+    if (!user?.id) return;
+    const ids = rows
+      .map((t) => (typeof t.tx_id === "number" ? t.tx_id : null))
+      .filter((v): v is number => v !== null);
+    const ctxIds = rows
+      .map((t) => (t.ctx_id ? t.ctx_id : null))
+      .filter((v): v is string => !!v);
+    if (ids.length === 0 && ctxIds.length === 0) {
+      setUsageDrafts({});
+      return;
+    }
+
+    try {
+      const [{ data: labelsByTx }, { data: labelsByCtx }, { data: predsByTx }, { data: predsByCtx }] = await Promise.all([
+        ids.length
+          ? supabase
+              .from("transaction_usage_labels")
+              .select("tx_id, predicted_key, confirmed_key, confidence")
+              .in("tx_id", ids)
+          : Promise.resolve({ data: [] }),
+        ctxIds.length
+          ? supabase
+              .from("transaction_usage_labels")
+              .select("ctx_id, predicted_key, confirmed_key, confidence")
+              .in("ctx_id", ctxIds)
+          : Promise.resolve({ data: [] }),
+        ids.length
+          ? supabase
+              .from("transaction_usage_predictions")
+              .select("tx_id, label, score")
+              .in("tx_id", ids)
+          : Promise.resolve({ data: [] }),
+        ctxIds.length
+          ? supabase
+              .from("transaction_usage_predictions")
+              .select("ctx_id, label, score")
+              .in("ctx_id", ctxIds)
+          : Promise.resolve({ data: [] }),
+      ]);
+
+      const next: Record<string, UsageDraft> = {};
+
+      for (const p of predsByTx ?? []) {
+        if (!p?.tx_id) continue;
+        const key = `tx:${p.tx_id}`;
+        next[key] = {
+          ...next[key],
+          predicted: (p as any).label ?? null,
+          confidence: typeof (p as any).score === "number" ? Number((p as any).score) : null,
+        };
+      }
+
+      for (const p of predsByCtx ?? []) {
+        if (!(p as any)?.ctx_id) continue;
+        const key = `ctx:${(p as any).ctx_id}`;
+        next[key] = {
+          ...next[key],
+          predicted: (p as any).label ?? null,
+          confidence: typeof (p as any).score === "number" ? Number((p as any).score) : null,
+        };
+      }
+
+      for (const l of labelsByTx ?? []) {
+        if (!l?.tx_id) continue;
+        const key = `tx:${l.tx_id}`;
+        next[key] = {
+          ...next[key],
+          predicted: (l as any).predicted_key ?? next[key]?.predicted ?? null,
+          confirmed: (l as any).confirmed_key ?? null,
+          confidence:
+            typeof (l as any).confidence === "number"
+              ? Number((l as any).confidence)
+              : next[key]?.confidence ?? null,
+        };
+      }
+
+      for (const l of labelsByCtx ?? []) {
+        if (!(l as any)?.ctx_id) continue;
+        const key = `ctx:${(l as any).ctx_id}`;
+        next[key] = {
+          ...next[key],
+          predicted: (l as any).predicted_key ?? next[key]?.predicted ?? null,
+          confirmed: (l as any).confirmed_key ?? null,
+          confidence:
+            typeof (l as any).confidence === "number"
+              ? Number((l as any).confidence)
+              : next[key]?.confidence ?? null,
+        };
+      }
+
+      setUsageDrafts(next);
+    } catch (e: any) {
+      console.warn("[TransactionHistory] loadUsageDrafts warn", e?.message ?? e);
+    }
+  };
+
   useEffect(() => {
     loadBalances();
     loadUsageOptions();
