@@ -5,9 +5,10 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 
 type BalanceRow = { source: string; asset: string; amount: number };
+
 type TxRow = {
   tx_id?: number | null;
-  ctx_id?: string | null; // wallet:123, exchange:abc
+  ctx_id?: string | null; // wallet:xxx / exchange:yyy
   user_id: string;
   source: "wallet" | "exchange";
   source_id: string | null;
@@ -20,9 +21,10 @@ type TxRow = {
   symbol: string | null;
   fee: number | null;
   fee_asset: string | null;
-  // ▼ v_all_transactions に追加した金額系カラム
   price_usd?: number | null;
   fiat_value_usd?: number | null;
+  usage_key?: string | null;
+  usage_confidence?: number | null;
 };
 
 const makeUsageKey = (t: TxRow) => {
@@ -32,7 +34,10 @@ const makeUsageKey = (t: TxRow) => {
 };
 
 type UsageCategory = { key: string; ifrs_standard: string | null; description: string | null };
-type UsageDraft = { predicted?: string | null; confirmed?: string | null; confidence?: number | null };
+
+// suggested: 予測結果（Predict Usage ボタンでセット）
+// selected: セレクトボックスの値（ユーザーが上書き）→ Save 時に DB 保存
+type UsageDraft = { suggested?: string | null; selected?: string | null; confidence?: number | null };
 
 export default function TransactionHistory() {
   const { user } = useAuth();
@@ -122,107 +127,27 @@ export default function TransactionHistory() {
 
       const { data, error } = await q;
       if (error) throw error;
+
       const rows = (data as TxRow[]) ?? [];
       setTxs(rows);
+
+      // 既に保存済みの用途（usage_key）を初期値としてドラフトに反映
+      const init: Record<string, UsageDraft> = {};
+      for (const t of rows) {
+        const key = makeUsageKey(t);
+        if (!key) continue;
+        init[key] = {
+          suggested: t.usage_key ?? null,
+          selected: t.usage_key ?? null,
+          confidence:
+            typeof t.usage_confidence === "number"
+              ? Number(t.usage_confidence)
+              : t.usage_confidence ?? undefined,
+        };
+      }
+      setUsageDrafts(init);
     } catch (e: any) {
       setErr(e?.message ?? String(e));
-    }
-  };
-
-  const loadUsageDrafts = async (rows: TxRow[]) => {
-    if (!user?.id) return;
-    const ids = rows
-      .map((t) => (typeof t.tx_id === "number" ? t.tx_id : null))
-      .filter((v): v is number => v !== null);
-    const ctxIds = rows
-      .map((t) => (t.ctx_id ? t.ctx_id : null))
-      .filter((v): v is string => !!v);
-    if (ids.length === 0 && ctxIds.length === 0) {
-      setUsageDrafts({});
-      return;
-    }
-
-    try {
-      const [{ data: labelsByTx }, { data: labelsByCtx }, { data: predsByTx }, { data: predsByCtx }] = await Promise.all([
-        ids.length
-          ? supabase
-              .from("transaction_usage_labels")
-              .select("tx_id, predicted_key, confirmed_key, confidence")
-              .in("tx_id", ids)
-          : Promise.resolve({ data: [] }),
-        ctxIds.length
-          ? supabase
-              .from("transaction_usage_labels")
-              .select("ctx_id, predicted_key, confirmed_key, confidence")
-              .in("ctx_id", ctxIds)
-          : Promise.resolve({ data: [] }),
-        ids.length
-          ? supabase
-              .from("transaction_usage_predictions")
-              .select("tx_id, label, score")
-              .in("tx_id", ids)
-          : Promise.resolve({ data: [] }),
-        ctxIds.length
-          ? supabase
-              .from("transaction_usage_predictions")
-              .select("ctx_id, label, score")
-              .in("ctx_id", ctxIds)
-          : Promise.resolve({ data: [] }),
-      ]);
-
-      const next: Record<string, UsageDraft> = {};
-
-      for (const p of predsByTx ?? []) {
-        if (!p?.tx_id) continue;
-        const key = `tx:${p.tx_id}`;
-        next[key] = {
-          ...next[key],
-          predicted: (p as any).label ?? null,
-          confidence: typeof (p as any).score === "number" ? Number((p as any).score) : null,
-        };
-      }
-
-      for (const p of predsByCtx ?? []) {
-        if (!(p as any)?.ctx_id) continue;
-        const key = `ctx:${(p as any).ctx_id}`;
-        next[key] = {
-          ...next[key],
-          predicted: (p as any).label ?? null,
-          confidence: typeof (p as any).score === "number" ? Number((p as any).score) : null,
-        };
-      }
-
-      for (const l of labelsByTx ?? []) {
-        if (!l?.tx_id) continue;
-        const key = `tx:${l.tx_id}`;
-        next[key] = {
-          ...next[key],
-          predicted: (l as any).predicted_key ?? next[key]?.predicted ?? null,
-          confirmed: (l as any).confirmed_key ?? null,
-          confidence:
-            typeof (l as any).confidence === "number"
-              ? Number((l as any).confidence)
-              : next[key]?.confidence ?? null,
-        };
-      }
-
-      for (const l of labelsByCtx ?? []) {
-        if (!(l as any)?.ctx_id) continue;
-        const key = `ctx:${(l as any).ctx_id}`;
-        next[key] = {
-          ...next[key],
-          predicted: (l as any).predicted_key ?? next[key]?.predicted ?? null,
-          confirmed: (l as any).confirmed_key ?? null,
-          confidence:
-            typeof (l as any).confidence === "number"
-              ? Number((l as any).confidence)
-              : next[key]?.confidence ?? null,
-        };
-      }
-
-      setUsageDrafts(next);
-    } catch (e: any) {
-      console.warn("[TransactionHistory] loadUsageDrafts warn", e?.message ?? e);
     }
   };
 
@@ -251,7 +176,7 @@ export default function TransactionHistory() {
 
       const body = {
         exchange: "binance", // 既存維持（UIで複数化するなら後日拡張）
-        symbols: null,       // “all 固定”＝サーバ自動推定
+        symbols: null,       // "all 固定"＝サーバ自動推定
         since: parseDate(since),
         until: parseDate(until),
       };
@@ -290,6 +215,7 @@ error: ${json?.error ?? "unknown"}`;
   };
 
   // ===== Predict Usage (Edge Function: predict-usage) =====
+  // ラベル文字列→usage_categories.keyへの正規化（ルールはお好みで拡張可）
   const normalizeSuggestedKey = (label?: string | null) => {
     if (!label) return null;
     const l = label.toLowerCase();
@@ -300,9 +226,12 @@ error: ${json?.error ?? "unknown"}`;
     if (l.includes("non cash") || l.includes("non-cash")) return "ifrs15_non_cash";
     if (l.includes("disposal")) return "disposal_sale";
     if (l.includes("broker")) return "inventory_broker";
+    if (l.includes("revenue")) return "revenue";
+    if (l.includes("expense")) return "expense";
+    if (l.includes("payment") || l.includes("fee")) return "expense";
     // 売買・入出金系は投資（inventory_trader）を初期値に
     if (l.includes("trade")) return "investment";
-    if (l.includes("deposit") || l.includes("payment") || l.includes("fee")) return "inventory_trader";
+    if (l.includes("deposit")) return "inventory_trader";
     return "investment";
   };
 
@@ -342,20 +271,21 @@ error: ${json?.error ?? "unknown"}`;
       const suggestions = Array.isArray(json?.suggestions) ? json.suggestions : [];
       const next = { ...usageDrafts } as Record<string, UsageDraft>;
       for (const s of suggestions) {
-        const ctxId = (s?.ctx_id ?? s?.context_id ?? s?.source_ref ?? null) as any;
         const txIdRaw = (s?.tx_id ?? s?.txId ?? s?.id) as any;
         const txIdNum = Number(txIdRaw);
-        const key = Number.isFinite(txIdNum)
-          ? `tx:${txIdNum}`
-          : ctxId
-          ? `ctx:${ctxId}`
-          : undefined;
-        if (!key) continue;
+        if (!Number.isFinite(txIdNum)) continue;
+
+        const key = `tx:${txIdNum}`;
         const predictedKey = normalizeSuggestedKey(s?.suggestion ?? s?.label ?? null);
+        const confidence =
+          typeof s?.confidence === "number" ? Number(s.confidence) : next[key]?.confidence ?? null;
+
         next[key] = {
           ...next[key],
-          predicted: predictedKey,
-          confidence: typeof s?.confidence === "number" ? Number(s.confidence) : next[key]?.confidence ?? null,
+          suggested: predictedKey,
+          // すでにユーザーが選択していればそれを優先。未選択なら予測結果をそのまま反映。
+          selected: next[key]?.selected ?? predictedKey ?? null,
+          confidence,
         };
       }
       setUsageDrafts(next);
@@ -368,71 +298,42 @@ error: ${json?.error ?? "unknown"}`;
     }
   };
 
-  // ===== Save usage (predicted + confirmed) =====
+  // ===== Save usage (selected を transaction_usage_labels に保存) =====
   const onSaveUsage = async () => {
     if (!user?.id) return alert("Please login again.");
-    const entries = Object.entries(usageDrafts).filter(([, v]) => v.predicted || v.confirmed);
+    const entries = Object.entries(usageDrafts).filter(([, v]) => v.selected);
     if (entries.length === 0) return alert("Nothing to save yet.");
     setSavingUsage(true);
     setErr(null);
     try {
-      const labelsPayload = entries.map(([txId, v]) => ({
+      const labelsPayload = entries.map(([txKey, v]) => ({
         user_id: user.id,
-        tx_id: txId.startsWith("tx:") ? Number(txId.replace("tx:", "")) : null,
-        ctx_id: txId.startsWith("ctx:") ? txId.replace("ctx:", "") : null,
-        predicted_key: v.predicted ?? null,
-        confirmed_key: v.confirmed ?? null,
+        tx_id: txKey.startsWith("tx:") ? Number(txKey.replace("tx:", "")) : null,
+        ctx_id: txKey.startsWith("ctx:") ? txKey.replace("ctx:", "") : null,
+        usage_key: v.selected ?? null,
         confidence: v.confidence ?? null,
         updated_at: new Date().toISOString(),
       }));
 
-      const labelsByTx = labelsPayload.filter((p) => typeof p.tx_id === "number");
-      const labelsByCtx = labelsPayload.filter((p) => !p.tx_id && p.ctx_id);
+      const byTx = labelsPayload.filter((p) => typeof p.tx_id === "number");
+      const byCtx = labelsPayload.filter((p) => !p.tx_id && p.ctx_id);
 
-      const predsPayload = entries
-        .filter(([, v]) => v.predicted)
-        .map(([txId, v]) => ({
-          user_id: user.id,
-          tx_id: txId.startsWith("tx:") ? Number(txId.replace("tx:", "")) : null,
-          ctx_id: txId.startsWith("ctx:") ? txId.replace("ctx:", "") : null,
-          model: "edge",
-          label: v.predicted,
-          score: v.confidence ?? 1,
-          created_at: new Date().toISOString(),
-        }));
-
-      const predsByTx = predsPayload.filter((p) => typeof p.tx_id === "number");
-      const predsByCtx = predsPayload.filter((p) => !p.tx_id && p.ctx_id);
-
-      if (labelsByTx.length) {
+      if (byTx.length) {
         const { error } = await supabase
           .from("transaction_usage_labels")
-          .upsert(labelsByTx, { onConflict: "user_id,tx_id" });
+          .upsert(byTx, { onConflict: "user_id,tx_id" });
         if (error) throw error;
       }
 
-      if (labelsByCtx.length) {
+      if (byCtx.length) {
         const { error } = await supabase
           .from("transaction_usage_labels")
-          .upsert(labelsByCtx, { onConflict: "user_id,ctx_id" });
+          .upsert(byCtx, { onConflict: "user_id,ctx_id" });
         if (error) throw error;
       }
 
-      if (predsByTx.length) {
-        const { error } = await supabase
-          .from("transaction_usage_predictions")
-          .upsert(predsByTx, { onConflict: "user_id,tx_id,model" });
-        if (error) throw error;
-      }
-
-      if (predsByCtx.length) {
-        const { error } = await supabase
-          .from("transaction_usage_predictions")
-          .upsert(predsByCtx, { onConflict: "user_id,ctx_id,model" });
-        if (error) throw error;
-      }
-
-      alert("Saved usage predictions/labels.");
+      alert("Saved usage labels.");
+      await loadTxs(); // v_all_transactions 上の usage_key を更新
     } catch (e: any) {
       setErr(e?.message ?? String(e));
       alert("Save failed: " + (e?.message ?? String(e)));
@@ -458,7 +359,7 @@ error: ${json?.error ?? "unknown"}`;
       <h1 className="text-4xl font-bold">Transaction History</h1>
 
       <p className="text-lg">
-        If you haven’t linked any wallet yet,{" "}
+        If you haven't linked any wallet yet,{" "}
         <Link to="/wallets" className="underline">
           go to the Wallets page
         </Link>{" "}
@@ -470,13 +371,75 @@ error: ${json?.error ?? "unknown"}`;
 
       {/* Filters & Actions */}
       <div className="flex items-center gap-3 flex-wrap">
-        {/* ... ここは元のまま ... */}
+        <div className="flex items-center gap-2">
+          <span>Since</span>
+          <input
+            className="border rounded px-2 py-1 min-w-[120px]"
+            placeholder="yyyy/mm/dd"
+            value={since}
+            onChange={(e) => setSince(e.target.value)}
+          />
+        </div>
+        <div className="flex items-center gap-2">
+          <span>Until</span>
+          <input
+            className="border rounded px-2 py-1 min-w-[120px]"
+            placeholder="yyyy/mm/dd"
+            value={until}
+            onChange={(e) => setUntil(e.target.value)}
+          />
+        </div>
+
+        <button
+          className="px-3 py-2 rounded border disabled:opacity-50"
+          disabled={busy}
+          onClick={onSync}
+          title="Fetch from exchanges; server merges to your tables"
+        >
+          {busy ? "Syncing..." : "Sync Now"}
+        </button>
+        <button
+          className="px-3 py-2 rounded border disabled:opacity-50"
+          onClick={onPredictUsage}
+          disabled={predicting}
+          title="Analyze patterns and suggest categories; non-destructive"
+        >
+          {predicting ? "Predicting..." : "Predict Usage"}
+        </button>
+        <button
+          className="px-3 py-2 rounded border"
+          onClick={loadTxs}
+          title="Reload from view"
+        >
+          Refresh List
+        </button>
+        <button
+          className="px-3 py-2 rounded border bg-blue-600 text-white disabled:opacity-50"
+          onClick={onSaveUsage}
+          disabled={savingUsage}
+          title="Store usage labels for the listed transactions"
+        >
+          {savingUsage ? "Saving..." : "Save Usage Labels"}
+        </button>
       </div>
 
-      {/* Balances (existing section) */}
-      {/* ... ここも元のまま ... */}
+      {/* Balances */}
+      <h2 className="text-2xl font-bold">Balances</h2>
+      {grouped.length === 0 ? (
+        <p className="text-muted-foreground">No exchange/wallet balances found yet. Try syncing first.</p>
+      ) : (
+        <div className="border rounded p-3">
+          <ul className="space-y-1">
+            {grouped.map((g, i) => (
+              <li key={i} className="text-sm">
+                {g.source} • {g.asset}: <b>{g.amount}</b>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
-      {/* Transactions table (from v_all_transactions) */}
+      {/* Transactions table */}
       <h2 className="text-2xl font-bold">All Transactions</h2>
       {txs.length === 0 ? (
         <p className="text-muted-foreground">No transactions found for the current filters.</p>
@@ -491,10 +454,6 @@ error: ${json?.error ?? "unknown"}`;
                 <th className="text-left p-2">Exchange</th>
                 <th className="text-left p-2">Asset/Symbol</th>
                 <th className="text-right p-2">Amount</th>
-                {/* ▼ 追加列 */}
-                <th className="text-right p-2">Price (USD)</th>
-                <th className="text-right p-2">Value (USD)</th>
-                {/* ▲ 追加列 */}
                 <th className="text-right p-2">Fee</th>
                 <th className="text-left p-2">Tx/Trade ID</th>
                 <th className="text-left p-2">Predicted usage</th>
@@ -515,18 +474,6 @@ error: ${json?.error ?? "unknown"}`;
                     <td className="p-2 text-right">
                       {typeof t.amount === "number" ? t.amount.toLocaleString() : "-"}
                     </td>
-                    {/* ▼ 追加列表示 */}
-                    <td className="p-2 text-right">
-                      {typeof t.price_usd === "number"
-                        ? t.price_usd.toLocaleString(undefined, { maximumFractionDigits: 6 })
-                        : "-"}
-                    </td>
-                    <td className="p-2 text-right">
-                      {typeof t.fiat_value_usd === "number"
-                        ? t.fiat_value_usd.toLocaleString(undefined, { maximumFractionDigits: 2 })
-                        : "-"}
-                    </td>
-                    {/* ▲ 追加列表示 */}
                     <td className="p-2 text-right">
                       {typeof t.fee === "number"
                         ? `${t.fee.toLocaleString()} ${t.fee_asset ?? ""}`.trim()
@@ -536,13 +483,12 @@ error: ${json?.error ?? "unknown"}`;
                       {t.source === "wallet" ? (t.tx_hash ?? t.source_id ?? "-") : (t.source_id ?? "-")}
                     </td>
                     <td className="p-2 max-w-[220px]">
-                      {/* Predicted usage（元のまま） */}
                       {(() => {
-                        if (!draft?.predicted) return <span className="text-muted-foreground">(none)</span>;
-                        const opt = usageOptions.find((o) => o.key === draft.predicted);
+                        if (!draft?.suggested) return <span className="text-muted-foreground">(none)</span>;
+                        const opt = usageOptions.find((o) => o.key === draft.suggested);
                         return (
                           <div className="space-y-1">
-                            <div className="font-semibold">{draft.predicted}</div>
+                            <div className="font-semibold">{draft.suggested}</div>
                             {opt?.ifrs_standard && (
                               <div className="text-xs text-muted-foreground">
                                 {opt.ifrs_standard}: {opt.description}
@@ -558,18 +504,16 @@ error: ${json?.error ?? "unknown"}`;
                       })()}
                     </td>
                     <td className="p-2">
-                      {/* Your selection（元のまま） */}
                       {key ? (
                         <select
                           className="border rounded px-2 py-1 text-sm"
-                          value={draft?.confirmed ?? draft?.predicted ?? ""}
+                          value={draft?.selected ?? draft?.suggested ?? ""}
                           onChange={(e) =>
                             setUsageDrafts((prev) => ({
                               ...prev,
                               [key]: {
                                 ...prev[key],
-                                confirmed: e.target.value || null,
-                                predicted: prev[key]?.predicted ?? null,
+                                selected: e.target.value || null,
                               },
                             }))
                           }
@@ -578,10 +522,10 @@ error: ${json?.error ?? "unknown"}`;
                           {(usageOptions.length
                             ? usageOptions
                             : [
-                                { key: "investment", ifrs_standard: "IAS38", description: "General holding" },
-                                { key: "inventory_trader", ifrs_standard: "IAS2", description: "Trading stock" },
-                                { key: "staking", ifrs_standard: "Conceptual", description: "Staking rewards" },
-                                { key: "mining", ifrs_standard: "Conceptual", description: "Mining rewards" },
+                                { key: "investment",       ifrs_standard: "IAS38", description: "General holding" },
+                                { key: "inventory_trader", ifrs_standard: "IAS2",  description: "Trading stock" },
+                                { key: "staking",          ifrs_standard: "Conceptual", description: "Staking rewards" },
+                                { key: "mining",           ifrs_standard: "Conceptual", description: "Mining rewards" },
                               ]
                           ).map((o) => (
                             <option key={o.key} value={o.key}>
