@@ -1,62 +1,116 @@
 // supabase/functions/build-statements/index.ts
-// 目的: ユーザーの v_all_transactions と transaction_usage_labels を集計し、PL/BS/CF を返す
+// 目的: ユーザーの v_all_transactions ＋ usage_key を集計し、PL/BS/CF を返す
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-// ---------------- CORS（単体完結; 共有モジュール不使用） ----------------
+// ---------------- CORS ----------------
 const corsHeaders: Record<string, string> = {
-  "Access-Control-Allow-Origin": "*", // 動作優先。あとで本番ドメインへ絞ってOK
+  "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
 };
 const handleOptions = (req: Request) =>
   req.method === "OPTIONS" ? new Response("ok", { headers: corsHeaders }) : null;
-const jsonHeaders = (extra: Record<string, string> = {}) =>
-  ({ ...corsHeaders, "Content-Type": "application/json", ...extra });
+const jsonHeaders = (extra: Record<string, string> = {}) => ({
+  ...corsHeaders,
+  "Content-Type": "application/json",
+  ...extra,
+});
 
-// ---------------- Supabase クライアント（RLS: ユーザーJWT優先） ----------------
+// ---------------- Supabase クライアント ----------------
 function getSupabaseClient(req: Request) {
   const url = Deno.env.get("SUPABASE_URL")!;
+  const anon = Deno.env.get("SUPABASE_ANON_KEY")!;
   const auth = req.headers.get("authorization") ?? "";
   const bearer = auth.startsWith("Bearer ") ? auth.slice(7) : undefined;
 
   if (bearer) {
-    return createClient(url, Deno.env.get("SUPABASE_ANON_KEY")!, {
+    return createClient(url, anon, {
       global: { headers: { Authorization: `Bearer ${bearer}` } },
     });
   }
-  // 未ログインでも動くが、RLSでゼロ件になる想定
-  return createClient(url, Deno.env.get("SUPABASE_ANON_KEY")!);
+  return createClient(url, anon);
 }
 
-// ---------------- 型の最小定義 ----------------
+// ---------------- 型 ----------------
 type TxRow = {
-  user_id: string;
-  source: "wallet" | "exchange" | string;
-  source_id: string | null;
-  fiat_value_usd: number | null;
   ts: string | null;
+  fiat_value_usd: number | null;
+  usage_key: string | null;
 };
 
-// ---------------- ビルド本体 ----------------
+// usage_key → PL区分の簡易マッピング
+type PlClass = "revenue" | "expense" | "ignore";
+
+function classifyUsage(label: string | null, val: number): PlClass {
+  const sign = val >= 0 ? 1 : -1;
+  if (!label) {
+    // ラベル未設定時は符号ベース
+    return sign > 0 ? "revenue" : "expense";
+  }
+  const l = label.toLowerCase();
+
+  // 収益寄り
+  if (
+    l.includes("revenue") ||
+    l.includes("sale") ||
+    l.includes("income") ||
+    l.includes("airdrop") ||
+    l.includes("staking") ||
+    l.includes("mining")
+  ) {
+    return "revenue";
+  }
+
+  // 費用寄り
+  if (
+    l.includes("expense") ||
+    l.includes("fee") ||
+    l.includes("gas") ||
+    l.includes("commission") ||
+    l.includes("payment")
+  ) {
+    return "expense";
+  }
+
+  // 社内移転・投資など（PL からは外す）
+  if (
+    l.includes("transfer") ||
+    l.includes("internal") ||
+    l.includes("investment") ||
+    l.includes("inventory")
+  ) {
+    return "ignore";
+  }
+
+  // その他は符号にフォールバック
+  return sign > 0 ? "revenue" : "expense";
+}
+
+// ---------------- 本体 ----------------
 async function buildStatements(req: Request) {
   const supabase = getSupabaseClient(req);
 
-  // 期間指定（任意; 将来の拡張に備えて body を読む）
+  // body（期間フィルタ）
   let body: any = {};
   try {
-    if (req.method === "POST" && req.headers.get("content-type")?.includes("application/json")) {
+    if (
+      req.method === "POST" &&
+      req.headers.get("content-type")?.includes("application/json")
+    ) {
       body = await req.json();
     }
-  } catch (_e) { /* no-op */ }
+  } catch {
+    // no-op
+  }
 
-  const dateFrom: string | undefined = body?.dateFrom; // ISO (e.g. "2025-01-01")
+  const dateFrom: string | undefined = body?.dateFrom;
   const dateTo: string | undefined = body?.dateTo;
 
-  // ---------- 1) 取引（ウォレット＋取引所）の取得: v_all_transactions ベース ----------
+  // v_all_transactions から取得（RLS で user_id は制御される想定）
   let txq = supabase
     .from("v_all_transactions")
-    .select("user_id, source, source_id, fiat_value_usd, ts")
+    .select("ts, fiat_value_usd, usage_key")
     .order("ts", { ascending: true })
     .limit(5000);
 
@@ -64,104 +118,33 @@ async function buildStatements(req: Request) {
   if (dateTo)   txq = txq.lte("ts", dateTo);
 
   const { data: txs, error: txErr } = await txq;
-  if (txErr) throw new Error(`transactions: ${txErr.message}`);
-
-  const txList = (txs ?? []) as TxRow[];
-  const userId = txList[0]?.user_id ?? null;
-
-  // ---------- 2) 用途ラベルの取得（ある場合のみ利用） ----------
-  // スキーマが tx_id / ctx_id / label / predicted_key / confirmed_key など
-  // どれになっていても動くように * で取得し、動的に解釈する。
-  let lblq = supabase.from("transaction_usage_labels").select("*");
-  if (userId) lblq = lblq.eq("user_id", userId);
-
-  const { data: labels, error: lblErr } = await lblq;
-  if (lblErr && (lblErr as any).code !== "PGRST205") {
-    // テーブル未作成(PGRST205)は許容、それ以外はエラー扱い
-    throw new Error(`labels: ${lblErr.message}`);
-  }
-
-  // tx ごとのキー: "source:source_id" 形式を基本にする
-  const labelMap = new Map<string, string>();
-  (labels ?? []).forEach((l: any) => {
-    // tx側とマッチさせるキー
-    let key: string | null = null;
-
-    if (l.ctx_id) {
-      // 既に ctx_id（"wallet:123" など）を持っている場合
-      key = String(l.ctx_id);
-    } else if (l.source && l.source_id) {
-      key = `${l.source}:${l.source_id}`;
-    } else if (typeof l.tx_id === "number") {
-      // 旧仕様: wallet_transactions.id ベースのラベルだった場合
-      key = `wallet:${l.tx_id}`;
-    }
-
-    if (!key) return;
-
-    const effLabel: string | null =
-      l.confirmed_key ??
-      l.predicted_key ??
-      l.label ??
-      null;
-
-    if (!effLabel) return;
-    labelMap.set(key, String(effLabel));
-  });
-
-  // ---------- 3) 集計ルール ----------
-  // PL:
-  //  label が revenue/income 系 → revenue
-  //  label が expense/fee/payment/cost 系 → expense
-  //  transfer/internal/investment 等は PL 影響なし（現時点では除外）
-  //  未ラベル取引は PL には入れない（過大計上を避けるため）
-  //
-  // BS（超簡易版）:
-  //  cash = revenue - expense （= netIncome と同じ。将来は投資/財務を分ける）
-  //
-  // CF:
-  //  operating = netIncome, adjustments = 0 （将来詳細設計）
-
-  const revenueLabels = new Set([
-    "revenue", "income", "sale", "sales",
-    "airdrop", "staking", "staking_reward",
-    "mining", "mining_reward", "gain"
-  ]);
-  const expenseLabels = new Set([
-    "expense", "fee", "payment", "cost", "loss", "interest_expense"
-  ]);
-  const ignoreLabels = new Set([
-    "transfer", "internal", "investment", "inventory_trader", "inventory_broker"
-  ]);
+  if (txErr) throw new Error(`v_all_transactions: ${txErr.message}`);
 
   let revenue = 0;
   let expense = 0;
+  let cash = 0;
 
-  for (const t of txList) {
-    const val = Number(t.fiat_value_usd ?? 0);
-    if (!isFinite(val) || val <= 0) continue; // 0以下 or NaN は無視（評価が無い/異常値）
+  for (const t of (txs ?? []) as TxRow[]) {
+    const rawVal = t.fiat_value_usd;
+    if (rawVal === null || rawVal === undefined) continue;
 
-    const ctxKey = `${t.source}:${t.source_id ?? ""}`;
-    const lab = labelMap.get(ctxKey) ?? null;
-    const labLower = lab ? lab.toLowerCase() : null;
+    const val = Number(rawVal);
+    if (!isFinite(val) || val === 0) continue;
 
-    if (labLower && ignoreLabels.has(labLower)) {
-      // 自社間移転・投資など: 現時点では PL 影響なし
-      continue;
+    cash += val; // キャッシュは用途に関係なく足し込む
+
+    const cls = classifyUsage(t.usage_key, val);
+    const abs = Math.abs(val);
+
+    if (cls === "revenue") {
+      revenue += abs;
+    } else if (cls === "expense") {
+      expense += abs;
     }
-
-    if (labLower && revenueLabels.has(labLower)) {
-      revenue += val;
-    } else if (labLower && expenseLabels.has(labLower)) {
-      expense += val;
-    } else {
-      // 未ラベル or 未知ラベル → 安全のため PL には載せない（将来 IFRS 用途コードで精密化）
-      continue;
-    }
+    // ignore は PL には載せない（BS の cash だけ反映）
   }
 
   const netIncome = revenue - expense;
-  const cash = netIncome; // 現時点では「すべて営業キャッシュフロー」として扱う簡易版
 
   const resp = {
     pl: {
@@ -174,7 +157,6 @@ async function buildStatements(req: Request) {
     bs: {
       lines: [
         { account_code: "cash", amount: Number(cash.toFixed(2)) },
-        // 将来: crypto_assets, accrued_payable など拡張
       ],
     },
     cf: {
