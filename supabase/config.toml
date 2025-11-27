@@ -22,3 +22,11 @@ verify_jwt = false
 
 [functions."verify-wallet-signature"]
 verify_jwt = false
+
+[functions.exchange-sync-daily]
+verify_jwt = false
+schedule = "0 3 * * *"   # 毎日 03:00 UTC
+
+[functions.wallet-sync-daily]
+verify_jwt = false
+schedule = "30 3 * * *"  # 毎日 03:30 UTC
