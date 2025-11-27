@@ -158,7 +158,7 @@ export default function TransactionHistory() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
-  // ===== 既存 Sync（Edge Function 呼び出しは現状維持） =====
+  // ===== Sync（取引所） =====
   const onSync = async () => {
     if (!user?.id) return alert("Please login again.");
     setBusy(true);
@@ -176,7 +176,7 @@ export default function TransactionHistory() {
 
       const body = {
         exchange: "binance", // 既存維持（UIで複数化するなら後日拡張）
-        symbols: null,       // "all 固定"＝サーバ自動推定
+        symbols: null,       // null → サーバ側で USDT 建て全銘柄を自動巡回
         since: parseDate(since),
         until: parseDate(until),
       };
@@ -198,7 +198,7 @@ export default function TransactionHistory() {
       if (!res.ok || json?.ok === false) {
         const msg = `Sync failed (${res.status})
 step: ${json?.step ?? "unknown"}
-error: ${json?.error ?? "unknown"}`;
+error: ${json?.error ?? json?.raw ?? "unknown"}`;
         setErr(msg);
         alert(msg);
       } else {
