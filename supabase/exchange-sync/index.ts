@@ -85,7 +85,7 @@ async function binanceRequest(path, apiKey, apiSecret, params) {
   }
 }
 
-// USDT 建ての現物シンボル一覧を取得（symbol パラメータ自動生成用）
+// USDT 建てスポットのシンボル一覧
 async function fetchBinanceSymbols() {
   const url = `${BINANCE_ENDPOINT}/api/v3/exchangeInfo`;
   const res = await fetch(url, { method: "GET" });
@@ -99,27 +99,24 @@ async function fetchBinanceSymbols() {
   if (!res.ok) {
     throw new Error(json?.msg ?? text);
   }
-
   const symbols = (json.symbols ?? [])
     .filter((s) => s.status === "TRADING" && s.quoteAsset === "USDT")
     .map((s) => String(s.symbol));
-
   return symbols;
 }
 
-// ★ 修正版：シンボルなし → USDT 建て全銘柄を自動巡回
+// ★ 強化版：symbols 指定が無ければ USDT 建て全銘柄を自動巡回
 async function fetchBinanceTrades(apiKey, apiSecret, sinceMs, untilMs, symbolsOverride) {
-  const baseParams = { limit: 1000 };
+  const baseParams: any = { limit: 1000 };
   if (sinceMs) baseParams.startTime = sinceMs;
   if (untilMs) baseParams.endTime = untilMs;
 
-  // body.symbols に配列が来ていればそれを優先、無ければ自動検出
   let targetSymbols =
     Array.isArray(symbolsOverride) && symbolsOverride.length
       ? symbolsOverride
       : await fetchBinanceSymbols();
 
-  const all = [];
+  const all: any[] = [];
 
   for (const sym of targetSymbols) {
     try {
@@ -136,7 +133,6 @@ async function fetchBinanceTrades(apiKey, apiSecret, sinceMs, untilMs, symbolsOv
       }
     } catch (e) {
       const msg = String(e?.message ?? e);
-      // そのシンボルでトレードがない / 無効などは普通にあり得るのでスキップ
       if (
         msg.includes("Invalid symbol") ||
         msg.includes("Market is closed") ||
@@ -145,7 +141,6 @@ async function fetchBinanceTrades(apiKey, apiSecret, sinceMs, untilMs, symbolsOv
       ) {
         continue;
       }
-      // それ以外のエラーも全体停止させない（ログ用途）
       console.warn("[binance trades] symbol=", sym, " err=", msg);
       continue;
     }
@@ -155,7 +150,7 @@ async function fetchBinanceTrades(apiKey, apiSecret, sinceMs, untilMs, symbolsOv
 }
 
 async function fetchBinanceDeposits(apiKey, apiSecret, sinceMs, untilMs) {
-  const params = {};
+  const params: any = {};
   if (sinceMs) params.startTime = sinceMs;
   if (untilMs) params.endTime = untilMs;
   const data = await binanceRequest(
@@ -168,7 +163,7 @@ async function fetchBinanceDeposits(apiKey, apiSecret, sinceMs, untilMs) {
 }
 
 async function fetchBinanceWithdraws(apiKey, apiSecret, sinceMs, untilMs) {
-  const params = {};
+  const params: any = {};
   if (sinceMs) params.startTime = sinceMs;
   if (untilMs) params.endTime = untilMs;
   const data = await binanceRequest(
@@ -184,7 +179,6 @@ async function fetchBinanceWithdraws(apiKey, apiSecret, sinceMs, untilMs) {
 const BYBIT_ENDPOINT = "https://api.bybit.com";
 
 function signBybit(path, params, key, secret) {
-  // v5 auth: https://bybit-exchange.github.io/docs/v5/intro
   const timestamp = Date.now().toString();
   const recvWindow = "60000";
   const qs = new URLSearchParams(params).toString();
@@ -228,7 +222,7 @@ async function bybitRequest(path, apiKey, apiSecret, params) {
 }
 
 async function fetchBybitTrades(apiKey, apiSecret, sinceMs, untilMs) {
-  const params = { category: "linear" };
+  const params: any = { category: "linear" };
   if (sinceMs) params.startTime = sinceMs;
   if (untilMs) params.endTime = untilMs;
   const j = await bybitRequest("/v5/execution/list", apiKey, apiSecret, params);
@@ -236,7 +230,7 @@ async function fetchBybitTrades(apiKey, apiSecret, sinceMs, untilMs) {
 }
 
 async function fetchBybitDeposits(apiKey, apiSecret, sinceMs, untilMs) {
-  const params = {};
+  const params: any = {};
   if (sinceMs) params.startTime = sinceMs;
   if (untilMs) params.endTime = untilMs;
   const j = await bybitRequest(
@@ -249,7 +243,7 @@ async function fetchBybitDeposits(apiKey, apiSecret, sinceMs, untilMs) {
 }
 
 async function fetchBybitWithdraws(apiKey, apiSecret, sinceMs, untilMs) {
-  const params = {};
+  const params: any = {};
   if (sinceMs) params.startTime = sinceMs;
   if (untilMs) params.endTime = untilMs;
   const j = await bybitRequest(
@@ -314,7 +308,7 @@ async function okxRequest(path, apiKey, apiSecret, passphrase, params) {
 }
 
 async function fetchOkxTrades(apiKey, apiSecret, passphrase, sinceMs, untilMs) {
-  const params = { instType: "SPOT" };
+  const params: any = { instType: "SPOT" };
   if (sinceMs) params.begin = sinceMs;
   if (untilMs) params.end = untilMs;
   const j = await okxRequest("/api/v5/trade/fills", apiKey, apiSecret, passphrase, params);
@@ -322,7 +316,7 @@ async function fetchOkxTrades(apiKey, apiSecret, passphrase, sinceMs, untilMs) {
 }
 
 async function fetchOkxDeposits(apiKey, apiSecret, passphrase, sinceMs) {
-  const params = {};
+  const params: any = {};
   if (sinceMs) params.after = sinceMs;
   const j = await okxRequest(
     "/api/v5/asset/deposit-history",
@@ -335,7 +329,7 @@ async function fetchOkxDeposits(apiKey, apiSecret, passphrase, sinceMs) {
 }
 
 async function fetchOkxWithdraws(apiKey, apiSecret, passphrase, sinceMs) {
-  const params = {};
+  const params: any = {};
   if (sinceMs) params.after = sinceMs;
   const j = await okxRequest(
     "/api/v5/asset/withdrawal-history",
@@ -371,16 +365,16 @@ async function saveTrades(supabase, userId, exchange, external_user_id, items) {
   if (error) throw new Error(`saveTrades: ${error.message}`);
 }
 
+// ★ 修正版：exchange_transfers には user_id カラムが無いので user_id は保存しない
 async function saveTransfers(
   supabase,
-  userId,
+  _userId,                 // 署名合わせのため残すが使わない
   exchange,
   external_user_id,
   kind,
   items,
 ) {
   const rows = items.map((it) => ({
-    user_id: userId,
     exchange,
     external_user_id,
     raw: it,
@@ -393,8 +387,10 @@ async function saveTransfers(
       it.insertTime ?? it.applyTime ?? it.ts ?? it.fillTime ?? Date.now(),
     ).toISOString(),
   }));
+
   const { error } = await supabase.from("exchange_transfers").upsert(rows, {
-    onConflict: "user_id,exchange,external_user_id,txid,occurred_at,asset,amount",
+    // user_id を含まないユニークキーで重複排除
+    onConflict: "exchange,external_user_id,txid,occurred_at,asset,amount",
   });
   if (error) throw new Error(`saveTransfers: ${error.message}`);
 }
@@ -402,7 +398,6 @@ async function saveTransfers(
 Deno.serve(async (req) => {
   const origin = req.headers.get("origin");
 
-  // Preflight: ここで必ず 200 + CORS ヘッダを返す
   if (req.method === "OPTIONS") {
     return new Response("ok", {
       status: 200,
@@ -511,9 +506,9 @@ Deno.serve(async (req) => {
 
     let total = 0;
     let inserted = 0;
-    const errors = [];
+    const errors: string[] = [];
 
-    async function save(items) {
+    async function save(items: any[]) {
       if (!items?.length) return;
       total += items.length;
       try {
