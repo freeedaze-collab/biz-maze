@@ -336,33 +336,39 @@ async function fetchOkxWithdraws(
 // DB helpers
 // ------------------------------
 
-// ✅ exchange_accounts テーブルの実スキーマに合わせた実装
-//   - 少なくとも id は存在している（FK で参照されている）
-//   - 他のカラム（user_id / exchange / external_user_id）は存在しないので一切使わない
+// ✅ exchange_accounts 実スキーマに合わせた実装
+//   - NOT NULL な account_uid を必ず埋める
+//   - account_uid をキーに upsert して id を取得
 async function ensureExchangeAccountId(
   supabase: any,
-  _exchange: string,
-  _external_user_id: string | null,
+  exchange: string,
+  external_user_id: string | null,
 ) {
-  // 既存があればそれを使う（最初の 1 行）
-  const { data, error } = await supabase
+  const uid =
+    external_user_id && external_user_id.length > 0
+      ? `${exchange}:${external_user_id}`
+      : `${exchange}:default`;
+
+  // 既存検索
+  const { data: existing, error: selErr } = await supabase
     .from("exchange_accounts")
     .select("id")
-    .order("id", { ascending: true })
-    .limit(1);
+    .eq("account_uid", uid)
+    .maybeSingle();
 
-  if (error) throw new Error(`ensureExchangeAccountId(select): ${error.message}`);
-  if (data && data.length > 0) return data[0].id as number;
+  if (selErr) throw new Error(`ensureExchangeAccountId(select): ${selErr.message}`);
+  if (existing) return existing.id as number;
 
-  // 1 行も無ければ空レコードを作成
+  // なければ account_uid を指定して upsert
   const { data: inserted, error: insErr } = await supabase
     .from("exchange_accounts")
-    .insert({})
+    .upsert({ account_uid: uid }, { onConflict: "account_uid" })
     .select("id")
     .single();
 
   if (insErr) throw new Error(`ensureExchangeAccountId(insert): ${insErr.message}`);
-  return inserted?.id ?? null;
+  if (!inserted) throw new Error("ensureExchangeAccountId(insert): no row returned");
+  return inserted.id as number;
 }
 
 // Trades → exchange_trades
@@ -431,14 +437,14 @@ Deno.serve(async (req) => {
   const origin = req.headers.get("origin");
 
   if (req.method === "OPTIONS") {
-    return new Response("ok", { status: 200, headers: cors(origin) });
+    return new Response("ok", { status: 200, headers: cors(origin ?? undefined) });
   }
 
   try {
     if (req.method !== "POST") {
       return new Response(JSON.stringify({ error: "Method Not Allowed" }), {
         status: 405,
-        headers: cors(origin),
+        headers: cors(origin ?? undefined),
       });
     }
 
@@ -447,7 +453,7 @@ Deno.serve(async (req) => {
     if (!SUPABASE_URL || !SERVICE_ROLE) {
       return new Response(JSON.stringify({ error: "server_misconfigured" }), {
         status: 500,
-        headers: cors(origin),
+        headers: cors(origin ?? undefined),
       });
     }
 
@@ -460,7 +466,7 @@ Deno.serve(async (req) => {
     if (!authz?.startsWith("Bearer ")) {
       return new Response(JSON.stringify({ error: "no_token" }), {
         status: 401,
-        headers: cors(origin),
+        headers: cors(origin ?? undefined),
       });
     }
 
@@ -469,7 +475,7 @@ Deno.serve(async (req) => {
     if (uerr || !u?.user?.id) {
       return new Response(JSON.stringify({ error: "auth_error" }), {
         status: 401,
-        headers: cors(origin),
+        headers: cors(origin ?? undefined),
       });
     }
     const userId = u.user.id;
@@ -480,7 +486,7 @@ Deno.serve(async (req) => {
     if (!["binance", "bybit", "okx"].includes(exchange)) {
       return new Response(JSON.stringify({ error: "bad_exchange" }), {
         status: 400,
-        headers: cors(origin),
+        headers: cors(origin ?? undefined),
       });
     }
 
@@ -502,13 +508,13 @@ Deno.serve(async (req) => {
     if (credErr) {
       return new Response(
         JSON.stringify({ error: "credentials_read_failed", details: credErr.message }),
-        { status: 500, headers: cors(origin) },
+        { status: 500, headers: cors(origin ?? undefined) },
       );
     }
     if (!credRow) {
       return new Response(JSON.stringify({ error: "no_credentials" }), {
         status: 400,
-        headers: cors(origin),
+        headers: cors(origin ?? undefined),
       });
     }
 
@@ -516,7 +522,7 @@ Deno.serve(async (req) => {
     if (!apiKey || !apiSecret) {
       return new Response(JSON.stringify({ error: "bad_credentials" }), {
         status: 400,
-        headers: cors(origin),
+        headers: cors(origin ?? undefined),
       });
     }
 
@@ -608,19 +614,19 @@ Deno.serve(async (req) => {
           exchange,
           external_user_id,
           "withdrawal",
-          await fetchOkxWithdraws(apiKey, apiSecret, apiPassphrase, sinceMs),
+          await fetchOkxWithdraws(apiKey, apiSecret, sinceMs),
         );
       }
     }
 
     return new Response(JSON.stringify({ ok: true, total, inserted, errors }), {
       status: 200,
-      headers: cors(origin),
+      headers: cors(origin ?? undefined),
     });
   } catch (e: any) {
     return new Response(JSON.stringify({ error: String(e?.message ?? e) }), {
       status: 500,
-      headers: cors(origin),
+      headers: cors(origin ?? undefined),
     });
   }
 });
