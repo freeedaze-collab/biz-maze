@@ -7,7 +7,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-console.log("Function initializing (v3)...");
+console.log("Function initializing (v4)...");
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -35,7 +35,7 @@ Deno.serve(async (req) => {
     if (!user) throw new Error('Unauthorized: Invalid token.');
     const userId = user.id;
 
-    const CHAIN_MAP = { 'ethereum': 'eth-mainnet', 'polygon': 'matic-mainnet', 'arbitrum': 'arbitrum-mainnet', 'base': 'base-mainnet' };
+    const CHAIN_MAP: Record<string, string> = { 'ethereum': 'eth-mainnet', 'polygon': 'matic-mainnet', 'arbitrum': 'arbitrum-mainnet', 'base': 'base-mainnet' };
     const covalentChainName = CHAIN_MAP[chain.toLowerCase()];
     if (!covalentChainName) throw new Error(`Unsupported chain: ${chain}`);
     
@@ -59,9 +59,11 @@ Deno.serve(async (req) => {
                   user_id: userId, tx_hash: tx.tx_hash, wallet_address: walletAddress.toLowerCase(),
                   from_address: params.from.toLowerCase(), to_address: params.to.toLowerCase(),
                   asset: log.sender_contract_ticker_symbol, 
-                  // [修正点] amount -> amount_numeric に変更
                   amount_numeric: parseFloat(params.value) / Math.pow(10, log.sender_contract_decimals || 18),
-                  ts: tx.block_signed_at, chain: chain, raw_data: { ...tx, log_event: log }
+                  ts: tx.block_signed_at, 
+                  // [修正点] chain -> chain_id に変更
+                  chain_id: chain, 
+                  raw_data: { ...tx, log_event: log }
               });
           }
       }
@@ -70,9 +72,11 @@ Deno.serve(async (req) => {
           user_id: userId, tx_hash: tx.tx_hash, wallet_address: walletAddress.toLowerCase(),
           from_address: tx.from_address.toLowerCase(), to_address: tx.to_address.toLowerCase(),
           asset: nativeSymbol, 
-          // [修正点] amount -> amount_numeric に変更
           amount_numeric: parseFloat(tx.value) / Math.pow(10, 18),
-          ts: tx.block_signed_at, chain: chain, raw_data: tx,
+          ts: tx.block_signed_at, 
+          // [修正点] chain -> chain_id に変更
+          chain_id: chain, 
+          raw_data: tx,
         });
       }
     }
