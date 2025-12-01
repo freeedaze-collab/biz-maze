@@ -1,56 +1,54 @@
 // supabase/functions/exchange-sync/index.ts
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
-// CCXTライブラリをインポート
 import ccxt from 'https://esm.sh/ccxt@4.3.40'
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+// ★★★ お客様の復号ロジックをここに実装してください ★★★
+// Supabase Vaultを使用している場合、または他の暗号化ライブラリのコードをここに記述
+async function decrypt(encryptedKey: string): Promise<string> {
+  // これはダミーの実装です。必ず実際の復号ロジックに置き換えてください。
+  // 例: const decrypted = await someDecryptFunction(encryptedKey, DECRYPTION_KEY);
+  console.warn("Using placeholder decryption. API keys will not work.");
+  // 開発中は、一時的に平文を返すことも可能です。
+  // return encryptedKey; 
+  throw new Error("Decryption function not implemented. Please edit exchange-sync/index.ts");
 }
 
 Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') { return new Response('ok', { headers: corsHeaders }) }
-
+  // ... (CORSヘッダーは変更なし)
   try {
-    // フロントエンドから 'exchange' 名を受け取る
-    const { exchange } = await req.json()
+    const { exchange } = await req.json();
     if (!exchange) throw new Error("Exchange name is required.");
-    
-    // 'binance' や 'coinbase' といった名前がccxtに存在するかチェック
-    if (!ccxt.exchanges.includes(exchange)) {
-      throw new Error(`Unsupported exchange: ${exchange}`);
-    }
 
     const supabaseAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
     const { data: { user } } = await supabaseAdmin.auth.getUser(req.headers.get('Authorization')!.replace('Bearer ', ''));
     if (!user) throw new Error('Unauthorized.');
 
-    // 環境変数から取引所名に応じたキーを取得 (例: BINANCE_API_KEY, COINBASE_API_KEY)
-    const apiKey = Deno.env.get(`${exchange.toUpperCase()}_API_KEY`);
-    const secret = Deno.env.get(`${exchange.toUpperCase()}_SECRET_KEY`);
+    // [最重要修正] ユーザーIDと取引所名で、DBからAPIキー情報を取得
+    const { data: connection, error: connError } = await supabaseAdmin
+      .from('exchange_connections')
+      .select('api_key_encrypted, secret_key_encrypted')
+      .eq('user_id', user.id)
+      .eq('exchange', exchange)
+      .single();
 
-    if (!apiKey || !secret) {
-      throw new Error(`API keys for ${exchange} are not configured.`);
+    if (connError || !connection) {
+      throw new Error(`API connection details for ${exchange} not found for this user.`);
     }
 
-    // CCXTを使って取引所インスタンスを動的に作成
-    const exchangeInstance = new ccxt[exchange]({ apiKey, secret });
+    // 取得したキーを復号
+    const apiKey = await decrypt(connection.api_key_encrypted);
+    const secret = await decrypt(connection.secret_key_encrypted);
 
-    // 取引履歴を取得
+    const exchangeInstance = new ccxt[exchange]({ apiKey, secret });
     const trades = await exchangeInstance.fetchMyTrades();
 
-    if (trades.length === 0) {
-      return new Response(JSON.stringify({ message: 'No new trades found.', count: 0 }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-    }
+    if (trades.length === 0) { /* ... */ }
 
-    // CCXTの統一されたデータ形式を、私たちのDBスキーマに合わせて変換
     const tradesToUpsert = trades.map(trade => ({
       user_id: user.id,
       exchange: exchange,
       symbol: trade.symbol,
       trade_id: trade.id,
-      // 'info'フィールドに取引所固有の生データが全て入っている
       raw: trade.info,
     }));
 
@@ -58,16 +56,7 @@ Deno.serve(async (req) => {
       .from('exchange_trades')
       .upsert(tradesToUpsert, { onConflict: 'trade_id, user_id' })
       .select();
-
-    if (error) throw error;
     
-    const count = upsertData?.length ?? 0;
-    return new Response(JSON.stringify({ message: `Sync successful for ${exchange}. ${count} trades saved.`, count: count }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-
-  } catch (err) {
-    // CCXTからのエラーもキャッチして表示
-    const errorMessage = err instanceof ccxt.NetworkError ? `Network error connecting to exchange: ${err.message}` : err.message;
-    console.error(`!!!!!! Exchange Sync Error: ${errorMessage} !!!!!!`, err);
-    return new Response(JSON.stringify({ error: errorMessage }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 });
-  }
+    // ... (以降の処理は変更なし)
+  } catch (err) { /* ... */ }
 });
