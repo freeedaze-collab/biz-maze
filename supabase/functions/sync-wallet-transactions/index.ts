@@ -7,7 +7,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-console.log("Function initializing (v4)...");
+console.log("Function initializing (v5 - Full Schema Sync)...");
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -49,34 +49,51 @@ Deno.serve(async (req) => {
     
     const transactionsToUpsert = [];
     const nativeSymbol = result.data.items.length > 0 ? result.data.items[0].gas_quote_currency_symbol : 'NATIVE';
+    const userWallet = walletAddress.toLowerCase();
+
     for (const tx of result.data.items) {
       if (!tx.successful) continue;
+      
+      const getDirection = (from, to) => {
+        if (from === userWallet && to !== userWallet) return 'out';
+        if (from !== userWallet && to === userWallet) return 'in';
+        return 'self';
+      };
+
       for (const log of tx.log_events) {
           if (log.decoded?.name === "Transfer" && log.decoded?.params) {
               const params = log.decoded.params.reduce((acc, p) => ({...acc, [p.name]: p.value}), {} as any);
               if(!params.from || !params.to || !params.value || params.value === "0") continue;
               transactionsToUpsert.push({
-                  user_id: userId, tx_hash: tx.tx_hash, wallet_address: walletAddress.toLowerCase(),
-                  from_address: params.from.toLowerCase(), to_address: params.to.toLowerCase(),
-                  asset: log.sender_contract_ticker_symbol, 
-                  amount_numeric: parseFloat(params.value) / Math.pow(10, log.sender_contract_decimals || 18),
-                  ts: tx.block_signed_at, 
-                  // [修正点] chain -> chain_id に変更
-                  chain_id: chain, 
-                  raw_data: { ...tx, log_event: log }
+                  user_id: userId,
+                  wallet_address: userWallet,
+                  chain_id: chain,
+                  direction: getDirection(params.from.toLowerCase(), params.to.toLowerCase()),
+                  tx_hash: tx.tx_hash,
+                  block_number: tx.block_height,
+                  timestamp: tx.block_signed_at,
+                  from_address: params.from.toLowerCase(),
+                  to_address: params.to.toLowerCase(),
+                  value_wei: parseFloat(params.value) / Math.pow(10, log.sender_contract_decimals || 18),
+                  asset_symbol: log.sender_contract_ticker_symbol,
+                  raw: { ...tx, log_event: log }
               });
           }
       }
       if (tx.value !== "0" && tx.log_events.every(log => log.decoded?.name !== "Transfer")) {
         transactionsToUpsert.push({
-          user_id: userId, tx_hash: tx.tx_hash, wallet_address: walletAddress.toLowerCase(),
-          from_address: tx.from_address.toLowerCase(), to_address: tx.to_address.toLowerCase(),
-          asset: nativeSymbol, 
-          amount_numeric: parseFloat(tx.value) / Math.pow(10, 18),
-          ts: tx.block_signed_at, 
-          // [修正点] chain -> chain_id に変更
-          chain_id: chain, 
-          raw_data: tx,
+          user_id: userId,
+          wallet_address: userWallet,
+          chain_id: chain,
+          direction: getDirection(tx.from_address.toLowerCase(), tx.to_address.toLowerCase()),
+          tx_hash: tx.tx_hash,
+          block_number: tx.block_height,
+          timestamp: tx.block_signed_at,
+          from_address: tx.from_address.toLowerCase(),
+          to_address: tx.to_address.toLowerCase(),
+          value_wei: parseFloat(tx.value) / Math.pow(10, 18),
+          asset_symbol: nativeSymbol,
+          raw: tx,
         });
       }
     }
@@ -87,7 +104,7 @@ Deno.serve(async (req) => {
 
     const { data: upsertData, error } = await supabaseAdmin
       .from('wallet_transactions')
-      .upsert(transactionsToUpsert, { onConflict: 'user_id, tx_hash' })
+      .upsert(transactionsToUpsert, { onConflict: 'tx_hash' }) // The unique constraint is on tx_hash only
       .select();
 
     if (error) {
