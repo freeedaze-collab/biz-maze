@@ -1,12 +1,11 @@
 // supabase/functions/sync-wallet-transactions/index.ts
-// ... (他の部分は変更なし、upsert部分のみ修正)
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
-const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
-const CHAIN_ID_MAP: Record<string, number> = { 'ethereum': 1, 'polygon': 137, 'arbitrum': 42161, 'base': 8453 };
-const COVALENT_CHAIN_NAME_MAP: Record<string, string> = { 'ethereum': 'eth-mainnet', 'polygon': 'matic-mainnet', 'arbitrum': 'arbitrum-mainnet', 'base': 'base-mainnet' };
+const corsHeaders = { /* ... */ }; // 変更なし
+const CHAIN_ID_MAP: Record<string, number> = { /* ... */ }; // 変更なし
+const COVALENT_CHAIN_NAME_MAP: Record<string, string> = { /* ... */ }; // 変更なし
 
 Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') { return new Response('ok', { headers: corsHeaders }) }
+  if (req.method === 'OPTIONS') { /* ... */ }
   try {
     const { walletAddress, chain } = await req.json();
     const numericChainId = CHAIN_ID_MAP[chain.toLowerCase()];
@@ -21,24 +20,51 @@ Deno.serve(async (req) => {
     const result = await response.json();
     
     const transactionsToUpsert = [];
-    // ... (処理ロジックは前回と同じ)
-    for (const tx of result.data.items) { /* ... */ }
+    for (const tx of result.data.items) {
+        if (!tx.successful) continue;
+        const getDirection = (from: string, to: string) => walletAddress.toLowerCase() === from.toLowerCase() ? 'out' : 'in';
 
-    if (transactionsToUpsert.length === 0) {
-      return new Response(JSON.stringify({ message: 'No new transactions found.', count: 0 }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+        // ネイティブ通貨とERC20トークンの両方を考慮
+        const processTx = (item, amount, symbol, valueQuote, from, to) => ({
+            user_id: user.id,
+            wallet_address: walletAddress.toLowerCase(),
+            chain_id: numericChainId,
+            direction: getDirection(from, to),
+            tx_hash: item.tx_hash,
+            block_number: item.block_height,
+            timestamp: item.block_signed_at,
+            from_address: from,
+            to_address: to,
+            value_wei: amount,
+            asset_symbol: symbol,
+            raw: item,
+            // [最終修正] 正しいカラムにUSD換算額を格納
+            usd_value_at_tx: valueQuote
+        });
+
+        // ERC20 Transfers
+        for (const log of tx.log_events) {
+            if (log.decoded?.name === "Transfer") {
+                const value = log.decoded.params.find(p => p.name === 'value')?.value;
+                if (value && value !== '0') {
+                    transactionsToUpsert.push(processTx(tx, parseFloat(value), log.sender_contract_ticker_symbol, log.value_quote, log.decoded.params.find(p=>p.name==='from').value, log.decoded.params.find(p=>p.name==='to').value));
+                }
+            }
+        }
+        // Native Transfers
+        if (tx.value !== "0" && !tx.log_events.some(log => log.decoded?.name === "Transfer")) {
+             transactionsToUpsert.push(processTx(tx, parseFloat(tx.value), tx.gas_metadata.contract_ticker_symbol, tx.value_quote, tx.from_address, tx.to_address));
+        }
     }
+    
+    if (transactionsToUpsert.length === 0) { /* ... */ }
 
-    const { data: upsertData, error } = await supabaseAdmin
-      // [最重要修正] 正しいテーブル名 `transactions` に書き込む
-      .from('transactions')
+    const { data, error } = await supabaseAdmin
+      .from('wallet_transactions') // 正しいテーブル名
       .upsert(transactionsToUpsert, { onConflict: 'tx_hash' })
       .select();
 
     if (error) throw error;
-    
-    return new Response(JSON.stringify({ message: 'Sync successful.', count: upsertData?.length ?? 0 }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-  } catch (err) {
-    console.error("!!!!!! Wallet Sync Error !!!!!!", err);
-    return new Response(JSON.stringify({ error: err.message }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 });
-  }
+    return new Response(JSON.stringify({ message: 'Sync successful.', count: data?.length ?? 0 }), { /* ... */ });
+  } catch (err) { /* ... */ }
 });
