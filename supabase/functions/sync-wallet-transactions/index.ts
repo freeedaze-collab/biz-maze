@@ -1,24 +1,19 @@
 // supabase/functions/sync-wallet-transactions/index.ts
-
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
-// CORSヘッダー
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
   'Access-Control-Allow-Headers': 'authorization, content-type, apikey',
 }
 
-// CovalentのAPIキーを環境変数から取得
 const COVALENT_API_KEY = Deno.env.get('COVALENT_API_KEY')!
 
-// Covalentが要求するチェーン名への変換マップ
-const CHAIN_NAME_MAP: Record<string, string> = {
+const CHAIN_MAP: Record<string, string> = {
     'ethereum': 'eth-mainnet',
     'polygon': 'matic-mainnet',
     'arbitrum': 'arbitrum-mainnet',
     'base': 'base-mainnet',
-    // 将来的に他のチェーンを追加する場合は、ここに追加します
 }
 
 Deno.serve(async (req) => {
@@ -32,9 +27,9 @@ Deno.serve(async (req) => {
       throw new Error('walletAddress and chain are required.')
     }
     
-    const covalentChainName = CHAIN_NAME_MAP[chain.toLowerCase()]
+    const covalentChainName = CHAIN_MAP[chain.toLowerCase()]
     if (!covalentChainName) {
-        throw new Error(`Unsupported or unrecognized chain: ${chain}`)
+        throw new Error(`Unsupported chain: ${chain}`)
     }
 
     const supabaseAdmin = createClient(
@@ -49,44 +44,56 @@ Deno.serve(async (req) => {
     const userId = user.id
     console.log(`Starting Covalent sync for user ${userId}, wallet ${walletAddress} on ${covalentChainName}`)
 
-    // Covalent APIのエンドポイント (トランザクションV3を推奨)
-    const url = `https://api.covalenthq.com/v1/${covalentChainName}/address/${walletAddress}/transactions_v3/?key=${COVALENT_API_KEY}`
+    const url = `https://api.covalenthq.com/v1/${covalentChainName}/address/${walletAddress}/transactions_v2/?key=${COVALENT_API_KEY}`
     const response = await fetch(url)
     if (!response.ok) {
-        const errData = await response.json()
-        throw new Error(`Covalent API Error: ${errData.error_message}`)
+        const err = await response.json()
+        throw new Error(`Covalent API Error: ${err.error_message}`)
     }
     const result = await response.json()
     
-    if (!result.data || !result.data.items) {
-        throw new Error('Invalid response structure from Covalent API.')
-    }
-
     const transactionsToUpsert = []
+    const nativeSymbol = result.data.items.length > 0 ? result.data.items[0].gas_quote_currency_symbol : 'NATIVE'
     
     for (const tx of result.data.items) {
-      // 全ての送金イベント (ネイティブ通貨、トークン) をループ処理
+      if (tx.successful === false) continue; // Skip failed transactions
+
+      // Process log events for token transfers first
       for (const log of tx.log_events) {
           if (log.decoded?.name === "Transfer" && log.decoded?.params) {
-              const from = log.decoded.params.find(p => p.name === "from")?.value
-              const to = log.decoded.params.find(p => p.name === "to")?.value
-              const value = log.decoded.params.find(p => p.name === "value")?.value
-
-              if(!from || !to || !value) continue;
+              const params = log.decoded.params.reduce((acc, p) => ({...acc, [p.name]: p.value}), {} as any)
+              if(!params.from || !params.to || !params.value) continue;
+              if (params.value === "0") continue; // Skip zero value transfers
               
               transactionsToUpsert.push({
                   user_id: userId,
                   tx_hash: tx.tx_hash,
                   wallet_address: walletAddress.toLowerCase(),
-                  from_address: from.toLowerCase(),
-                  to_address: to.toLowerCase(),
-                  asset: log.sender_contract_ticker_symbol || 'Unknown Token',
-                  amount: parseFloat(value) / Math.pow(10, log.sender_contract_decimals || 18),
+                  from_address: params.from.toLowerCase(),
+                  to_address: params.to.toLowerCase(),
+                  asset: log.sender_contract_ticker_symbol,
+                  amount: parseFloat(params.value) / Math.pow(10, log.sender_contract_decimals || 18),
                   ts: tx.block_signed_at,
                   chain: chain,
-                  raw_data: { ...tx, matched_log: log } // どのログか分かるように保存
+                  raw_data: { ...tx, log_event: log }
               })
           }
+      }
+      
+      // Process native currency transfers if there are no token transfers in the same tx
+      if (tx.value !== "0" && tx.log_events.every(log => log.decoded?.name !== "Transfer")) {
+        transactionsToUpsert.push({
+          user_id: userId,
+          tx_hash: tx.tx_hash,
+          wallet_address: walletAddress.toLowerCase(),
+          from_address: tx.from_address.toLowerCase(),
+          to_address: tx.to_address.toLowerCase(),
+          asset: nativeSymbol,
+          amount: parseFloat(tx.value) / Math.pow(10, 18),
+          ts: tx.block_signed_at,
+          chain: chain,
+          raw_data: tx,
+        })
       }
     }
 
