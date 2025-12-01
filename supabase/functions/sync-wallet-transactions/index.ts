@@ -1,13 +1,14 @@
 // supabase/functions/sync-wallet-transactions/index.ts
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
+// [修正点] 'x-client-info' を許可ヘッダーに追加
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'authorization, content-type, apikey',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-console.log("Function initializing...");
+console.log("Function initializing (v2)...");
 
 Deno.serve(async (req) => {
   console.log("Request received. Method:", req.method);
@@ -66,7 +67,6 @@ Deno.serve(async (req) => {
     // --- 4. Data Processing & Upsert ---
     console.log("Processing transactions...");
     const transactionsToUpsert = [];
-    // (Processing logic is the same as before)
     const nativeSymbol = result.data.items.length > 0 ? result.data.items[0].gas_quote_currency_symbol : 'NATIVE';
     for (const tx of result.data.items) {
       if (!tx.successful) continue;
@@ -121,4 +121,3 @@ Deno.serve(async (req) => {
     });
   }
 });
-
