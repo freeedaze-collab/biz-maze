@@ -7,7 +7,15 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-console.log("Function initializing (v5 - Full Schema Sync)...");
+console.log("Function initializing (v6 - Final Schema Sync)...");
+
+// [修正点] チェーン名をChain ID(数字)に変換するためのマップ
+const CHAIN_ID_MAP: Record<string, number> = {
+    'ethereum': 1,
+    'polygon': 137,
+    'arbitrum': 42161,
+    'base': 8453,
+};
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -18,6 +26,12 @@ Deno.serve(async (req) => {
     const { walletAddress, chain } = await req.json();
     if (!walletAddress || !chain) {
       throw new Error('walletAddress and chain are required.');
+    }
+
+    // [修正点] 文字列のチェーン名を、対応する数字のIDに変換
+    const numericChainId = CHAIN_ID_MAP[chain.toLowerCase()];
+    if (!numericChainId) {
+        throw new Error(`Unsupported chain or invalid chain name: ${chain}`);
     }
 
     const SUPABASE_URL = Deno.env.get('SUPABASE_URL');
@@ -35,9 +49,9 @@ Deno.serve(async (req) => {
     if (!user) throw new Error('Unauthorized: Invalid token.');
     const userId = user.id;
 
-    const CHAIN_MAP: Record<string, string> = { 'ethereum': 'eth-mainnet', 'polygon': 'matic-mainnet', 'arbitrum': 'arbitrum-mainnet', 'base': 'base-mainnet' };
-    const covalentChainName = CHAIN_MAP[chain.toLowerCase()];
-    if (!covalentChainName) throw new Error(`Unsupported chain: ${chain}`);
+    // Covalent API呼び出し用のチェーン名マップは別途維持
+    const COVALENT_CHAIN_NAME_MAP: Record<string, string> = { 'ethereum': 'eth-mainnet', 'polygon': 'matic-mainnet', 'arbitrum': 'arbitrum-mainnet', 'base': 'base-mainnet' };
+    const covalentChainName = COVALENT_CHAIN_NAME_MAP[chain.toLowerCase()];
     
     const url = `https://api.covalenthq.com/v1/${covalentChainName}/address/${walletAddress}/transactions_v2/?key=${COVALENT_API_KEY}`;
     const response = await fetch(url);
@@ -54,7 +68,7 @@ Deno.serve(async (req) => {
     for (const tx of result.data.items) {
       if (!tx.successful) continue;
       
-      const getDirection = (from, to) => {
+      const getDirection = (from: string, to: string) => {
         if (from === userWallet && to !== userWallet) return 'out';
         if (from !== userWallet && to === userWallet) return 'in';
         return 'self';
@@ -67,14 +81,14 @@ Deno.serve(async (req) => {
               transactionsToUpsert.push({
                   user_id: userId,
                   wallet_address: userWallet,
-                  chain_id: chain,
+                  chain_id: numericChainId, // ★ 数字のIDを使用
                   direction: getDirection(params.from.toLowerCase(), params.to.toLowerCase()),
                   tx_hash: tx.tx_hash,
                   block_number: tx.block_height,
                   timestamp: tx.block_signed_at,
                   from_address: params.from.toLowerCase(),
                   to_address: params.to.toLowerCase(),
-                  value_wei: parseFloat(params.value) / Math.pow(10, log.sender_contract_decimals || 18),
+                  value_wei: parseFloat(params.value), // Covalent v2 returns this as a string, but it's already in wei units
                   asset_symbol: log.sender_contract_ticker_symbol,
                   raw: { ...tx, log_event: log }
               });
@@ -84,14 +98,14 @@ Deno.serve(async (req) => {
         transactionsToUpsert.push({
           user_id: userId,
           wallet_address: userWallet,
-          chain_id: chain,
+          chain_id: numericChainId, // ★ 数字のIDを使用
           direction: getDirection(tx.from_address.toLowerCase(), tx.to_address.toLowerCase()),
           tx_hash: tx.tx_hash,
           block_number: tx.block_height,
           timestamp: tx.block_signed_at,
           from_address: tx.from_address.toLowerCase(),
           to_address: tx.to_address.toLowerCase(),
-          value_wei: parseFloat(tx.value) / Math.pow(10, 18),
+          value_wei: parseFloat(tx.value), // This is also in wei units
           asset_symbol: nativeSymbol,
           raw: tx,
         });
@@ -104,7 +118,7 @@ Deno.serve(async (req) => {
 
     const { data: upsertData, error } = await supabaseAdmin
       .from('wallet_transactions')
-      .upsert(transactionsToUpsert, { onConflict: 'tx_hash' }) // The unique constraint is on tx_hash only
+      .upsert(transactionsToUpsert, { onConflict: 'tx_hash' })
       .select();
 
     if (error) {
