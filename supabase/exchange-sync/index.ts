@@ -1,6 +1,7 @@
 // supabase/functions/exchange-sync/index.ts
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
-import { createHmac } from 'https://deno.land/std@0.177.0/node/crypto.ts'
+// CCXTライブラリをインポート
+import ccxt from 'https://esm.sh/ccxt@4.3.40'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -8,58 +9,49 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const BINANCE_API_KEY = Deno.env.get('BINANCE_API_KEY')!
-const BINANCE_SECRET_KEY = Deno.env.get('BINANCE_SECRET_KEY')!
-const BINANCE_API_URL = 'https://api.binance.com'
-
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') { return new Response('ok', { headers: corsHeaders }) }
 
   try {
+    // フロントエンドから 'exchange' 名を受け取る
     const { exchange } = await req.json()
-    if (exchange.toLowerCase() !== 'binance') {
-      throw new Error('Only Binance is supported at this time.')
+    if (!exchange) throw new Error("Exchange name is required.");
+    
+    // 'binance' や 'coinbase' といった名前がccxtに存在するかチェック
+    if (!ccxt.exchanges.includes(exchange)) {
+      throw new Error(`Unsupported exchange: ${exchange}`);
     }
 
     const supabaseAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
     const { data: { user } } = await supabaseAdmin.auth.getUser(req.headers.get('Authorization')!.replace('Bearer ', ''));
     if (!user) throw new Error('Unauthorized.');
 
-    const query = `timestamp=${Date.now()}`
-    const signature = createHmac('sha256', BINANCE_SECRET_KEY).update(query).digest('hex')
-    
-    // 全ての取引シンボル(例: BTCUSDT, ETHUSDT)を取得
-    const symbolsResponse = await fetch(`${BINANCE_API_URL}/api/v3/exchangeInfo`);
-    const exchangeInfo = await symbolsResponse.json();
-    const tradeableSymbols = exchangeInfo.symbols.map(s => s.symbol);
+    // 環境変数から取引所名に応じたキーを取得 (例: BINANCE_API_KEY, COINBASE_API_KEY)
+    const apiKey = Deno.env.get(`${exchange.toUpperCase()}_API_KEY`);
+    const secret = Deno.env.get(`${exchange.toUpperCase()}_SECRET_KEY`);
 
-    let allTrades = [];
-    console.log(`Fetching trades for ${tradeableSymbols.length} symbols...`);
-
-    // 各シンボルごとに取引履歴を取得
-    for (const symbol of tradeableSymbols) {
-      const tradesQuery = `symbol=${symbol}&timestamp=${Date.now()}`
-      const tradesSignature = createHmac('sha256', BINANCE_SECRET_KEY).update(tradesQuery).digest('hex')
-      const url = `${BINANCE_API_URL}/api/v3/myTrades?${tradesQuery}&signature=${tradesSignature}`
-      
-      const response = await fetch(url, { headers: { 'X-MBX-APIKEY': BINANCE_API_KEY } });
-      const trades = await response.json();
-
-      if (Array.isArray(trades) && trades.length > 0) {
-        allTrades.push(...trades);
-      }
+    if (!apiKey || !secret) {
+      throw new Error(`API keys for ${exchange} are not configured.`);
     }
-    
-    if (allTrades.length === 0) {
+
+    // CCXTを使って取引所インスタンスを動的に作成
+    const exchangeInstance = new ccxt[exchange]({ apiKey, secret });
+
+    // 取引履歴を取得
+    const trades = await exchangeInstance.fetchMyTrades();
+
+    if (trades.length === 0) {
       return new Response(JSON.stringify({ message: 'No new trades found.', count: 0 }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
-    const tradesToUpsert = allTrades.map(trade => ({
+    // CCXTの統一されたデータ形式を、私たちのDBスキーマに合わせて変換
+    const tradesToUpsert = trades.map(trade => ({
       user_id: user.id,
-      exchange: 'binance',
+      exchange: exchange,
       symbol: trade.symbol,
-      trade_id: trade.id.toString(), // trade_idを文字列として保存
-      raw: trade, // Binanceからの生データをそのまま保存
+      trade_id: trade.id,
+      // 'info'フィールドに取引所固有の生データが全て入っている
+      raw: trade.info,
     }));
 
     const { data: upsertData, error } = await supabaseAdmin
@@ -70,10 +62,12 @@ Deno.serve(async (req) => {
     if (error) throw error;
     
     const count = upsertData?.length ?? 0;
-    return new Response(JSON.stringify({ message: `Sync successful. ${count} trades saved.`, count: count }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    return new Response(JSON.stringify({ message: `Sync successful for ${exchange}. ${count} trades saved.`, count: count }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
   } catch (err) {
-    console.error("!!!!!! Exchange Sync Error !!!!!!", err);
-    return new Response(JSON.stringify({ error: err.message }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 });
+    // CCXTからのエラーもキャッチして表示
+    const errorMessage = err instanceof ccxt.NetworkError ? `Network error connecting to exchange: ${err.message}` : err.message;
+    console.error(`!!!!!! Exchange Sync Error: ${errorMessage} !!!!!!`, err);
+    return new Response(JSON.stringify({ error: errorMessage }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 });
   }
 });
