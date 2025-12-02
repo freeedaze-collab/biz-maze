@@ -2,12 +2,18 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { b64encode } from "https://deno.land/std@0.177.0/encoding/base64.ts";
 
-// 他の正常な関数で実績のあるCORSヘッダー定義
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-};
+// --- [最重要修正] `verify_wallet`と全く同じCORSラッパー関数 ---
+const ALLOW_ORIGIN = '*';
+
+function cors(res: Response) {
+  const h = new Headers(res.headers);
+  h.set('Access-Control-Allow-Origin', ALLOW_ORIGIN);
+  h.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  h.set('Access-Control-Allow-Headers', 'authorization, x-client-info, apikey, content-type');
+  return new Response(res.body, { status: res.status, headers: h });
+}
+// --- CORSラッパーここまで ---
+
 
 // --- 暗号化ロジック (変更なし) ---
 async function getKey() {
@@ -34,15 +40,14 @@ type SaveBody = {
   api_passphrase?: string;
 };
 
-// --- [最重要修正] ここからが完全なサーバー処理です ---
+// --- [最重要修正] `verify_wallet`と全く同じ`Deno.serve`構造 ---
 Deno.serve(async (req) => {
   // プリフライトリクエスト(OPTIONS)に正しく応答
-  if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders });
+  if (req.method === 'OPTIONS') {
+    return cors(new Response(null, { status: 204 }));
   }
 
   try {
-    // ユーザー認証
     const userClient = createClient(
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_ANON_KEY")!,
@@ -51,45 +56,39 @@ Deno.serve(async (req) => {
     const { data: { user } } = await userClient.auth.getUser();
     if (!user) throw new Error("User not found. Please log in.");
 
-    // 管理者権限でSupabaseクライアントを初期化
     const supabaseAdmin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
-
-    // リクエストボディをパース
     const body = (await req.json()) as SaveBody;
+
     if (!body.connection_name || !body.api_key || !body.api_secret) {
       throw new Error("connection_name, api_key, and api_secret are required");
     }
     
-    // 資格情報を暗号化
     const enc_blob = await encryptJson({
       apiKey: body.api_key,
       apiSecret: body.api_secret,
       apiPassphrase: body.api_passphrase,
     });
     
-    // データベースに保存
     const { error } = await supabaseAdmin.from("exchange_connections").upsert({
       user_id: user.id,
       exchange: body.exchange,
       connection_name: body.connection_name,
       encrypted_blob: enc_blob,
-    }, {
-      onConflict: "user_id,connection_name"
-    }).select();
+    }, { onConflict: "user_id,connection_name" });
 
     if (error) throw error;
     
-    // 成功応答
-    return new Response(JSON.stringify({ ok: true }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    // 成功応答をcors()でラップ
+    return cors(new Response(JSON.stringify({ ok: true }), {
+      headers: { 'Content-Type': 'application/json' },
       status: 200,
-    });
+    }));
 
   } catch (e) {
-    // エラー応答
-    return new Response(JSON.stringify({ error: String(e?.message ?? e) }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    // エラー応答をcors()でラップ
+    return cors(new Response(JSON.stringify({ error: String(e?.message ?? e) }), {
+      headers: { 'Content-Type': 'application/json' },
       status: 500,
-    });
+    }));
   }
 });
