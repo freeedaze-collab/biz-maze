@@ -4,127 +4,156 @@ import { supabase } from '@/lib/supabaseClient'
 import { useAuth } from '@/hooks/useAuth'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
-import { useToast } from "@/components/ui/use-toast"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { useToast } from '@/components/ui/use-toast'
+import { RefreshCw, PlusCircle, Trash2 } from 'lucide-react'
 
-type Exchange = 'binance' | 'bybit' | 'okx'
-type ConnectionStatus = 'not_linked' | 'linked_keys' | 'failed'
-
-interface ExchangeConnection {
-  exchange: Exchange
-  status: ConnectionStatus
-}
-
-export function VCE() {
-  const { session } = useAuth()
-  const { toast } = useToast()
-
-  const [connections, setConnections] = useState<ExchangeConnection[]>([])
-  const [loading, setLoading] = useState(true)
-
-  const [selectedExchange, setSelectedExchange] = useState<Exchange>('binance')
-  const [apiKey, setApiKey] = useState('')
-  const [apiSecret, setApiSecret] = useState('')
-  const [apiPassphrase, setApiPassphrase] = useState('')
-  const [externalUserId, setExternalUserId] = useState('')
+// 既存の接続を表示し、同期・削除を行うコンポーネント
+function ExistingConnections() {
+  const { session } = useAuth();
+  const { toast } = useToast();
+  const [connections, setConnections] = useState<any[]>([]);
+  const [loading, setLoading] = useState<Record<string, boolean>>({});
 
   async function fetchConnections() {
     if (!session) return;
-    setLoading(true);
     const { data, error } = await supabase
       .from('exchange_connections')
-      .select('exchange, status')
-      .eq('user_id', session.user.id)
-      
-    if (error) {
-      toast({ variant: "destructive", title: "Error fetching connections", description: error.message })
-    } else {
-        const initialConnections: ExchangeConnection[] = [];
-        const exchanges: Exchange[] = ['binance', 'bybit', 'okx'];
-        exchanges.forEach(ex => {
-            const existing = data.find(d => d.exchange === ex);
-            initialConnections.push(existing || { exchange: ex, status: 'not_linked' });
-        });
-        setConnections(initialConnections);
-    }
-    setLoading(false);
+      .select('*')
+      .eq('user_id', session.user.id);
+    if (error) toast({ variant: 'destructive', title: 'Failed to load connections', description: error.message });
+    else setConnections(data);
   }
 
-  useEffect(() => {
-    fetchConnections()
-  }, [session])
+  useEffect(() => { fetchConnections() }, [session]);
 
-  const handleSaveKeys = async () => {
-    if (!session || !apiKey || !apiSecret) {
-      toast({ variant: "destructive", title: "Missing Fields", description: "API Key and Secret are required." })
-      return
+  const handleSync = async (exchange: string) => {
+    const id = `sync-${exchange}`;
+    setLoading(prev => ({ ...prev, [id]: true }));
+    toast({ title: `Sync started for ${exchange}...` });
+    try {
+      const { data, error } = await supabase.functions.invoke('exchange-sync', { body: { exchange } });
+      if (error) throw new Error(error.message);
+      toast({ title: `Sync Complete for ${exchange}`, description: data.message });
+    } catch (e: any) {
+      toast({ variant: 'destructive', title: `Sync Failed for ${exchange}`, description: e.message });
+    } finally {
+      setLoading(prev => ({ ...prev, [id]: false }));
     }
-    setLoading(true)
-    const { error } = await supabase.functions.invoke('exchange-save-keys', {
-      body: {
-        exchange: selectedExchange, api_key: apiKey, api_secret: apiSecret,
-        api_passphrase: apiPassphrase, external_user_id: externalUserId,
-      },
-    })
-    setLoading(false)
+  };
 
-    if (error) {
-      toast({ variant: "destructive", title: "Failed to save keys", description: error.message })
-    } else {
-      toast({ title: "API Keys saved successfully!" })
-      setApiKey(''); setApiSecret(''); setApiPassphrase(''); setExternalUserId('');
-      fetchConnections();
+  const handleDelete = async (id: string) => {
+    if (!window.confirm("Are you sure you want to delete this connection?")) return;
+    const { error } = await supabase.from('exchange_connections').delete().eq('id', id);
+    if (error) toast({ variant: 'destructive', title: 'Failed to delete', description: error.message });
+    else {
+        toast({ title: 'Connection deleted' });
+        fetchConnections();
     }
-  }
+  };
+
+  if (connections.length === 0) return null;
 
   return (
-    <div className="container mx-auto p-4 md:p-6 lg:p-8 space-y-8">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Virtual Custody / Exchanges (VCE)</h1>
-        <p className="text-muted-foreground">Connect your exchange accounts to automatically sync your trading history.</p>
-      </div>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Link New Exchange Account</CardTitle>
-          <CardDescription>Enter your read-only API keys here. They will be stored encrypted.</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <Select onValueChange={(v: Exchange) => setSelectedExchange(v)} defaultValue={selectedExchange}>
-            <SelectTrigger><SelectValue placeholder="Select Exchange" /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="binance">Binance</SelectItem>
-              <SelectItem value="bybit">Bybit</SelectItem>
-              <SelectItem value="okx">OKX</SelectItem>
-            </SelectContent>
-          </Select>
-          <Input placeholder="API Key" value={apiKey} onChange={e => setApiKey(e.target.value)} />
-          <Input type="password" placeholder="API Secret" value={apiSecret} onChange={e => setApiSecret(e.target.value)} />
-          {selectedExchange === 'okx' && 
-            <Input type="password" placeholder="API Passphrase (for OKX)" value={apiPassphrase} onChange={e => setApiPassphrase(e.target.value)} />}
-          <Input placeholder="External User ID (Optional)" value={externalUserId} onChange={e => setExternalUserId(e.target.value)} />
-          <Button onClick={handleSaveKeys} disabled={loading}>
-            {loading ? 'Saving...' : 'Save API Keys'}
-          </Button>
-        </CardContent>
-      </Card>
-      
-      <div>
-        <h2 className="text-2xl font-bold tracking-tight mb-4">Connected Accounts</h2>
-        <div className="space-y-4">
-            {connections.map(c => (
-                <Card key={c.exchange}>
-                    <CardHeader>
-                        <CardTitle className="capitalize">{c.exchange}</CardTitle>
-                        <CardDescription>Status: <span className="font-semibold">{c.status.replace('_', ' ')}</span></CardDescription>
-                    </CardHeader>
-                </Card>
-            ))}
-        </div>
-      </div>
-    </div>
-  )
+    <Card>
+      <CardHeader><CardTitle>Your Connections</CardTitle></CardHeader>
+      <CardContent className="space-y-4">
+        {connections.map(conn => (
+          <div key={conn.id} className="flex items-center justify-between p-3 border rounded-lg">
+            <span className="font-semibold capitalize">{conn.exchange}</span>
+            <div className='space-x-2'>
+              <Button size="sm" onClick={() => handleSync(conn.exchange)} disabled={loading[`sync-${conn.exchange}`]}>
+                <RefreshCw className={`mr-2 h-4 w-4 ${loading[`sync-${conn.exchange}`] ? 'animate-spin' : ''}`} />
+                Sync
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => handleDelete(conn.id)}><Trash2 className="h-4 w-4" /></Button>
+            </div>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
 }
 
-export default VCE
+// APIキーを保存するためのフォームコンポーネント
+function AddNewConnectionForm() {
+  const { toast } = useToast();
+  const [exchange, setExchange] = useState('binance');
+  const [apiKey, setApiKey] = useState('');
+  const [apiSecret, setApiSecret] = useState('');
+  const [passphrase, setPassphrase] = useState(''); // OKX用
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+
+    try {
+      // [最重要修正] 正しい関数 `exchange-save-keys` を呼び出す
+      const { error } = await supabase.functions.invoke("exchange-save-keys", {
+        body: {
+          exchange: exchange,
+          // [最重要修正] 正しいパラメータ名 (snake_case) を使用
+          api_key: apiKey,
+          api_secret: apiSecret,
+          api_passphrase: exchange === "okx" ? passphrase : undefined,
+        },
+      });
+      
+      if (error) throw error;
+
+      toast({ title: 'API Keys saved successfully!' });
+      // 成功したらフォームをリセットし、リストをリロード
+      setApiKey(''); setApiSecret(''); setPassphrase('');
+      window.location.reload();
+
+    } catch (err: any) {
+      toast({ variant: 'destructive', title: 'Failed to save keys', description: err.message });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Add New Exchange</CardTitle>
+        <CardDescription>Your API keys will be encrypted and stored securely.</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <select value={exchange} onChange={e => setExchange(e.target.value)} className="w-full p-2 border rounded">
+            <option value="binance">Binance</option>
+            <option value="bybit">Bybit</option>
+            <option value="okx">OKX</option>
+          </select>
+
+          <Input placeholder="API Key" value={apiKey} onChange={e => setApiKey(e.target.value)} required />
+          <Input placeholder="API Secret" type="password" value={apiSecret} onChange={e => setApiSecret(e.target.value)} required />
+          
+          {exchange === "okx" && (
+            <Input placeholder="API Passphrase (for OKX only)" type="password" value={passphrase} onChange={e => setPassphrase(e.target.value)} required />
+          )}
+          
+          <Button type="submit" disabled={loading} className="w-full">
+            <PlusCircle className="mr-2 h-4 w-4" />
+            {loading ? 'Saving...' : 'Save Connection'}
+          </Button>
+        </form>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ページ全体のコンポーネント
+export function VCEPage() {
+  return (
+    <div className="container mx-auto p-4 md:p-6 lg:p-8 space-y-8">
+      <h1 className="text-3xl font-bold tracking-tight">Exchange Connections</h1>
+      <ExistingConnections />
+      <AddNewConnectionForm />
+    </div>
+  );
+}
+
+export default VCEPage;
