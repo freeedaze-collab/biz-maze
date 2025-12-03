@@ -45,40 +45,67 @@ Deno.serve(async (req) => {
       if (!conn.encrypted_blob) { console.warn(`[WARN] Skipping ${conn.exchange} due to missing blob.`); continue; }
       
       const credentials = await decryptBlob(conn.encrypted_blob);
-      const exchangeInstance = new ccxt[conn.exchange]({ apiKey: credentials.apiKey, secret: credentials.apiSecret, password: credentials.apiPassphrase });
-      let ledgerRecords = [];
+      const allExchangeRecords = [];
       
-      // [最終最重要修正] fetchMyTrades を捨て、全ての資産の動きを記録する fetchLedger を使う
-      console.log(`[LOG] Using fetchLedger to get ALL account activities (trades, withdrawals, etc.) since ${new Date(since).toISOString()}`);
-      
-      try {
-        // fetchLedger はシンボルを必要とせず、全てのアカウント台帳を取得する
-        const records = await exchangeInstance.fetchLedger(undefined, since);
-        if (records.length > 0) {
-          console.log(`[LOG] SUCCESS! fetchLedger found ${records.length} records for ${conn.exchange}.`);
-          ledgerRecords.push(...records);
-        } else {
-          console.log(`[LOG] fetchLedger found 0 records for this period. (This might be normal)`);
-        }
-      } catch (e) {
-        console.error(`[CRASH] fetchLedger failed for ${conn.exchange}. This exchange might not support it.`, e.message);
-        // fetchLedger が失敗した場合のフォールバックとして fetchMyTrades を試す（念のため）
-        console.log(`[LOG] Fallback: Trying fetchMyTrades for ${conn.exchange}`);
+      if (conn.exchange === 'binance') {
+        // [最終最重要修正] 'spot'を明示し、トレード、入金、出金を個別に取得する
+        const exchangeInstance = new ccxt.binance({
+          apiKey: credentials.apiKey,
+          secret: credentials.apiSecret,
+          options: { 'defaultType': 'spot' }, // 'linear'エラーを回避するため、現物口座を明示
+        });
+        
+        // 1. トレードの取得
         try {
-            const trades = await exchangeInstance.fetchMyTrades(undefined, since);
-            if (trades.length > 0) {
-                console.log(`[LOG] Fallback SUCCESS! Found ${trades.length} trades.`);
-                ledgerRecords.push(...trades);
+            console.log("[LOG] Binance (Spot): Fetching balance and markets for trades...");
+            const balance = await exchangeInstance.fetchBalance();
+            const markets = await exchangeInstance.loadMarkets();
+            const heldAssets = Object.keys(balance.total).filter(asset => balance.total[asset] > 0);
+            const symbolsToFetch = new Set<string>();
+            for (const asset of heldAssets) {
+                if (markets[`${asset}/JPY`]) symbolsToFetch.add(`${asset}/JPY`);
+                if (markets[`${asset}/USDT`]) symbolsToFetch.add(`${asset}/USDT`);
             }
-        } catch (tradeError) {
-             console.error(`[CRASH] Fallback fetchMyTrades also failed.`, tradeError.message);
-        }
+            console.log(`[LOG] Binance (Spot): Found trade symbols to check: ${Array.from(symbolsToFetch).join(', ')}`);
+            for (const symbol of symbolsToFetch) {
+                const trades = await exchangeInstance.fetchMyTrades(symbol, since);
+                if (trades.length > 0) {
+                    console.log(`[LOG] Binance (Spot): Found ${trades.length} trades for ${symbol}.`);
+                    allExchangeRecords.push(...trades);
+                }
+            }
+        } catch (e) { console.error(`[CRASH] Binance (Spot): Failed to fetch trades.`, e.message); }
+
+        // 2. 入金の取得 (お客様のコードヒントより)
+        try {
+            console.log("[LOG] Binance (Spot): Fetching deposits...");
+            const deposits = await exchangeInstance.fetchDeposits(undefined, since);
+            if (deposits.length > 0) {
+                console.log(`[LOG] Binance (Spot): Found ${deposits.length} deposits.`);
+                allExchangeRecords.push(...deposits);
+            }
+        } catch (e) { console.error(`[CRASH] Binance (Spot): Failed to fetch deposits.`, e.message); }
+
+        // 3. 出金の取得 (お客様のコードヒントより)
+        try {
+            console.log("[LOG] Binance (Spot): Fetching withdrawals...");
+            const withdrawals = await exchangeInstance.fetchWithdrawals(undefined, since);
+            if (withdrawals.length > 0) {
+                console.log(`[LOG] Binance (Spot): Found ${withdrawals.length} withdrawals.`);
+                allExchangeRecords.push(...withdrawals);
+            }
+        } catch (e) { console.error(`[CRASH] Binance (Spot): Failed to fetch withdrawals.`, e.message); }
+
+      } else {
+        // Binance以外の取引所 (現状維持)
+        const exchangeInstance = new ccxt[conn.exchange]({ apiKey: credentials.apiKey, secret: credentials.apiSecret, password: credentials.apiPassphrase });
+        const trades = await exchangeInstance.fetchMyTrades(undefined, since);
+        allExchangeRecords.push(...trades);
       }
 
-      console.log(`[LOG] Found a total of ${ledgerRecords.length} records for ${conn.exchange}.`);
-      if (ledgerRecords.length > 0) {
-        // ledger の各レコードに一意のIDがあることを期待し、raw_dataとして保存
-        allRecordsToUpsert.push(...ledgerRecords.map(record => ({ 
+      console.log(`[LOG] Found a total of ${allExchangeRecords.length} records for ${conn.exchange}.`);
+      if (allExchangeRecords.length > 0) {
+        allRecordsToUpsert.push(...allExchangeRecords.map(record => ({ 
             user_id: user.id, 
             exchange: conn.exchange, 
             raw_data: record 
@@ -89,7 +116,7 @@ Deno.serve(async (req) => {
     let totalSavedCount = 0;
     if (allRecordsToUpsert.length > 0) {
       console.log(`[LOG] Upserting ${allRecordsToUpsert.length} records to the database...`);
-      // raw_data->>'id' がコンフリクトキーとして機能することを期待
+      // ccxtの各レコードは 'id' を持つはず。重複を避けるためのキーとして使用
       const { data, error } = await supabaseAdmin.from('exchange_trades').upsert(allRecordsToUpsert, { onConflict: "user_id,exchange,(raw_data->>'id')" }).select();
       if (error) throw error;
       totalSavedCount = data?.length ?? 0;
