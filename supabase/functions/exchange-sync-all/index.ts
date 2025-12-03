@@ -88,79 +88,82 @@ Deno.serve(async (req) => {
         apiKey: credentials.apiKey,
         secret: credentials.apiSecret,
         password: credentials.apiPassphrase,
-        // ★★★★★ 最後の修正：この「お守り」が全てを解決します ★★★★★
         options: { 'defaultType': 'spot' }, 
       });
       
+      // ★★★★★ 最終修正：ロジックの順序を完全に修正 ★★★★★
       try {
-        console.log(`[LOG] ${conn.exchange}: Fetching data via Hybrid-Intelligent method...`);
+        console.log(`[LOG] ${conn.exchange}: Fetching data via Final Hybrid-Intelligent method...`);
         await exchangeInstance.loadMarkets();
 
-        // 1. 売買履歴の取得
-        const trades = await (async () => {
-          if (!exchangeInstance.has['fetchMyTrades']) return [];
-          
-          const relevantAssets = new Set<string>();
-          const balance = await exchangeInstance.fetchBalance();
-          Object.keys(balance.total)
-              .filter(asset => balance.total[asset] > 0)
-              .forEach(asset => relevantAssets.add(asset));
-          
-          let deposits: ccxt.Transaction[] = [];
-          if (exchangeInstance.has['fetchDeposits']) {
-              deposits = await exchangeInstance.fetchDeposits(undefined, since);
-              deposits.forEach(deposit => relevantAssets.add(deposit.currency));
-          }
-          allExchangeRecords.push(...deposits);
-          console.log(`[LOG] Found ${deposits.length} deposits.`);
-          console.log(`[LOG] Relevant assets (from balance & deposits): ${Array.from(relevantAssets).join(', ')}`);
+        const relevantAssets = new Set<string>();
+        
+        // 1. 最初に、取引調査のヒントとなる情報を全て取得
+        // 1a. 現在の資産残高
+        const balance = await exchangeInstance.fetchBalance();
+        const balanceAssets = Object.keys(balance.total).filter(asset => balance.total[asset] > 0);
+        balanceAssets.forEach(asset => relevantAssets.add(asset));
+        console.log(`[LOG] Found ${balanceAssets.length} assets in balance.`);
 
-          const marketsToCheck = new Set<string>();
-          const quoteCurrencies = ['USDT', 'BTC', 'ETH', 'JPY', 'BUSD', 'USDC'];
-          for (const asset of relevantAssets) {
-              for (const quote of quoteCurrencies) {
-                  const symbol1 = `${asset}/${quote}`;
-                  if (exchangeInstance.markets[symbol1]?.spot) marketsToCheck.add(symbol1);
-                  const symbol2 = `${quote}/${asset}`;
-                  if (exchangeInstance.markets[symbol2]?.spot) marketsToCheck.add(symbol2);
-              }
-          }
-
-          const symbols = Array.from(marketsToCheck);
-          if (symbols.length === 0) {
-            console.log(`[LOG] No relevant markets to check for trades.`);
-            return [];
-          }
-          
-          console.log(`[LOG] Checking for trades in ${symbols.length} relevant markets...`);
-          const promises = symbols.map(symbol =>
-              exchangeInstance.fetchMyTrades(symbol, since)
-                  .then(trades => {
-                      if (trades.length > 0) console.log(`[LOG] Found ${trades.length} trades for ${symbol}.`);
-                      return trades;
-                  })
-                  .catch(e => {
-                      console.warn(`[WARN] Could not fetch trades for symbol ${symbol}: ${e.message}`);
-                      return [];
-                  })
-          );
-          const tradesBySymbol = await Promise.all(promises);
-          return tradesBySymbol.flat();
-        })();
-
-        if (trades.length > 0) {
-            console.log(`[LOG] Found a total of ${trades.length} trades.`);
-            allExchangeRecords.push(...trades);
+        // 1b. 入金履歴
+        let deposits: ccxt.Transaction[] = [];
+        if (exchangeInstance.has['fetchDeposits']) {
+            deposits = await exchangeInstance.fetchDeposits(undefined, since);
+            deposits.forEach(deposit => relevantAssets.add(deposit.currency));
+            allExchangeRecords.push(...deposits);
         }
+        console.log(`[LOG] Found ${deposits.length} deposits.`);
 
-        // 2. 出金履歴の取得
+        // 1c. 出金履歴
+        let withdrawals: ccxt.Transaction[] = [];
         if (exchangeInstance.has['fetchWithdrawals']) {
-            const withdrawals = await exchangeInstance.fetchWithdrawals(undefined, since);
-            if (withdrawals.length > 0) {
-                console.log(`[LOG] Found ${withdrawals.length} withdrawals.`);
-                allExchangeRecords.push(...withdrawals);
+            withdrawals = await exchangeInstance.fetchWithdrawals(undefined, since);
+            withdrawals.forEach(withdrawal => relevantAssets.add(withdrawal.currency));
+            allExchangeRecords.push(...withdrawals);
+        }
+        console.log(`[LOG] Found ${withdrawals.length} withdrawals.`);
+
+        console.log(`[LOG] Total relevant assets (from balance, deposits & withdrawals): ${Array.from(relevantAssets).join(', ')}`);
+
+        // 2. 完全な資産リストを基に、売買履歴を調査
+        if (exchangeInstance.has['fetchMyTrades']) {
+            const marketsToCheck = new Set<string>();
+            const quoteCurrencies = ['USDT', 'BTC', 'ETH', 'JPY', 'BUSD', 'USDC', 'BNB'];
+            for (const asset of relevantAssets) {
+                for (const quote of quoteCurrencies) {
+                    const symbol1 = `${asset}/${quote}`;
+                    if (exchangeInstance.markets[symbol1]?.spot) marketsToCheck.add(symbol1);
+                    const symbol2 = `${quote}/${asset}`;
+                    if (exchangeInstance.markets[symbol2]?.spot) marketsToCheck.add(symbol2);
+                }
+            }
+
+            const symbols = Array.from(marketsToCheck);
+            if (symbols.length > 0) {
+              console.log(`[LOG] Checking for trades in ${symbols.length} relevant markets...`);
+              const promises = symbols.map(symbol =>
+                  exchangeInstance.fetchMyTrades(symbol, since)
+                      .then(trades => {
+                          if (trades.length > 0) console.log(`[LOG] Found ${trades.length} trades for ${symbol}.`);
+                          return trades;
+                      })
+                      .catch(e => {
+                          console.warn(`[WARN] Could not fetch trades for symbol ${symbol}: ${e.message}`);
+                          return [];
+                      })
+              );
+              const tradesBySymbol = await Promise.all(promises);
+              const allTrades = tradesBySymbol.flat();
+
+              if (allTrades.length > 0) {
+                  console.log(`[LOG] Found a total of ${allTrades.length} trades.`);
+                  allExchangeRecords.push(...allTrades);
+              }
+            } else {
+              console.log(`[LOG] No relevant markets to check for trades.`);
             }
         }
+
       } catch (e) {
           console.error(`[ERROR] ${conn.exchange}: A critical error occurred during the fetch process.`, e.message);
       }
