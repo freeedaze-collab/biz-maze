@@ -24,6 +24,32 @@ async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: s
   return JSON.parse(new TextDecoder().decode(decryptedData));
 }
 
+// ccxtのレコードをSupabaseのテーブルスキーマに変換する
+function transformRecord(record: any, userId: string, exchange: string) {
+  const isTrade = record.info?.symbol || record.symbol; // トレードかどうかを判定
+  
+  // 'id' または 'txid' が存在することを確認し、なければエラーを投げるか、代替IDを生成する
+  const recordId = record.id || record.txid;
+  if (!recordId) {
+    console.warn("Record is missing a unique ID. Skipping:", record);
+    return null; // このレコードはスキップ
+  }
+
+  return {
+    user_id: userId,
+    exchange: exchange,
+    trade_id: String(recordId), // UNIQUE制約のためのID
+    symbol: isTrade ? record.symbol : record.currency,
+    side: isTrade ? record.side : record.type, // 'buy'/'sell' または 'deposit'/'withdrawal'
+    price: record.price ?? 0,
+    amount: record.amount,
+    fee: record.fee?.cost,
+    fee_asset: record.fee?.currency,
+    ts: new Date(record.timestamp).toISOString(),
+    raw_data: record,
+  };
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
@@ -40,19 +66,16 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({ message: "No exchange connections found.", totalSaved: 0 }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
-    const allRecordsToUpsert = [];
-    const since = Date.now() - 90 * 24 * 60 * 60 * 1000;
+    let allRecordsToUpsert = [];
+    const since = Date.now() - 90 * 24 * 60 * 60 * 1000; 
 
     for (const conn of connections) {
       console.log(`[LOG] Processing ${conn.exchange}...`);
-      if (!conn.encrypted_blob) {
-        console.warn(`[WARN] Skipping ${conn.exchange} due to missing blob.`);
-        continue;
-      }
-
+      if (!conn.encrypted_blob) { console.warn(`[WARN] Skipping ${conn.exchange} due to missing blob.`); continue; }
+      
       const credentials = await decryptBlob(conn.encrypted_blob);
       const allExchangeRecords = [];
-
+      
       if (conn.exchange === 'binance') {
         const exchangeInstance = new ccxt.binance({
           apiKey: credentials.apiKey,
@@ -63,17 +86,10 @@ Deno.serve(async (req) => {
         // 1. トレードの取得
         try {
             console.log("[LOG] Binance (Spot): Fetching trades...");
-            const balance = await exchangeInstance.fetchBalance();
-            const markets = await exchangeInstance.loadMarkets();
-            const heldAssets = Object.keys(balance.total).filter(asset => balance.total[asset] > 0);
-            const symbolsToFetch = new Set<string>();
-            for (const asset of heldAssets) {
-                if (markets[`${asset}/JPY`]) symbolsToFetch.add(`${asset}/JPY`);
-                if (markets[`${asset}/USDT`]) symbolsToFetch.add(`${asset}/USDT`);
-            }
-            for (const symbol of symbolsToFetch) {
-                const trades = await exchangeInstance.fetchMyTrades(symbol, since);
-                if (trades.length > 0) allExchangeRecords.push(...trades);
+            const trades = await exchangeInstance.fetchMyTrades(undefined, since);
+            if (trades.length > 0) {
+                console.log(`[LOG] Binance (Spot): Found ${trades.length} trades.`);
+                allExchangeRecords.push(...trades);
             }
         } catch (e) { console.error(`[WARN] Binance (Spot): Could not fetch trades.`, e.message); }
 
@@ -81,14 +97,20 @@ Deno.serve(async (req) => {
         try {
             console.log("[LOG] Binance (Spot): Fetching deposits...");
             const deposits = await exchangeInstance.fetchDeposits(undefined, since);
-            if (deposits.length > 0) allExchangeRecords.push(...deposits);
+            if (deposits.length > 0) {
+                console.log(`[LOG] Binance (Spot): Found ${deposits.length} deposits.`);
+                allExchangeRecords.push(...deposits);
+            }
         } catch (e) { console.error(`[WARN] Binance (Spot): Could not fetch deposits.`, e.message); }
 
         // 3. 出金の取得
         try {
             console.log("[LOG] Binance (Spot): Fetching withdrawals...");
             const withdrawals = await exchangeInstance.fetchWithdrawals(undefined, since);
-            if (withdrawals.length > 0) allExchangeRecords.push(...withdrawals);
+            if (withdrawals.length > 0) {
+                console.log(`[LOG] Binance (Spot): Found ${withdrawals.length} withdrawals.`);
+                allExchangeRecords.push(...withdrawals);
+            }
         } catch (e) { console.error(`[WARN] Binance (Spot): Could not fetch withdrawals.`, e.message); }
 
       } else {
@@ -99,19 +121,16 @@ Deno.serve(async (req) => {
 
       console.log(`[LOG] Found a total of ${allExchangeRecords.length} records for ${conn.exchange}.`);
       if (allExchangeRecords.length > 0) {
-        allRecordsToUpsert.push(...allExchangeRecords.map(record => ({
-          user_id: user.id,
-          exchange: conn.exchange,
-          raw_data: record
-        })));
+        const transformed = allExchangeRecords.map(r => transformRecord(r, user.id, conn.exchange)).filter(r => r !== null);
+        allRecordsToUpsert.push(...transformed);
       }
     }
-
+    
     let totalSavedCount = 0;
     if (allRecordsToUpsert.length > 0) {
       console.log(`[LOG] Upserting ${allRecordsToUpsert.length} records to the database...`);
-      // [修正] 実際のテーブル定義に合わせた onConflict 句
-      const { data, error } = await supabaseAdmin.from('exchange_trades').upsert(allRecordsToUpsert, { onConflict: 'user_id,exchange,raw_data' }).select();
+      // [最終修正] 正しいユニーク制約カラムを指定
+      const { data, error } = await supabaseAdmin.from('exchange_trades').upsert(allRecordsToUpsert, { onConflict: 'user_id,exchange,trade_id' }).select();
       
       if (error) {
           console.error("[CRASH] DATABASE UPSERT FAILED:", error);
