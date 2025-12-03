@@ -1,4 +1,5 @@
 // src/pages/Transactions.tsx
+"use client";
 import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { useAuth } from '@/hooks/useAuth';
@@ -8,8 +9,8 @@ import { useToast } from '@/components/ui/use-toast';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { RefreshCw, Wallet, GitCompareArrows } from "lucide-react";
 
-// --- [修正] `SyncHub`を拡張し、取引所の同期機能を追加 ---
-function SyncHub() {
+// --- 同期機能ハブ ---
+function SyncHub({ onSyncComplete }: { onSyncComplete: () => void }) {
   const { session } = useAuth();
   const { toast } = useToast();
   const [wallets, setWallets] = useState<{ wallet_address: string, wallet_name: string | null, chain: string }[]>([]);
@@ -24,10 +25,21 @@ function SyncHub() {
   useEffect(() => { fetchConnections() }, [session]);
 
   const handleWalletSync = async (identifier: string, chain: string) => {
-    // (この関数のロジックは変更なし)
+      const id = `wallet-${identifier}-${chain}`;
+      setLoading(prev => ({ ...prev, [id]: true }));
+      toast({ title: `Sync started for wallet ${identifier}...` });
+      try {
+          const { data, error } = await supabase.functions.invoke('sync-wallet-transactions', { body: { walletAddress: identifier, chain: chain } });
+          if (error) throw new Error(error.message);
+          toast({ title: `Wallet Sync Complete`, description: data.message });
+          if (data.count > 0) onSyncComplete();
+      } catch (e: any) {
+          toast({ variant: "destructive", title: "Wallet Sync Failed", description: e.message });
+      } finally {
+          setLoading(prev => ({ ...prev, [id]: false }));
+      }
   };
 
-  // [追加] 全ての取引所を一度に同期する
   const handleExchangeSyncAll = async () => {
     const id = 'sync-all-exchanges';
     setLoading(prev => ({ ...prev, [id]: true }));
@@ -36,7 +48,7 @@ function SyncHub() {
         const { data, error } = await supabase.functions.invoke('exchange-sync-all');
         if (error) throw new Error(error.message);
         toast({ title: "Exchange Sync Complete", description: `Saved ${data.totalSaved} new trades.` });
-        window.location.reload();
+        if (data.totalSaved > 0) onSyncComplete();
     } catch (e: any) {
         toast({ variant: "destructive", title: "Exchange Sync Failed", description: e.message });
     } finally {
@@ -51,7 +63,6 @@ function SyncHub() {
         <CardDescription>Manually sync the latest transaction history from your connected sources.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* ウォレット同期 */}
         {wallets.map(w => (
           <div key={w.wallet_address + w.chain} className="flex items-center justify-between p-3 border rounded-lg bg-background">
             <div className='flex items-center'><Wallet className="h-4 w-4 mr-2" /> <span>{w.wallet_name || w.wallet_address} ({w.chain})</span></div>
@@ -60,12 +71,10 @@ function SyncHub() {
             </Button>
           </div>
         ))}
-        {/* 取引所同期 */}
         <div className="flex items-center justify-between p-3 border rounded-lg bg-background">
             <div className='flex items-center'><GitCompareArrows className="h-4 w-4 mr-2" /> <span>All Connected Exchanges</span></div>
             <Button size="sm" onClick={handleExchangeSyncAll} disabled={loading['sync-all-exchanges']}>
-                <RefreshCw className={`mr-2 h-4 w-4 ${loading['sync-all-exchanges'] ? 'animate-spin' : ''}`} />
-                Sync All
+                <RefreshCw className={`mr-2 h-4 w-4 ${loading['sync-all-exchanges'] ? 'animate-spin' : ''}`} /> Sync All
             </Button>
         </div>
       </CardContent>
@@ -73,9 +82,8 @@ function SyncHub() {
   );
 }
 
-
-// --- [修正] `TransactionsTable`を実際のデータ表示コンポーネントに ---
-function TransactionsTable() {
+// --- 全取引テーブル ---
+function TransactionsTable({ refreshKey }: { refreshKey: number }) {
     const { session } = useAuth();
     const { toast } = useToast();
     const [transactions, setTransactions] = useState<any[]>([]);
@@ -85,7 +93,7 @@ function TransactionsTable() {
         if (!session) return;
         setLoading(true);
         const { data, error } = await supabase
-            .from('all_transactions') // [重要] 新しく作成したビューから取得
+            .from('all_transactions')
             .select('*')
             .order('date', { ascending: false });
 
@@ -99,7 +107,7 @@ function TransactionsTable() {
 
     useEffect(() => {
         fetchTransactions();
-    }, [session]);
+    }, [session, refreshKey]); // [重要] refreshKeyを依存配列に追加
     
     return (
         <Card>
@@ -120,11 +128,11 @@ function TransactionsTable() {
                             <TableRow><TableCell colSpan={5} className="text-center h-24">Loading data...</TableCell></TableRow>
                         ) : transactions.length > 0 ? (
                             transactions.map(tx => (
-                                <TableRow key={tx.id + tx.source}>
+                                <TableRow key={`${tx.id}-${tx.source}`}>
                                     <TableCell className="text-sm text-muted-foreground">{new Date(tx.date).toLocaleString()}</TableCell>
                                     <TableCell><span className={`capitalize text-xs font-semibold px-2 py-1 rounded-full ${tx.source === 'on-chain' ? 'bg-blue-100 text-blue-800' : 'bg-amber-100 text-amber-800'}`}>{tx.source}</span></TableCell>
                                     <TableCell className="font-medium">{tx.description}</TableCell>
-                                    <TableCell className={`text-right font-mono ${tx.type === 'buy' || tx.type === 'transfer' ? 'text-green-600' : 'text-red-600'}`}>{tx.type === 'sell' ? '-' : ''}{Number(tx.amount).toFixed(6)}</TableCell>
+                                    <TableCell className={`text-right font-mono ${tx.type === 'buy' || tx.type === 'deposit' || tx.type === 'receive' ? 'text-green-600' : 'text-red-600'}`}>{tx.type === 'sell' || tx.type === 'withdrawal' || tx.type === 'send' ? '-' : ''}{Number(tx.amount).toFixed(6)}</TableCell>
                                     <TableCell>{tx.asset}</TableCell>
                                 </TableRow>
                             ))
@@ -138,13 +146,18 @@ function TransactionsTable() {
     );
 }
 
-// --- メインページコンポーネント (変更なし) ---
+// --- メインページ ---
 export function TransactionsPage() { 
+  const [refreshKey, setRefreshKey] = useState(0);
+  const handleSyncComplete = () => {
+    setRefreshKey(prevKey => prevKey + 1); // 同期完了後、テーブルを強制的に再レンダリング
+  };
+
   return (
     <div className="container mx-auto p-4 md:p-6 lg:p-8 space-y-6">
       <h1 className="text-3xl font-bold tracking-tight">Transactions</h1>
-      <SyncHub />
-      <TransactionsTable />
+      <SyncHub onSyncComplete={handleSyncComplete} />
+      <TransactionsTable refreshKey={refreshKey} />
     </div>
   ) 
 }
