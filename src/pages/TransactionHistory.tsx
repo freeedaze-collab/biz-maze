@@ -6,7 +6,6 @@ import { Link } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
 
-// VCE.tsxから型定義を移植
 type Exchange = "binance" | "bybit" | "okx";
 
 interface SyncState {
@@ -20,7 +19,6 @@ interface ExchangeConn {
   exchange: Exchange;
 }
 
-// 取引履歴データの型定義（仮）
 interface Transaction {
   id: string;
   ts: string;
@@ -36,19 +34,16 @@ export default function TransactionHistory() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // ===== VCE.tsxから同期関連のStateを移植 =====
   const [connections, setConnections] = useState<ExchangeConn[]>([]);
   const [syncExch, setSyncExch] = useState<Exchange>("binance");
   const [busy, setBusy] = useState(false);
   const [syncMessage, setSyncMessage] = useState("");
   const toast = (msg: string) => alert(msg);
 
-  // 接続済みの取引所リストと取引履歴をロードする
   const loadData = async () => {
     if (!user?.id) return;
     setLoading(true);
 
-    // 接続済み取引所リストを取得
     const { data: connData, error: connError } = await supabase
       .from("exchange_connections")
       .select("id, exchange")
@@ -56,13 +51,12 @@ export default function TransactionHistory() {
     if (connError) console.error("[sync] Error loading connections:", connError);
     else setConnections(connData as ExchangeConn[] || []);
 
-    // 取引履歴を取得
     const { data, error } = await supabase
-      .from("exchange_trades") // `transactions`から`exchange_trades`に変更
+      .from("exchange_trades")
       .select("id, ts, exchange, symbol, side, amount, price")
       .eq("user_id", user.id)
       .order("ts", { ascending: false })
-      .limit(100); // パフォーマンスのため件数を制限
+      .limit(100);
 
     if (error) {
       console.error("[history] load error:", error);
@@ -78,7 +72,7 @@ export default function TransactionHistory() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
-  // ===== VCE.tsxから同期ロジック(onSync)を完全に移植 =====
+  // ★★★★★ 最終解決策：Blobを使用してリクエストボディをカプセル化 ★★★★★
   const onSync = async () => {
     if (!user?.id) { toast("Please login again."); return; }
 
@@ -95,12 +89,17 @@ export default function TransactionHistory() {
 
     while (keepGoing) {
       try {
+        const payload = {
+          exchange: syncExch,
+          state: currentState,
+        };
+        
+        // Blobでリクエストボディを確実に送信する
+        const body = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+
         const { error, data } = await supabase.functions.invoke("exchange-sync-all", {
-          headers: { ...headers, 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            exchange: syncExch,
-            state: currentState,
-          }),
+          headers: headers, // Content-TypeはBlobが自動的に処理
+          body: body,
         });
 
         if (error) throw error;
@@ -108,7 +107,7 @@ export default function TransactionHistory() {
         if (data.status === 'pending') {
           currentState = data.state;
           if (totalMarketCount === 0 && currentState?.marketsToProcess) {
-            totalMarketCount = currentState.marketsToProcess.length + 1; // +1 for initial step
+            totalMarketCount = currentState.marketsToProcess.length + 1;
           }
           const processedCount = totalMarketCount - (currentState?.marketsToProcess.length ?? 0);
           setSyncMessage(`Syncing ${syncExch}... Processed ${processedCount} of ${totalMarketCount} steps.`);
@@ -123,7 +122,7 @@ export default function TransactionHistory() {
         toast(`Sync failed for ${syncExch}: ` + (error.message || "An unknown error occurred."));
         setSyncMessage("");
         setBusy(false);
-        return; // Exit on error
+        return;
       }
     }
 
@@ -131,7 +130,7 @@ export default function TransactionHistory() {
     setSyncMessage("");
     toast(`Sync complete for ${syncExch}! Saved ${finalData?.totalSaved ?? 0} new records.`);
     console.log("[sync] result:", finalData);
-    loadData(); // 同期完了後、取引履歴を再読み込み
+    loadData();
   };
 
   return (
@@ -141,7 +140,6 @@ export default function TransactionHistory() {
         <Link to="/dashboard" className="text-sm underline">Back to Dashboard</Link>
       </div>
 
-      {/* ===== ここから同期UI ===== */}
       <div className="border rounded-xl p-4 space-y-3">
         <div className="font-semibold">Sync Exchange Transactions</div>
         <div className="flex flex-wrap items-center gap-2">
@@ -168,19 +166,13 @@ export default function TransactionHistory() {
           <Link to="/exchange/VCE" className="text-sm underline ml-4">Manage Connections</Link>
         </div>
         
-        {syncMessage && (
-          <p className="text-sm text-blue-600 font-medium mt-2">
-            {syncMessage}
-          </p>
-        )}
+        {syncMessage && <p className="text-sm text-blue-600 font-medium mt-2">{syncMessage}</p>}
 
         <ul className="text-xs text-muted-foreground list-disc ml-5">
           <li>Sync fetches all trades, deposits, and withdrawals from the last 90 days.</li>
         </ul>
       </div>
-      {/* ===== 同期UIここまで ===== */}
 
-      {/* ===== 取引履歴テーブル ===== */}
       <div className="border rounded-xl">
         <table className="min-w-full divide-y divide-gray-200">
           <thead className="bg-gray-50">
