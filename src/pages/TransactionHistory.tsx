@@ -51,23 +51,34 @@ function SyncHub({ onSyncComplete }: { onSyncComplete: () => void }) {
       if (sessionError || !session) throw new Error("Authentication session not found.");
       
       const accessToken = session.access_token;
-      // VITE_SUPABASE_URLを環境変数から取得
       const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+      const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY; // <-- お客様の指摘の核心
+
+      if (!supabaseUrl || !supabaseAnonKey) {
+        throw new Error("Supabase URL or Anon Key is not configured in environment variables.");
+      }
+      
       const functionUrl = `${supabaseUrl}/functions/v1/exchange-sync-all`;
 
       const response = await fetch(functionUrl, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
+          // [最重要修正] お客様のご指摘通り、必須のapikeyヘッダーを追加
+          'apikey': supabaseAnonKey,
           'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
         },
       });
 
       const responseData = await response.json();
-      if (!response.ok) throw new Error(responseData.error || `Server responded with status ${response.status}`);
+      if (!response.ok) {
+        throw new Error(responseData.error || `Server responded with status ${response.status}`);
+      }
 
-      toast({ title: "Exchange Sync Complete", description: `Saved ${responseData.totalSaved} new trades.` });
-      if (responseData.totalSaved > 0) onSyncComplete();
+      toast({ title: "Exchange Sync Complete", description: `Saved ${responseData.totalSaved || 0} new trades.` });
+      if (responseData.totalSaved > 0) {
+        onSyncComplete();
+      }
 
     } catch (e: any) {
       toast({ variant: "destructive", title: "Exchange Sync Failed", description: e.message });
