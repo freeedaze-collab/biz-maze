@@ -37,7 +37,7 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({ message: "No exchange connections found.", totalSaved: 0 }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
-    const allTradesToUpsert = [];
+    const allRecordsToUpsert = [];
     const since = Date.now() - 90 * 24 * 60 * 60 * 1000; 
 
     for (const conn of connections) {
@@ -46,71 +46,62 @@ Deno.serve(async (req) => {
       
       const credentials = await decryptBlob(conn.encrypted_blob);
       const exchangeInstance = new ccxt[conn.exchange]({ apiKey: credentials.apiKey, secret: credentials.apiSecret, password: credentials.apiPassphrase });
-      let trades = [];
+      let ledgerRecords = [];
       
-      console.log(`[LOG] Fetching trades since ${new Date(since).toISOString()}`);
-
-      if (conn.exchange === 'binance') {
-        // [最終最重要修正] JPYを含む全ての可能性を考慮し、シンボルを完全に動的検出する
-        console.log("[LOG] Binance: Fetching balance and loading all markets...");
-        const balance = await exchangeInstance.fetchBalance();
-        const markets = await exchangeInstance.loadMarkets();
-        
-        const heldAssets = Object.keys(balance.total).filter(asset => balance.total[asset] > 0);
-        console.log(`[LOG] Binance: User holds assets: ${heldAssets.join(', ')}`);
-
-        const symbolsToFetch = new Set<string>();
-        const allMarketSymbols = Object.keys(markets);
-
-        // 保有資産と、全市場情報をクロスチェックし、可能性のある全シンボルを洗い出す
-        for (const asset of heldAssets) {
-            for (const marketSymbol of allMarketSymbols) {
-                if (marketSymbol === `${asset}/JPY` || marketSymbol === `${asset}/USDT` || marketSymbol === `${asset}/BUSD`) {
-                    symbolsToFetch.add(marketSymbol);
-                }
-            }
-        }
-        
-        if (symbolsToFetch.size === 0) {
-          console.log("[LOG] Binance: No relevant symbols (like .../JPY, .../USDT) found from balance.");
+      // [最終最重要修正] fetchMyTrades を捨て、全ての資産の動きを記録する fetchLedger を使う
+      console.log(`[LOG] Using fetchLedger to get ALL account activities (trades, withdrawals, etc.) since ${new Date(since).toISOString()}`);
+      
+      try {
+        // fetchLedger はシンボルを必要とせず、全てのアカウント台帳を取得する
+        const records = await exchangeInstance.fetchLedger(undefined, since);
+        if (records.length > 0) {
+          console.log(`[LOG] SUCCESS! fetchLedger found ${records.length} records for ${conn.exchange}.`);
+          ledgerRecords.push(...records);
         } else {
-          console.log(`[LOG] Binance: Found symbols to check: ${Array.from(symbolsToFetch).join(', ')}`);
-          for (const symbol of symbolsToFetch) {
-            try {
-              const symbolTrades = await exchangeInstance.fetchMyTrades(symbol, since);
-              if (symbolTrades.length > 0) {
-                console.log(`[LOG] Binance: SUCCESS! Found ${symbolTrades.length} trades for ${symbol}`);
-                trades.push(...symbolTrades);
-              }
-            } catch (e) { console.warn(`[WARN] Binance: Could not fetch trades for ${symbol}. It's ok.`, e.message); }
-          }
+          console.log(`[LOG] fetchLedger found 0 records for this period. (This might be normal)`);
         }
-      } else {
-        console.log(`[LOG] ${conn.exchange}: Fetching all trades...`);
-        trades = await exchangeInstance.fetchMyTrades(undefined, since);
+      } catch (e) {
+        console.error(`[CRASH] fetchLedger failed for ${conn.exchange}. This exchange might not support it.`, e.message);
+        // fetchLedger が失敗した場合のフォールバックとして fetchMyTrades を試す（念のため）
+        console.log(`[LOG] Fallback: Trying fetchMyTrades for ${conn.exchange}`);
+        try {
+            const trades = await exchangeInstance.fetchMyTrades(undefined, since);
+            if (trades.length > 0) {
+                console.log(`[LOG] Fallback SUCCESS! Found ${trades.length} trades.`);
+                ledgerRecords.push(...trades);
+            }
+        } catch (tradeError) {
+             console.error(`[CRASH] Fallback fetchMyTrades also failed.`, tradeError.message);
+        }
       }
 
-      console.log(`[LOG] Found a total of ${trades.length} trades for ${conn.exchange}.`);
-      if (trades.length > 0) {
-        allTradesToUpsert.push(...trades.map(trade => ({ user_id: user.id, exchange: conn.exchange, raw_data: trade })));
+      console.log(`[LOG] Found a total of ${ledgerRecords.length} records for ${conn.exchange}.`);
+      if (ledgerRecords.length > 0) {
+        // ledger の各レコードに一意のIDがあることを期待し、raw_dataとして保存
+        allRecordsToUpsert.push(...ledgerRecords.map(record => ({ 
+            user_id: user.id, 
+            exchange: conn.exchange, 
+            raw_data: record 
+        })));
       }
     }
     
     let totalSavedCount = 0;
-    if (allTradesToUpsert.length > 0) {
-      console.log(`[LOG] Upserting ${allTradesToUpsert.length} trades to the database...`);
-      const { data, error } = await supabaseAdmin.from('exchange_trades').upsert(allTradesToUpsert, { onConflict: "user_id,exchange,(raw_data->>'id')" }).select();
+    if (allRecordsToUpsert.length > 0) {
+      console.log(`[LOG] Upserting ${allRecordsToUpsert.length} records to the database...`);
+      // raw_data->>'id' がコンフリクトキーとして機能することを期待
+      const { data, error } = await supabaseAdmin.from('exchange_trades').upsert(allRecordsToUpsert, { onConflict: "user_id,exchange,(raw_data->>'id')" }).select();
       if (error) throw error;
       totalSavedCount = data?.length ?? 0;
-      console.log(`[LOG] VICTORY! Successfully upserted ${totalSavedCount} trades.`);
+      console.log(`[LOG] VICTORY! Successfully upserted ${totalSavedCount} records.`);
     } else {
-      console.log("[LOG] No new trades found across all exchanges to save.");
+      console.log("[LOG] No new records found across all exchanges to save.");
     }
 
     return new Response(JSON.stringify({ message: `Sync complete.`, totalSaved: totalSavedCount }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
   } catch (err) {
-    console.error(`[CRASH] A critical error occurred in exchange-sync-all:`, err);
+    console.error(`[CRASH] A critical error occurred in the function:`, err);
     return new Response(JSON.stringify({ error: err.message }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 });
   }
 });
