@@ -95,9 +95,11 @@ Deno.serve(async (req) => {
       try {
         console.log(`[LOG] ${conn.exchange}: Fetching all trades...`);
         if (exchangeInstance.has['fetchMyTrades']) {
-            // Binanceは 'type':'spot' を明示しないと先物と誤認されるためパラメータで指定
+            // ★★★★★ 修正箇所 ★★★★★
+            // ライブラリが取引所のルールを理解するために必須の行
+            await exchangeInstance.loadMarkets(); 
+
             const params = conn.exchange === 'binance' ? { 'type': 'spot' } : {};
-            // symbolを未指定にすることで、全通貨ペアの取引を取得する
             const trades = await exchangeInstance.fetchMyTrades(undefined, since, undefined, params);
 
             if (trades.length > 0) {
@@ -108,7 +110,6 @@ Deno.serve(async (req) => {
             }
         }
       } catch (e) {
-          // ここでエラーが出ても、後続の入出金処理は続行する
           console.error(`[ERROR] ${conn.exchange}: Could not fetch trades.`, e.message);
       }
 
