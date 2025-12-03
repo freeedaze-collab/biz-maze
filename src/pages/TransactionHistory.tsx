@@ -14,7 +14,7 @@ interface UnifiedTransaction {
   counter_asset: string | null; fee: number | null; fee_asset: string | null; ts: string;
 }
 
-// ★★★ 新アーキテクチャ対応 ★★★
+// ★★★ お客様のご提案を反映した最終版 ★★★
 export default function TransactionHistory() {
   const { user } = useAuth();
   const [transactions, setTransactions] = useState<UnifiedTransaction[]>([]);
@@ -22,7 +22,7 @@ export default function TransactionHistory() {
   const [syncExch, setSyncExch] = useState<Exchange>("binance");
   const [since, setSince] = useState("");
   const [until, setUntil] = useState("");
-  const [symbols, setSymbols] = useState("");
+  // --- SymbolsのStateを削除 ---
   const [busy, setBusy] = useState(false);
   const [syncMessage, setSyncMessage] = useState("");
   const toast = (msg: string) => alert(msg);
@@ -42,7 +42,6 @@ export default function TransactionHistory() {
 
   useEffect(() => { loadData(); }, [user?.id]);
 
-  // ★★★ onSyncを新アーキテクチャ（準備->実行->保存）に完全刷新 ★★★
   const onSync = async () => {
     if (!user?.id) { toast("Please login again."); return; }
 
@@ -52,36 +51,36 @@ export default function TransactionHistory() {
     const allFetchedRecords: any[] = [];
 
     try {
-      // 1. 準備 (Prep)
+      // 1. 準備 (Prep) - Symbolsの指定を削除
       setSyncMessage(`[1/3] Preparing sync for ${syncExch}...`);
       const { data: prepData, error: prepError } = await supabase.functions.invoke("exchange-sync-prep", {
-        headers, body: { exchange: syncExch, symbols: symbols.trim() ? symbols : null },
+        headers, body: { exchange: syncExch, since: since || null, until: until || null },
       });
       if (prepError) throw new Error(`[Prep] ${prepError.message}`);
       const { marketsToFetch, deposits, withdrawals } = prepData;
-      allFetchedRecords.push(...deposits, ...withdrawals);
+      allFetchedRecords.push(...deposits, ...withdrawals); // 入出金履歴をまず追加
       setSyncMessage(`[1/3] Found ${deposits.length} deposits, ${withdrawals.length} withdrawals, and ${marketsToFetch.length} markets to sync.`);
 
-      // 2. 実行 (Worker)
+      // 2. 実行 (Worker) - 全ての市場の「売買」履歴を取得
       for (let i = 0; i < marketsToFetch.length; i++) {
         const market = marketsToFetch[i];
-        setSyncMessage(`[2/3] Syncing market ${i + 1} of ${marketsToFetch.length}: ${market}...`);
+        setSyncMessage(`[2/3] Syncing trades for market ${i + 1} of ${marketsToFetch.length}: ${market}...`);
         const { data: workerData, error: workerError } = await supabase.functions.invoke("exchange-sync-worker", {
           headers, body: { exchange: syncExch, symbol: market, since: since || null, until: until || null },
         });
         if (workerError) {
           console.warn(`[Worker] Failed to sync market ${market}. Continuing...`, workerError);
-          continue; // 一つの市場の失敗で全体を止めない
+          continue;
         }
-        allFetchedRecords.push(...workerData);
+        allFetchedRecords.push(...workerData); // 売買履歴を追加
       }
 
-      // 3. 保存 (Save)
+      // 3. 保存 (Save) - 全ての「入出金」と「売買」を保存
       if (allFetchedRecords.length === 0) {
         toast("No new records found to save.");
         return;
       }
-      setSyncMessage(`[3/3] Saving ${allFetchedRecords.length} records to the database...`);
+      setSyncMessage(`[3/3] Saving ${allFetchedRecords.length} total records to the database...`);
       const { error: saveError } = await supabase.functions.invoke("exchange-sync-save", {
         headers, body: { exchange: syncExch, records: allFetchedRecords },
       });
@@ -107,15 +106,16 @@ export default function TransactionHistory() {
             <h1 className="text-2xl font-bold">Transaction History</h1>
             <Link to="/dashboard" className="text-sm underline">Back to Dashboard</Link>
         </div>
+        {/* ★★★ UIをシンプル化 ★★★ */}
         <div className="border rounded-xl p-4 space-y-3">
             <div className="font-semibold">Sync Data</div>
             <div className="flex flex-wrap items-center gap-2">
                 <select value={syncExch} onChange={(e) => setSyncExch(e.target.value as Exchange)} className="border rounded px-2 py-1">
                     <option value="binance">Binance</option><option value="bybit">Bybit</option><option value="okx">OKX</option>
                 </select>
-                <input className="border rounded px-2 py-1 min-w-[210px]" placeholder="since (ISO or ms)" value={since} onChange={(e) => setSince(e.target.value)} />
-                <input className="border rounded px-2 py-1 min-w-[210px]" placeholder="until (ISO or ms)" value={until} onChange={(e) => setUntil(e.target.value)} />
-                <input className="border rounded px-2 py-1 min-w-[260px]" placeholder="Symbols (e.g., BTC/USDT,ETH/USDT)" value={symbols} onChange={(e) => setSymbols(e.target.value)} />
+                <input className="border rounded px-2 py-1" placeholder="since (ISO or ms)" value={since} onChange={(e) => setSince(e.target.value)} />
+                <input className="border rounded px-2 py-1" placeholder="until (ISO or ms)" value={until} onChange={(e) => setUntil(e.target.value)} />
+                {/* --- Symbolsの入力欄を削除 --- */}
                 <button className="px-3 py-1.5 rounded border bg-blue-600 text-white disabled:opacity-50" onClick={onSync} disabled={busy}>Sync Exchanges</button>
                 <button className="px-3 py-1.5 rounded border disabled:opacity-50" onClick={onSyncWallets} disabled={busy}>Sync Wallets</button>
                 <Link to="/exchange/VCE" className="text-sm underline ml-4">Manage API Keys</Link>
@@ -125,16 +125,16 @@ export default function TransactionHistory() {
         <div className="border rounded-xl">
             <table className="min-w-full divide-y divide-gray-200">
                 <thead className="bg-gray-50"><tr>
-                    <th className="px-6 py-3 tl text-xs font-medium text-gray-500 uppercase">Date</th>
-                    <th className="px-6 py-3 tl text-xs font-medium text-gray-500 uppercase">Source</th>
-                    <th className="px-6 py-3 tl text-xs font-medium text-gray-500 uppercase">Type</th>
-                    <th className="px-6 py-3 tl text-xs font-medium text-gray-500 uppercase">Asset</th>
-                    <th className="px-6 py-3 tl text-xs font-medium text-gray-500 uppercase">Amount</th>
-                    <th className="px-6 py-3 tl text-xs font-medium text-gray-500 uppercase">Counter Asset</th>
-                    <th className="px-6 py-3 tl text-xs font-medium text-gray-500 uppercase">Price</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Source</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Asset</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Amount</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Counter Asset</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Price</th>
                 </tr></thead>
                 <tbody className="bg-white divide-y divide-gray-200">
-                    {loading ? (<tr><td colSpan={7} className="tc py-4">Loading...</td></tr>) : transactions.length === 0 ? (<tr><td colSpan={7} className="tc py-4 text-gray-500">No transactions found.</td></tr>) : (
+                    {loading ? (<tr><td colSpan={7} className="text-center py-4">Loading...</td></tr>) : transactions.length === 0 ? (<tr><td colSpan={7} className="text-center py-4 text-gray-500">No transactions found.</td></tr>) : (
                         transactions.map((tx) => (
                             <tr key={tx.id}>
                                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{new Date(tx.ts).toLocaleString()}</td>
