@@ -88,9 +88,10 @@ Deno.serve(async (req) => {
         apiKey: credentials.apiKey,
         secret: credentials.apiSecret,
         password: credentials.apiPassphrase,
+        // ★★★★★ 最後の修正：この「お守り」が全てを解決します ★★★★★
+        options: { 'defaultType': 'spot' }, 
       });
       
-      // ★★★★★ ハイブリッド・インテリジェント方式 ★★★★★
       try {
         console.log(`[LOG] ${conn.exchange}: Fetching data via Hybrid-Intelligent method...`);
         await exchangeInstance.loadMarkets();
@@ -99,7 +100,6 @@ Deno.serve(async (req) => {
         const trades = await (async () => {
           if (!exchangeInstance.has['fetchMyTrades']) return [];
           
-          // 1a. 「現在の残高」と「過去の入金」から、関連する全ての資産をリストアップ
           const relevantAssets = new Set<string>();
           const balance = await exchangeInstance.fetchBalance();
           Object.keys(balance.total)
@@ -111,11 +111,10 @@ Deno.serve(async (req) => {
               deposits = await exchangeInstance.fetchDeposits(undefined, since);
               deposits.forEach(deposit => relevantAssets.add(deposit.currency));
           }
-          allExchangeRecords.push(...deposits); // 入金履歴はここで先に追加してしまう
+          allExchangeRecords.push(...deposits);
           console.log(`[LOG] Found ${deposits.length} deposits.`);
           console.log(`[LOG] Relevant assets (from balance & deposits): ${Array.from(relevantAssets).join(', ')}`);
 
-          // 1b. 関連資産から、チェックすべき「現物」市場リストを構築
           const marketsToCheck = new Set<string>();
           const quoteCurrencies = ['USDT', 'BTC', 'ETH', 'JPY', 'BUSD', 'USDC'];
           for (const asset of relevantAssets) {
@@ -127,7 +126,6 @@ Deno.serve(async (req) => {
               }
           }
 
-          // 1c. 絞り込んだ市場リストの取引履歴を並列で一括取得
           const symbols = Array.from(marketsToCheck);
           if (symbols.length === 0) {
             console.log(`[LOG] No relevant markets to check for trades.`);
