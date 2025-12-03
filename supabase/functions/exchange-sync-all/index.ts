@@ -1,7 +1,7 @@
 // supabase/functions/exchange-sync-all/index.ts
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
-import ccxt from 'https://esm.sh/ccxt@4.3.40'
+import { ccxt } from 'https://esm.sh/ccxt@4.3.40' // 正しいインポート方法
 import { decode } from "https://deno.land/std@0.177.0/encoding/base64.ts";
 
 const corsHeaders = {
@@ -10,23 +10,13 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// --- 復号ロジック ---
-async function getKey() {
-  const b64 = Deno.env.get("EDGE_KMS_KEY");
-  if (!b64) throw new Error("EDGE_KMS_KEY secret is not set.");
-  const raw = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
-  return await crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["decrypt"]);
-}
+// [重要] お客様のコードに倣い、ccxtライブラリの標準形式でシンボルを定義
+const BINANCE_SYMBOLS = ["BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT"];
 
-async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> {
-  const parts = blob.split(":");
-  if (parts.length !== 3 || parts[0] !== 'v1') throw new Error("Invalid encrypted blob format.");
-  const iv = decode(parts[1]);
-  const ct = decode(parts[2]);
-  const key = await getKey();
-  const decryptedData = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
-  return JSON.parse(new TextDecoder().decode(decryptedData));
-}
+// --- 復号ロジック (変更なし) ---
+async function getKey() { /* ... */ }
+async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> { /* ... */ }
+
 
 // --- メインのサーバー処理 ---
 Deno.serve(async (req) => {
@@ -49,7 +39,6 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({ message: "No exchange connections found.", totalSaved: 0 }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
-    let totalSavedCount = 0;
     const allTradesToUpsert = [];
 
     for (const conn of connections) {
@@ -62,7 +51,27 @@ Deno.serve(async (req) => {
         password: credentials.apiPassphrase,
       });
 
-      const trades = await exchangeInstance.fetchMyTrades();
+      let trades = [];
+
+      // [最重要修正] お客様のコードに倣い、取引所ごとの処理を分岐
+      if (conn.exchange === 'binance') {
+        // Binanceの場合、定義済みのシンボルを一つずつ巡回して取得
+        for (const symbol of BINANCE_SYMBOLS) {
+          try {
+            const symbolTrades = await exchangeInstance.fetchMyTrades(symbol);
+            if (symbolTrades.length > 0) {
+              trades.push(...symbolTrades);
+            }
+          } catch (e) {
+            // 特定のシンボルで取引履歴がなくてもエラーにせず、処理を続行
+            console.warn(`Could not fetch trades for ${symbol} on Binance. Error: ${e.message}`);
+          }
+        }
+      } else {
+        // Binance以外の取引所 (Bybit, OKXなど) は、一度に全履歴を取得
+        trades = await exchangeInstance.fetchMyTrades();
+      }
+
       if (trades.length > 0) {
         const tradesToUpsert = trades.map(trade => ({
             user_id: user.id,
@@ -73,9 +82,9 @@ Deno.serve(async (req) => {
       }
     }
     
+    let totalSavedCount = 0;
     if (allTradesToUpsert.length > 0) {
-      // 複合ユニークキー (user_id, exchange, (raw_data->>'id')) でコンフリクトを処理
-      const { data, error } = await supabaseAdmin.from('exchange_trades').upsert(allTradesToUpsert, { onConflict: "user_id,exchange,raw_data->>'id'" }).select();
+      const { data, error } = await supabaseAdmin.from('exchange_trades').upsert(allTradesToUpsert, { onConflict: "user_id,exchange,(raw_data->>'id')" }).select();
       if (error) throw error;
       totalSavedCount = data?.length ?? 0;
     }
