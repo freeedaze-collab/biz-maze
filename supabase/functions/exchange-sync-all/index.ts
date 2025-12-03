@@ -38,7 +38,6 @@ Deno.serve(async (req) => {
     }
 
     const allTradesToUpsert = [];
-    // [最重要修正] 過去90日分のデータを取得するよう、時間の壁を破壊する
     const since = Date.now() - 90 * 24 * 60 * 60 * 1000; 
 
     for (const conn of connections) {
@@ -52,38 +51,42 @@ Deno.serve(async (req) => {
       console.log(`[LOG] Fetching trades since ${new Date(since).toISOString()}`);
 
       if (conn.exchange === 'binance') {
-        console.log("[LOG] Binance: Fetching balance to auto-estimate symbols...");
+        // [最終最重要修正] JPYを含む全ての可能性を考慮し、シンボルを完全に動的検出する
+        console.log("[LOG] Binance: Fetching balance and loading all markets...");
         const balance = await exchangeInstance.fetchBalance();
         const markets = await exchangeInstance.loadMarkets();
         
+        const heldAssets = Object.keys(balance.total).filter(asset => balance.total[asset] > 0);
+        console.log(`[LOG] Binance: User holds assets: ${heldAssets.join(', ')}`);
+
         const symbolsToFetch = new Set<string>();
-        for (const asset in balance.total) {
-          if (balance.total[asset] > 0) {
-            if (markets[`${asset}/USDT`]) symbolsToFetch.add(`${asset}/USDT`);
-            if (markets[`${asset}/BUSD`]) symbolsToFetch.add(`${asset}/BUSD`);
-          }
+        const allMarketSymbols = Object.keys(markets);
+
+        // 保有資産と、全市場情報をクロスチェックし、可能性のある全シンボルを洗い出す
+        for (const asset of heldAssets) {
+            for (const marketSymbol of allMarketSymbols) {
+                if (marketSymbol === `${asset}/JPY` || marketSymbol === `${asset}/USDT` || marketSymbol === `${asset}/BUSD`) {
+                    symbolsToFetch.add(marketSymbol);
+                }
+            }
         }
         
         if (symbolsToFetch.size === 0) {
-          console.log("[LOG] Binance: No relevant symbols found from balance.");
+          console.log("[LOG] Binance: No relevant symbols (like .../JPY, .../USDT) found from balance.");
         } else {
           console.log(`[LOG] Binance: Found symbols to check: ${Array.from(symbolsToFetch).join(', ')}`);
           for (const symbol of symbolsToFetch) {
             try {
-              // since パラメータを追加して、過去の取引もれなく取得
               const symbolTrades = await exchangeInstance.fetchMyTrades(symbol, since);
               if (symbolTrades.length > 0) {
                 console.log(`[LOG] Binance: SUCCESS! Found ${symbolTrades.length} trades for ${symbol}`);
                 trades.push(...symbolTrades);
-              } else {
-                console.log(`[LOG] Binance: Found 0 trades for ${symbol}. (This is normal if no recent trades)`);
               }
             } catch (e) { console.warn(`[WARN] Binance: Could not fetch trades for ${symbol}. It's ok.`, e.message); }
           }
         }
       } else {
         console.log(`[LOG] ${conn.exchange}: Fetching all trades...`);
-        // Binance以外の取引所にも、念のためsinceパラメータを追加
         trades = await exchangeInstance.fetchMyTrades(undefined, since);
       }
 
