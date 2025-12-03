@@ -24,45 +24,39 @@ async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: s
   return JSON.parse(new TextDecoder().decode(decryptedData));
 }
 
-// [最重要修正] ccxtの多様なレコードを、DBスキーマに正確にマッピングする
+// ccxtのレコードをDBスキーマに正確にマッピングする関数
 function transformRecord(record: any, userId: string, exchange: string) {
-  // trade, deposit, withdrawalでIDのフィールド名が異なるため統一
   const recordId = record.id || record.txid;
   if (!recordId) {
     console.warn("[TRANSFORM-WARN] Record is missing a unique ID. Skipping:", record);
-    return null; // IDがないレコードは処理不能なのでスキップ
+    return null;
   }
 
-  // レコードタイプを判定 (trade, deposit, withdrawal)
-  // 'side'があればtrade、なければ'type' (deposit/withdrawal) を使う
-  const side = record.side || record.type;
-  
-  // symbolがなければcurrencyを使う (deposit/withdrawalのため)
-  const symbol = record.symbol || record.currency;
-
-  // priceがない場合(deposit/withdrawal)は0をセット
-  const price = record.price ?? 0;
-  
-  // feeがない場合を考慮
+  const side = record.side || record.type; // 'buy'/'sell' または 'deposit'/'withdrawal'
+  const symbol = record.symbol || record.currency; // トレードならsymbol, 入出金ならcurrency
+  const price = record.price ?? 0; // 入出金には価格がない
   const fee_cost = record.fee?.cost;
   const fee_currency = record.fee?.currency;
 
-  // すべてのNOT NULL制約カラムに値を提供する
+  if (!symbol || !side || !record.amount || !record.timestamp) {
+      console.warn(`[TRANSFORM-WARN] Record is missing required fields. Skipping:`, record);
+      return null;
+  }
+
   return {
     user_id: userId,
     exchange: exchange,
-    trade_id: String(recordId), // UNIQUE制約(user_id, exchange, trade_id) のため
-    symbol: symbol,             // NOT NULL
-    side: side,                 // NOT NULL
-    price: price,               // NOT NULL
-    amount: record.amount,      // NOT NULL
-    fee: fee_cost,              // NULL許容
-    // fee_asset: fee_currency, // スキーマに存在しないため削除
-    ts: new Date(record.timestamp).toISOString(), // NOT NULL
+    trade_id: String(recordId),
+    symbol: symbol,
+    side: side,
+    price: price,
+    amount: record.amount,
+    fee: fee_cost,
+    fee_asset: fee_currency,
+    ts: new Date(record.timestamp).toISOString(),
     raw_data: record,
   };
 }
-
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -81,7 +75,7 @@ Deno.serve(async (req) => {
     }
 
     let allRecordsToUpsert = [];
-    const since = Date.now() - 90 * 24 * 60 * 60 * 1000; 
+    const since = Date.now() - 90 * 24 * 60 * 60 * 1000;
 
     for (const conn of connections) {
       console.log(`[LOG] Processing ${conn.exchange}...`);
@@ -94,46 +88,29 @@ Deno.serve(async (req) => {
         apiKey: credentials.apiKey,
         secret: credentials.apiSecret,
         password: credentials.apiPassphrase,
-        options: { 'defaultType': 'spot' }, // [修正] 'linear'エラーを回避するため、現物口座を明示
+        options: { 'defaultType': 'spot' }, // 現物取引を明示
       });
       
-      // 1. トレードの取得
+      // 1. 全ての取引履歴（売買）を取得する
       try {
-        console.log(`[LOG] ${conn.exchange}: Fetching trades...`);
-        // シンボル指定なしでエラーが出るため、保有資産からシンボルを特定して取得する
-        await exchangeInstance.loadMarkets();
-        const balance = await exchangeInstance.fetchBalance();
-        const heldAssets = Object.keys(balance.total).filter(asset => balance.total[asset] > 0);
-        const symbolsToFetch = new Set<string>();
-        
-        // JPYとUSDTペアを優先的に探す
-        for (const asset of heldAssets) {
-          if (exchangeInstance.markets[`${asset}/JPY`]) symbolsToFetch.add(`${asset}/JPY`);
-          if (exchangeInstance.markets[`${asset}/USDT`]) symbolsToFetch.add(`${asset}/USDT`);
-        }
-        
-        // もしJPY/USDTペアが見つからなければ、他の主要通貨とのペアも探す
-        if (symbolsToFetch.size === 0) {
-            for (const asset of heldAssets) {
-                if (exchangeInstance.markets[`${asset}/BTC`]) symbolsToFetch.add(`${asset}/BTC`);
-                if (exchangeInstance.markets[`${asset}/ETH`]) symbolsToFetch.add(`${asset}/ETH`);
-            }
-        }
-        
-        console.log(`[LOG] Symbols to fetch trades for:`, Array.from(symbolsToFetch));
+        console.log(`[LOG] ${conn.exchange}: Fetching all trades...`);
+        if (exchangeInstance.has['fetchMyTrades']) {
+            // Binanceは 'type':'spot' を明示しないと先物と誤認されるためパラメータで指定
+            const params = conn.exchange === 'binance' ? { 'type': 'spot' } : {};
+            // symbolを未指定にすることで、全通貨ペアの取引を取得する
+            const trades = await exchangeInstance.fetchMyTrades(undefined, since, undefined, params);
 
-        for (const symbol of symbolsToFetch) {
-          try {
-            const trades = await exchangeInstance.fetchMyTrades(symbol, since);
             if (trades.length > 0) {
-                console.log(`[LOG] ${conn.exchange}: Found ${trades.length} trades for ${symbol}.`);
+                console.log(`[LOG] ${conn.exchange}: Found ${trades.length} trades across all symbols.`);
                 allExchangeRecords.push(...trades);
+            } else {
+                console.log(`[LOG] ${conn.exchange}: Found no new trades.`);
             }
-          } catch (e) {
-            console.warn(`[WARN] Could not fetch trades for symbol ${symbol}: ${e.message}`);
-          }
         }
-      } catch (e) { console.error(`[WARN] ${conn.exchange}: Failed during trade fetching process.`, e.message); }
+      } catch (e) {
+          // ここでエラーが出ても、後続の入出金処理は続行する
+          console.error(`[ERROR] ${conn.exchange}: Could not fetch trades.`, e.message);
+      }
 
       // 2. 入金の取得
       if (exchangeInstance.has['fetchDeposits']) {
@@ -169,7 +146,6 @@ Deno.serve(async (req) => {
     let totalSavedCount = 0;
     if (allRecordsToUpsert.length > 0) {
       console.log(`[LOG] Upserting ${allRecordsToUpsert.length} records to the database...`);
-      // [最終修正] 正しいユニーク制約カラムを指定してupsertを再実行
       const { data, error } = await supabaseAdmin.from('exchange_trades').upsert(allRecordsToUpsert, { onConflict: 'user_id,exchange,trade_id' }).select();
       
       if (error) {
