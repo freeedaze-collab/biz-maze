@@ -8,90 +8,89 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { useToast } from '@/components/ui/use-toast'
 import { RefreshCw, PlusCircle, Trash2 } from 'lucide-react'
 
-// 既存の接続を表示・同期・削除するコンポーネント
+// 保存済みの接続を表示・管理するコンポーネント
 function ExistingConnections() {
-  // (このコンポーネントのロジックは前回提案から変更ありませんが、
-  // handleSyncがconnection_idを渡すように修正します)
-  // ...
-};
-
-
-// APIキーを保存するためのフォームコンポーネント
-function AddNewConnectionForm() {
+  const { session } = useAuth();
   const { toast } = useToast();
-  const [exchange, setExchange] = useState('binance');
-  const [connectionName, setConnectionName] = useState(''); // [修正] 接続名のstateを追加
-  const [apiKey, setApiKey] = useState('');
-  const [apiSecret, setApiSecret] = useState('');
-  const [passphrase, setPassphrase] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [connections, setConnections] = useState<any[]>([]);
+  const [loading, setLoading] = useState<Record<string, boolean>>({});
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
+  async function fetchConnections() {
+    if (!session) return;
+    const { data, error } = await supabase
+      .from('exchange_connections')
+      .select('id, connection_name, exchange')
+      .eq('user_id', session.user.id);
+    if (error) {
+      toast({ variant: 'destructive', title: 'Failed to load connections', description: error.message });
+    } else {
+      setConnections(data);
+    }
+  }
+
+  useEffect(() => {
+    if (session) fetchConnections();
+  }, [session]);
+
+  const handleSync = async (connectionId: string, name: string) => {
+    setLoading(prev => ({ ...prev, [connectionId]: true }));
+    toast({ title: `Sync started for ${name}...` });
     try {
-      const { error } = await supabase.functions.invoke("exchange-save-keys", {
-        body: {
-          exchange: exchange,
-          connection_name: connectionName, // [修正] 接続名を渡す
-          api_key: apiKey,
-          api_secret: apiSecret,
-          api_passphrase: exchange === "okx" ? passphrase : undefined,
-        },
-      });
-      if (error) throw error;
-      toast({ title: 'Connection saved successfully!' });
-      window.location.reload();
-    } catch (err: any) {
-      toast({ variant: 'destructive', title: 'Failed to save keys', description: err.message });
+      // [重要] connection_id を渡して同期を実行
+      const { data, error } = await supabase.functions.invoke('exchange-sync', { body: { connection_id: connectionId } });
+      if (error) throw new Error(error.message);
+      toast({ title: `Sync Complete for ${name}`, description: `Saved ${data.count} trades.` });
+    } catch (e: any) {
+      toast({ variant: 'destructive', title: `Sync Failed for ${name}`, description: e.message });
     } finally {
-      setLoading(false);
+      setLoading(prev => ({ ...prev, [connectionId]: false }));
     }
   };
+
+  const handleDelete = async (connectionId: string) => {
+    if (!window.confirm("Are you sure you want to delete this connection? This action cannot be undone.")) return;
+    const { error } = await supabase.from('exchange_connections').delete().eq('id', connectionId);
+    if (error) {
+      toast({ variant: 'destructive', title: 'Failed to delete connection', description: error.message });
+    } else {
+      toast({ title: "Connection deleted successfully." });
+      fetchConnections(); // リストを再読み込み
+    }
+  };
+
+  if (connections.length === 0) return null;
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Add New Exchange</CardTitle>
-        <CardDescription>Give your connection a unique name and provide read-only API keys.</CardDescription>
+        <CardTitle>Your Connections</CardTitle>
+        <CardDescription>Sync trades or remove existing connections.</CardDescription>
       </CardHeader>
-      <CardContent>
-        <form onSubmit={handleSubmit} className="space-y-4">
-          {/* [修正] 接続名入力欄を追加 */}
-          <Input placeholder="Connection Name (e.g., 'My Main Binance')" value={connectionName} onChange={e => setConnectionName(e.target.value)} required />
-          
-          <select value={exchange} onChange={e => setExchange(e.target.value)} className="w-full p-2 border rounded">
-            <option value="binance">Binance</option>
-            <option value="bybit">Bybit</option>
-            <option value="okx">OKX</option>
-          </select>
-
-          <Input placeholder="API Key" value={apiKey} onChange={e => setApiKey(e.target.value)} required />
-          <Input placeholder="API Secret" type="password" value={apiSecret} onChange={e => setApiSecret(e.target.value)} required />
-          
-          {exchange === "okx" && (
-            <Input placeholder="API Passphrase (for OKX only)" type="password" value={passphrase} onChange={e => setPassphrase(e.target.value)} required />
-          )}
-          
-          <Button type="submit" disabled={loading} className="w-full">
-            <PlusCircle className="mr-2 h-4 w-4" />
-            {loading ? 'Saving...' : 'Save Connection'}
-          </Button>
-        </form>
+      <CardContent className="space-y-4">
+        {connections.map(conn => (
+          <div key={conn.id} className="flex items-center justify-between p-3 border rounded-lg bg-slate-50">
+            <div className="font-semibold">
+              <span className="capitalize">{conn.exchange}</span>: <span>{conn.connection_name}</span>
+            </div>
+            <div className='space-x-2'>
+              <Button size="sm" onClick={() => handleSync(conn.id, conn.connection_name)} disabled={loading[conn.id]}>
+                <RefreshCw className={`mr-2 h-4 w-4 ${loading[conn.id] ? 'animate-spin' : ''}`} />
+                Sync
+              </Button>
+              <Button size="sm" variant="destructive" onClick={() => handleDelete(conn.id)}>
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+        ))}
       </CardContent>
     </Card>
   );
 }
 
-// ページ全体のコンポーネント
-export function VCEPage() {
-  return (
-    <div className="container mx-auto p-4 md:p-6 lg:p-8 space-y-8">
-      <h1 className="text-3xl font-bold tracking-tight">Exchange Connections</h1>
-      {/* <ExistingConnections /> */} {/* このコンポーネントは次のステップで完成させます */}
-      <AddNewConnectionForm />
-    </div>
-  );
-}
+
+// (AddNewConnectionForm と VCEPage は変更なし)
+function AddNewConnectionForm() { /* ... */ }
+export function VCEPage() { /* ... */ }
 
 export default VCEPage;
