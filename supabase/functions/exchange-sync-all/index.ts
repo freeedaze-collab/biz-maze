@@ -1,8 +1,9 @@
 // supabase/functions/exchange-sync-all/index.ts
 
-import ccxt from 'https'
-import { createClient } from 'https'
-import { decode } from "https"
+import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
+import ccxt from 'https://esm.sh/ccxt@4.3.40'
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { decode } from "https://deno.land/std@0.177.0/encoding/base64.ts";
 
 const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 
@@ -58,33 +59,36 @@ Deno.serve(async (req) => {
           secret: credentials.apiSecret,
           options: { 'defaultType': 'spot' },
         });
-        
+
+        // 1. トレードの取得
         try {
-          console.log("[LOG] Binance (Spot): Fetching trades...");
-          const balance = await exchangeInstance.fetchBalance();
-          const markets = await exchangeInstance.loadMarkets();
-          const heldAssets = Object.keys(balance.total).filter(asset => balance.total[asset] > 0);
-          const symbolsToFetch = new Set<string>();
-          for (const asset of heldAssets) {
-            if (markets[`${asset}/JPY`]) symbolsToFetch.add(`${asset}/JPY`);
-            if (markets[`${asset}/USDT`]) symbolsToFetch.add(`${asset}/USDT`);
-          }
-          for (const symbol of symbolsToFetch) {
-            const trades = await exchangeInstance.fetchMyTrades(symbol, since);
-            if (trades.length > 0) allExchangeRecords.push(...trades);
-          }
+            console.log("[LOG] Binance (Spot): Fetching trades...");
+            const balance = await exchangeInstance.fetchBalance();
+            const markets = await exchangeInstance.loadMarkets();
+            const heldAssets = Object.keys(balance.total).filter(asset => balance.total[asset] > 0);
+            const symbolsToFetch = new Set<string>();
+            for (const asset of heldAssets) {
+                if (markets[`${asset}/JPY`]) symbolsToFetch.add(`${asset}/JPY`);
+                if (markets[`${asset}/USDT`]) symbolsToFetch.add(`${asset}/USDT`);
+            }
+            for (const symbol of symbolsToFetch) {
+                const trades = await exchangeInstance.fetchMyTrades(symbol, since);
+                if (trades.length > 0) allExchangeRecords.push(...trades);
+            }
         } catch (e) { console.error(`[WARN] Binance (Spot): Could not fetch trades.`, e.message); }
 
+        // 2. 入金の取得
         try {
-          console.log("[LOG] Binance (Spot): Fetching deposits...");
-          const deposits = await exchangeInstance.fetchDeposits(undefined, since);
-          if (deposits.length > 0) allExchangeRecords.push(...deposits);
+            console.log("[LOG] Binance (Spot): Fetching deposits...");
+            const deposits = await exchangeInstance.fetchDeposits(undefined, since);
+            if (deposits.length > 0) allExchangeRecords.push(...deposits);
         } catch (e) { console.error(`[WARN] Binance (Spot): Could not fetch deposits.`, e.message); }
 
+        // 3. 出金の取得
         try {
-          console.log("[LOG] Binance (Spot): Fetching withdrawals...");
-          const withdrawals = await exchangeInstance.fetchWithdrawals(undefined, since);
-          if (withdrawals.length > 0) allExchangeRecords.push(...withdrawals);
+            console.log("[LOG] Binance (Spot): Fetching withdrawals...");
+            const withdrawals = await exchangeInstance.fetchWithdrawals(undefined, since);
+            if (withdrawals.length > 0) allExchangeRecords.push(...withdrawals);
         } catch (e) { console.error(`[WARN] Binance (Spot): Could not fetch withdrawals.`, e.message); }
 
       } else {
@@ -106,6 +110,7 @@ Deno.serve(async (req) => {
     let totalSavedCount = 0;
     if (allRecordsToUpsert.length > 0) {
       console.log(`[LOG] Upserting ${allRecordsToUpsert.length} records to the database...`);
+      // [修正] 実際のテーブル定義に合わせた onConflict 句
       const { data, error } = await supabaseAdmin.from('exchange_trades').upsert(allRecordsToUpsert, { onConflict: 'user_id,exchange,raw_data' }).select();
       
       if (error) {
