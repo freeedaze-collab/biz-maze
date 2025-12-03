@@ -90,60 +90,58 @@ Deno.serve(async (req) => {
         password: credentials.apiPassphrase,
       });
       
-      // ★★★★★ インテリジェント方式での取引取得 ★★★★★
+      // ★★★★★ バッチ処理による完全スキャン ★★★★★
       // 1. 売買履歴の取得
       try {
-        console.log(`[LOG] ${conn.exchange}: Fetching trades intelligently...`);
+        console.log(`[LOG] ${conn.exchange}: Fetching all trades via batched parallel processing...`);
         if (exchangeInstance.has['fetchMyTrades']) {
             await exchangeInstance.loadMarkets();
 
-            // 1a. ユーザーの保有資産リストを取得
-            const balance = await exchangeInstance.fetchBalance();
-            const assets = Object.keys(balance.total).filter(asset => balance.total[asset] > 0);
-            console.log(`[LOG] User has non-zero balance for: ${assets.join(', ') || 'none'}`);
+            // 1a. 全ての「現物」市場のシンボルリストを取得
+            const allSpotSymbols = Object.values(exchangeInstance.markets)
+                .filter(market => market.spot === true)
+                .map(market => market.symbol);
+            
+            console.log(`[LOG] Found ${allSpotSymbols.length} total spot markets. Fetching trades in batches.`);
 
-            // 1b. 関連する可能性のある「現物」通貨ペアを構築
-            const marketsToCheck = new Set<string>();
-            const quoteCurrencies = ['USDT', 'BTC', 'ETH', 'JPY', 'BUSD', 'USDC']; // 主要な基軸通貨
+            const batchSize = 25; // 一度に並列処理するリクエスト数
+            let allTrades = [];
 
-            for (const asset of assets) {
-                for (const quote of quoteCurrencies) {
-                    const symbol1 = `${asset}/${quote}`;
-                    if (exchangeInstance.markets[symbol1]?.spot) marketsToCheck.add(symbol1);
-                    const symbol2 = `${quote}/${asset}`;
-                    if (exchangeInstance.markets[symbol2]?.spot) marketsToCheck.add(symbol2);
-                }
-            }
-
-            const symbols = Array.from(marketsToCheck);
-            if (symbols.length > 0) {
-                console.log(`[LOG] Checking for trades in ${symbols.length} relevant markets...`);
-
-                // 1c. 関連する通貨ペアの取引履歴を一括（並列）で取得
-                const promises = symbols.map(symbol =>
+            // 1b. 市場リストを小さなバッチに分割し、バッチごとに並列処理
+            for (let i = 0; i < allSpotSymbols.length; i += batchSize) {
+                const batch = allSpotSymbols.slice(i, i + batchSize);
+                
+                const promises = batch.map(symbol =>
                     exchangeInstance.fetchMyTrades(symbol, since)
                         .then(trades => {
                             if (trades.length > 0) {
-                                console.log(`[LOG] ${conn.exchange}: Found ${trades.length} trades for ${symbol}.`);
+                                console.log(`[LOG] Found ${trades.length} trades for ${symbol}.`);
                                 return trades;
                             }
                             return [];
                         })
                         .catch(e => {
-                            console.warn(`[WARN] Could not fetch trades for symbol ${symbol}: ${e.message}`);
+                            // 権限不足や存在しない市場などのエラーは警告に留め、処理を続行
+                            if (!e.message.includes('market does not exist')) {
+                               console.warn(`[WARN] Could not fetch trades for symbol ${symbol}: ${e.message}`);
+                            }
                             return [];
                         })
                 );
-                
-                const tradesBySymbol = await Promise.all(promises);
-                const allTrades = tradesBySymbol.flat();
+
+                const tradesInBatch = await Promise.all(promises);
+                allTrades.push(...tradesInBatch.flat());
+            }
+
+            if (allTrades.length > 0) {
+                console.log(`[LOG] Found a total of ${allTrades.length} trades across all batches.`);
                 allExchangeRecords.push(...allTrades);
             } else {
-                console.log(`[LOG] No relevant markets to check for trades based on current balances.`);
+                console.log(`[LOG] Found no new trades across any spot markets.`);
             }
         }
       } catch (e) {
-          console.error(`[ERROR] ${conn.exchange}: Failed during intelligent trade fetching process.`, e.message);
+          console.error(`[ERROR] ${conn.exchange}: Failed during batched trade fetching process.`, e.message);
       }
 
       // 2. 入金の取得
