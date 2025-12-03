@@ -1,7 +1,8 @@
 // supabase/functions/exchange-sync-all/index.ts
 
+// [最重要修正] お客様の他のファイルに倣い、正しいデフォルトインポート形式に修正
+import ccxt from 'https://esm.sh/ccxt@4.3.40'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
-import { ccxt } from 'https://esm.sh/ccxt@4.3.40' // 正しいインポート方法
 import { decode } from "https://deno.land/std@0.177.0/encoding/base64.ts";
 
 const corsHeaders = {
@@ -10,15 +11,28 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// [重要] お客様のコードに倣い、ccxtライブラリの標準形式でシンボルを定義
+// お客様のコードに倣い、ccxtライブラリの標準形式でシンボルを定義
 const BINANCE_SYMBOLS = ["BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT"];
 
 // --- 復号ロジック (変更なし) ---
-async function getKey() { /* ... */ }
-async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> { /* ... */ }
+async function getKey() {
+  const b64 = Deno.env.get("EDGE_KMS_KEY");
+  if (!b64) throw new Error("EDGE_KMS_KEY secret is not set.");
+  const raw = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+  return await crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["decrypt"]);
+}
 
+async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> {
+  const parts = blob.split(":");
+  if (parts.length !== 3 || parts[0] !== 'v1') throw new Error("Invalid encrypted blob format.");
+  const iv = decode(parts[1]);
+  const ct = decode(parts[2]);
+  const key = await getKey();
+  const decryptedData = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
+  return JSON.parse(new TextDecoder().decode(decryptedData));
+}
 
-// --- メインのサーバー処理 ---
+// --- メインのサーバー処理 (変更なし) ---
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
@@ -53,22 +67,16 @@ Deno.serve(async (req) => {
 
       let trades = [];
 
-      // [最重要修正] お客様のコードに倣い、取引所ごとの処理を分岐
       if (conn.exchange === 'binance') {
-        // Binanceの場合、定義済みのシンボルを一つずつ巡回して取得
         for (const symbol of BINANCE_SYMBOLS) {
           try {
             const symbolTrades = await exchangeInstance.fetchMyTrades(symbol);
-            if (symbolTrades.length > 0) {
-              trades.push(...symbolTrades);
-            }
+            if (symbolTrades.length > 0) trades.push(...symbolTrades);
           } catch (e) {
-            // 特定のシンボルで取引履歴がなくてもエラーにせず、処理を続行
             console.warn(`Could not fetch trades for ${symbol} on Binance. Error: ${e.message}`);
           }
         }
       } else {
-        // Binance以外の取引所 (Bybit, OKXなど) は、一度に全履歴を取得
         trades = await exchangeInstance.fetchMyTrades();
       }
 
