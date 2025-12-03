@@ -91,21 +91,18 @@ Deno.serve(async (req) => {
         options: { 'defaultType': 'spot' }, 
       });
       
-      // ★★★★★ 最終修正：ロジックの順序を完全に修正 ★★★★★
       try {
-        console.log(`[LOG] ${conn.exchange}: Fetching data via Final Hybrid-Intelligent method...`);
+        console.log(`[LOG] ${conn.exchange}: Fetching data via Batched Hybrid-Intelligent method...`);
         await exchangeInstance.loadMarkets();
 
         const relevantAssets = new Set<string>();
         
         // 1. 最初に、取引調査のヒントとなる情報を全て取得
-        // 1a. 現在の資産残高
         const balance = await exchangeInstance.fetchBalance();
         const balanceAssets = Object.keys(balance.total).filter(asset => balance.total[asset] > 0);
         balanceAssets.forEach(asset => relevantAssets.add(asset));
         console.log(`[LOG] Found ${balanceAssets.length} assets in balance.`);
 
-        // 1b. 入金履歴
         let deposits: ccxt.Transaction[] = [];
         if (exchangeInstance.has['fetchDeposits']) {
             deposits = await exchangeInstance.fetchDeposits(undefined, since);
@@ -114,7 +111,6 @@ Deno.serve(async (req) => {
         }
         console.log(`[LOG] Found ${deposits.length} deposits.`);
 
-        // 1c. 出金履歴
         let withdrawals: ccxt.Transaction[] = [];
         if (exchangeInstance.has['fetchWithdrawals']) {
             withdrawals = await exchangeInstance.fetchWithdrawals(undefined, since);
@@ -123,9 +119,9 @@ Deno.serve(async (req) => {
         }
         console.log(`[LOG] Found ${withdrawals.length} withdrawals.`);
 
-        console.log(`[LOG] Total relevant assets (from balance, deposits & withdrawals): ${Array.from(relevantAssets).join(', ')}`);
+        console.log(`[LOG] Total relevant assets: ${Array.from(relevantAssets).join(', ')}`);
 
-        // 2. 完全な資産リストを基に、売買履歴を調査
+        // 2. 完全な資産リストを基に、売買履歴を「ミニバッチ処理」で調査
         if (exchangeInstance.has['fetchMyTrades']) {
             const marketsToCheck = new Set<string>();
             const quoteCurrencies = ['USDT', 'BTC', 'ETH', 'JPY', 'BUSD', 'USDC', 'BNB'];
@@ -140,20 +136,29 @@ Deno.serve(async (req) => {
 
             const symbols = Array.from(marketsToCheck);
             if (symbols.length > 0) {
-              console.log(`[LOG] Checking for trades in ${symbols.length} relevant markets...`);
-              const promises = symbols.map(symbol =>
-                  exchangeInstance.fetchMyTrades(symbol, since)
-                      .then(trades => {
-                          if (trades.length > 0) console.log(`[LOG] Found ${trades.length} trades for ${symbol}.`);
-                          return trades;
-                      })
-                      .catch(e => {
-                          console.warn(`[WARN] Could not fetch trades for symbol ${symbol}: ${e.message}`);
-                          return [];
-                      })
-              );
-              const tradesBySymbol = await Promise.all(promises);
-              const allTrades = tradesBySymbol.flat();
+              console.log(`[LOG] Checking for trades in ${symbols.length} relevant markets in mini-batches...`);
+              
+              const miniBatchSize = 5;
+              let allTrades = [];
+
+              for (let i = 0; i < symbols.length; i += miniBatchSize) {
+                  const batch = symbols.slice(i, i + miniBatchSize);
+                  console.log(`[LOG] Processing batch #${(i/miniBatchSize)+1}: ${batch.join(', ')}`);
+                  
+                  const promises = batch.map(symbol =>
+                      exchangeInstance.fetchMyTrades(symbol, since)
+                          .then(trades => {
+                              if (trades.length > 0) console.log(`[LOG] Found ${trades.length} trades for ${symbol}.`);
+                              return trades;
+                          })
+                          .catch(e => {
+                              console.warn(`[WARN] Could not fetch trades for symbol ${symbol}: ${e.message}`);
+                              return [];
+                          })
+                  );
+                  const tradesInBatch = await Promise.all(promises);
+                  allTrades.push(...tradesInBatch.flat());
+              }
 
               if (allTrades.length > 0) {
                   console.log(`[LOG] Found a total of ${allTrades.length} trades.`);
