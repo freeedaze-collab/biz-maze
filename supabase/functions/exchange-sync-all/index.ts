@@ -90,82 +90,81 @@ Deno.serve(async (req) => {
         password: credentials.apiPassphrase,
       });
       
-      // ★★★★★ バッチ処理による完全スキャン ★★★★★
-      // 1. 売買履歴の取得
+      // ★★★★★ ハイブリッド・インテリジェント方式 ★★★★★
       try {
-        console.log(`[LOG] ${conn.exchange}: Fetching all trades via batched parallel processing...`);
-        if (exchangeInstance.has['fetchMyTrades']) {
-            await exchangeInstance.loadMarkets();
+        console.log(`[LOG] ${conn.exchange}: Fetching data via Hybrid-Intelligent method...`);
+        await exchangeInstance.loadMarkets();
 
-            // 1a. 全ての「現物」市場のシンボルリストを取得
-            const allSpotSymbols = Object.values(exchangeInstance.markets)
-                .filter(market => market.spot === true)
-                .map(market => market.symbol);
-            
-            console.log(`[LOG] Found ${allSpotSymbols.length} total spot markets. Fetching trades in batches.`);
+        // 1. 売買履歴の取得
+        const trades = await (async () => {
+          if (!exchangeInstance.has['fetchMyTrades']) return [];
+          
+          // 1a. 「現在の残高」と「過去の入金」から、関連する全ての資産をリストアップ
+          const relevantAssets = new Set<string>();
+          const balance = await exchangeInstance.fetchBalance();
+          Object.keys(balance.total)
+              .filter(asset => balance.total[asset] > 0)
+              .forEach(asset => relevantAssets.add(asset));
+          
+          let deposits: ccxt.Transaction[] = [];
+          if (exchangeInstance.has['fetchDeposits']) {
+              deposits = await exchangeInstance.fetchDeposits(undefined, since);
+              deposits.forEach(deposit => relevantAssets.add(deposit.currency));
+          }
+          allExchangeRecords.push(...deposits); // 入金履歴はここで先に追加してしまう
+          console.log(`[LOG] Found ${deposits.length} deposits.`);
+          console.log(`[LOG] Relevant assets (from balance & deposits): ${Array.from(relevantAssets).join(', ')}`);
 
-            const batchSize = 25; // 一度に並列処理するリクエスト数
-            let allTrades = [];
+          // 1b. 関連資産から、チェックすべき「現物」市場リストを構築
+          const marketsToCheck = new Set<string>();
+          const quoteCurrencies = ['USDT', 'BTC', 'ETH', 'JPY', 'BUSD', 'USDC'];
+          for (const asset of relevantAssets) {
+              for (const quote of quoteCurrencies) {
+                  const symbol1 = `${asset}/${quote}`;
+                  if (exchangeInstance.markets[symbol1]?.spot) marketsToCheck.add(symbol1);
+                  const symbol2 = `${quote}/${asset}`;
+                  if (exchangeInstance.markets[symbol2]?.spot) marketsToCheck.add(symbol2);
+              }
+          }
 
-            // 1b. 市場リストを小さなバッチに分割し、バッチごとに並列処理
-            for (let i = 0; i < allSpotSymbols.length; i += batchSize) {
-                const batch = allSpotSymbols.slice(i, i + batchSize);
-                
-                const promises = batch.map(symbol =>
-                    exchangeInstance.fetchMyTrades(symbol, since)
-                        .then(trades => {
-                            if (trades.length > 0) {
-                                console.log(`[LOG] Found ${trades.length} trades for ${symbol}.`);
-                                return trades;
-                            }
-                            return [];
-                        })
-                        .catch(e => {
-                            // 権限不足や存在しない市場などのエラーは警告に留め、処理を続行
-                            if (!e.message.includes('market does not exist')) {
-                               console.warn(`[WARN] Could not fetch trades for symbol ${symbol}: ${e.message}`);
-                            }
-                            return [];
-                        })
-                );
+          // 1c. 絞り込んだ市場リストの取引履歴を並列で一括取得
+          const symbols = Array.from(marketsToCheck);
+          if (symbols.length === 0) {
+            console.log(`[LOG] No relevant markets to check for trades.`);
+            return [];
+          }
+          
+          console.log(`[LOG] Checking for trades in ${symbols.length} relevant markets...`);
+          const promises = symbols.map(symbol =>
+              exchangeInstance.fetchMyTrades(symbol, since)
+                  .then(trades => {
+                      if (trades.length > 0) console.log(`[LOG] Found ${trades.length} trades for ${symbol}.`);
+                      return trades;
+                  })
+                  .catch(e => {
+                      console.warn(`[WARN] Could not fetch trades for symbol ${symbol}: ${e.message}`);
+                      return [];
+                  })
+          );
+          const tradesBySymbol = await Promise.all(promises);
+          return tradesBySymbol.flat();
+        })();
 
-                const tradesInBatch = await Promise.all(promises);
-                allTrades.push(...tradesInBatch.flat());
-            }
+        if (trades.length > 0) {
+            console.log(`[LOG] Found a total of ${trades.length} trades.`);
+            allExchangeRecords.push(...trades);
+        }
 
-            if (allTrades.length > 0) {
-                console.log(`[LOG] Found a total of ${allTrades.length} trades across all batches.`);
-                allExchangeRecords.push(...allTrades);
-            } else {
-                console.log(`[LOG] Found no new trades across any spot markets.`);
+        // 2. 出金履歴の取得
+        if (exchangeInstance.has['fetchWithdrawals']) {
+            const withdrawals = await exchangeInstance.fetchWithdrawals(undefined, since);
+            if (withdrawals.length > 0) {
+                console.log(`[LOG] Found ${withdrawals.length} withdrawals.`);
+                allExchangeRecords.push(...withdrawals);
             }
         }
       } catch (e) {
-          console.error(`[ERROR] ${conn.exchange}: Failed during batched trade fetching process.`, e.message);
-      }
-
-      // 2. 入金の取得
-      if (exchangeInstance.has['fetchDeposits']) {
-        try {
-            console.log(`[LOG] ${conn.exchange}: Fetching deposits...`);
-            const deposits = await exchangeInstance.fetchDeposits(undefined, since);
-            if (deposits.length > 0) {
-                console.log(`[LOG] ${conn.exchange}: Found ${deposits.length} deposits.`);
-                allExchangeRecords.push(...deposits);
-            }
-        } catch (e) { console.warn(`[WARN] ${conn.exchange}: Could not fetch deposits.`, e.message); }
-      }
-
-      // 3. 出金の取得
-      if (exchangeInstance.has['fetchWithdrawals']) {
-        try {
-            console.log(`[LOG] ${conn.exchange}: Fetching withdrawals...`);
-            const withdrawals = await exchangeInstance.fetchWithdrawals(undefined, since);
-            if (withdrawals.length > 0) {
-                console.log(`[LOG] ${conn.exchange}: Found ${withdrawals.length} withdrawals.`);
-                allExchangeRecords.push(...withdrawals);
-            }
-        } catch (e) { console.warn(`[WARN] ${conn.exchange}: Could not fetch withdrawals.`, e.message); }
+          console.error(`[ERROR] ${conn.exchange}: A critical error occurred during the fetch process.`, e.message);
       }
       
       console.log(`[LOG] Found a total of ${allExchangeRecords.length} records for ${conn.exchange}.`);
@@ -179,7 +178,6 @@ Deno.serve(async (req) => {
     if (allRecordsToUpsert.length > 0) {
       console.log(`[LOG] Upserting ${allRecordsToUpsert.length} records to the database...`);
       const { data, error } = await supabaseAdmin.from('exchange_trades').upsert(allRecordsToUpsert, { onConflict: 'user_id,exchange,trade_id' }).select();
-      
       if (error) {
           console.error("[CRASH] DATABASE UPSERT FAILED:", error);
           throw error;
