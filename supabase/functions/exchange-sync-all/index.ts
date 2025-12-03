@@ -23,6 +23,20 @@ async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: s
   return JSON.parse(new TextDecoder().decode(decryptedData));
 }
 
+// レコードをSupabaseテーブルの形式に変換するヘルパー関数
+function transformRecord(record: any, userId: string, exchange: string) {
+    // trade, deposit, withdrawal でidのフィールド名が異なる可能性を考慮
+    const externalId = record.id || record.txid || record.tradeId || String(record.timestamp);
+    return {
+        user_id: userId,
+        exchange: exchange,
+        // [最終最重要修正] on_conflictで使うための外部IDをカラムに設定
+        external_id: String(externalId),
+        raw_data: record
+    };
+}
+
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
@@ -48,16 +62,15 @@ Deno.serve(async (req) => {
       const allExchangeRecords = [];
       
       if (conn.exchange === 'binance') {
-        // [最終最重要修正] 'spot'を明示し、トレード、入金、出金を個別に取得する
         const exchangeInstance = new ccxt.binance({
           apiKey: credentials.apiKey,
           secret: credentials.apiSecret,
-          options: { 'defaultType': 'spot' }, // 'linear'エラーを回避するため、現物口座を明示
+          options: { 'defaultType': 'spot' },
         });
         
         // 1. トレードの取得
         try {
-            console.log("[LOG] Binance (Spot): Fetching balance and markets for trades...");
+            console.log("[LOG] Binance (Spot): Fetching trades...");
             const balance = await exchangeInstance.fetchBalance();
             const markets = await exchangeInstance.loadMarkets();
             const heldAssets = Object.keys(balance.total).filter(asset => balance.total[asset] > 0);
@@ -66,38 +79,27 @@ Deno.serve(async (req) => {
                 if (markets[`${asset}/JPY`]) symbolsToFetch.add(`${asset}/JPY`);
                 if (markets[`${asset}/USDT`]) symbolsToFetch.add(`${asset}/USDT`);
             }
-            console.log(`[LOG] Binance (Spot): Found trade symbols to check: ${Array.from(symbolsToFetch).join(', ')}`);
             for (const symbol of symbolsToFetch) {
                 const trades = await exchangeInstance.fetchMyTrades(symbol, since);
-                if (trades.length > 0) {
-                    console.log(`[LOG] Binance (Spot): Found ${trades.length} trades for ${symbol}.`);
-                    allExchangeRecords.push(...trades);
-                }
+                if (trades.length > 0) allExchangeRecords.push(...trades);
             }
-        } catch (e) { console.error(`[CRASH] Binance (Spot): Failed to fetch trades.`, e.message); }
+        } catch (e) { console.error(`[WARN] Binance (Spot): Could not fetch trades.`, e.message); }
 
-        // 2. 入金の取得 (お客様のコードヒントより)
+        // 2. 入金の取得
         try {
             console.log("[LOG] Binance (Spot): Fetching deposits...");
             const deposits = await exchangeInstance.fetchDeposits(undefined, since);
-            if (deposits.length > 0) {
-                console.log(`[LOG] Binance (Spot): Found ${deposits.length} deposits.`);
-                allExchangeRecords.push(...deposits);
-            }
-        } catch (e) { console.error(`[CRASH] Binance (Spot): Failed to fetch deposits.`, e.message); }
+            if (deposits.length > 0) allExchangeRecords.push(...deposits);
+        } catch (e) { console.error(`[WARN] Binance (Spot): Could not fetch deposits.`, e.message); }
 
-        // 3. 出金の取得 (お客様のコードヒントより)
+        // 3. 出金の取得
         try {
             console.log("[LOG] Binance (Spot): Fetching withdrawals...");
             const withdrawals = await exchangeInstance.fetchWithdrawals(undefined, since);
-            if (withdrawals.length > 0) {
-                console.log(`[LOG] Binance (Spot): Found ${withdrawals.length} withdrawals.`);
-                allExchangeRecords.push(...withdrawals);
-            }
-        } catch (e) { console.error(`[CRASH] Binance (Spot): Failed to fetch withdrawals.`, e.message); }
+            if (withdrawals.length > 0) allExchangeRecords.push(...withdrawals);
+        } catch (e) { console.error(`[WARN] Binance (Spot): Could not fetch withdrawals.`, e.message); }
 
       } else {
-        // Binance以外の取引所 (現状維持)
         const exchangeInstance = new ccxt[conn.exchange]({ apiKey: credentials.apiKey, secret: credentials.apiSecret, password: credentials.apiPassphrase });
         const trades = await exchangeInstance.fetchMyTrades(undefined, since);
         allExchangeRecords.push(...trades);
@@ -105,20 +107,19 @@ Deno.serve(async (req) => {
 
       console.log(`[LOG] Found a total of ${allExchangeRecords.length} records for ${conn.exchange}.`);
       if (allExchangeRecords.length > 0) {
-        allRecordsToUpsert.push(...allExchangeRecords.map(record => ({ 
-            user_id: user.id, 
-            exchange: conn.exchange, 
-            raw_data: record 
-        })));
+        allRecordsToUpsert.push(...allExchangeRecords.map(r => transformRecord(r, user.id, conn.exchange)));
       }
     }
     
     let totalSavedCount = 0;
     if (allRecordsToUpsert.length > 0) {
       console.log(`[LOG] Upserting ${allRecordsToUpsert.length} records to the database...`);
-      // ccxtの各レコードは 'id' を持つはず。重複を避けるためのキーとして使用
-      const { data, error } = await supabaseAdmin.from('exchange_trades').upsert(allRecordsToUpsert, { onConflict: "user_id,exchange,(raw_data->>'id')" }).select();
-      if (error) throw error;
+      // [最終最重要修正] テーブル定義に存在するであろう `external_id` カラムをコンフリクトキーとして使用
+      const { data, error } = await supabaseAdmin.from('exchange_trades').upsert(allRecordsToUpsert, { onConflict: "user_id,exchange,external_id" }).select();
+      if (error) {
+          console.error("[CRASH] DATABASE UPSERT FAILED:", error);
+          throw error;
+      }
       totalSavedCount = data?.length ?? 0;
       console.log(`[LOG] VICTORY! Successfully upserted ${totalSavedCount} records.`);
     } else {
@@ -129,6 +130,6 @@ Deno.serve(async (req) => {
 
   } catch (err) {
     console.error(`[CRASH] A critical error occurred in the function:`, err);
-    return new Response(JSON.stringify({ error: err.message }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 });
+    return new Response(JSON.stringify({ error: err.message, stack: err.stack }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 });
   }
 });
