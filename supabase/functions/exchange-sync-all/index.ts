@@ -90,35 +90,61 @@ Deno.serve(async (req) => {
         password: credentials.apiPassphrase,
       });
       
-      // ★★★★★ 修正箇所 ★★★★★
-      // 1. 全ての「現物(spot)」取引履歴（売買）を取得する
+      // ★★★★★ インテリジェント方式での取引取得 ★★★★★
+      // 1. 売買履歴の取得
       try {
-        console.log(`[LOG] ${conn.exchange}: Fetching trades...`);
+        console.log(`[LOG] ${conn.exchange}: Fetching trades intelligently...`);
         if (exchangeInstance.has['fetchMyTrades']) {
             await exchangeInstance.loadMarkets();
 
-            // ccxtから取引所の全通貨ペア情報を取得し、「現物(spot)」のみに絞り込む
-            const spotMarkets = Object.values(exchangeInstance.markets).filter(market => market.spot === true);
-            console.log(`[LOG] Found ${spotMarkets.length} spot markets to check for trades.`);
+            // 1a. ユーザーの保有資産リストを取得
+            const balance = await exchangeInstance.fetchBalance();
+            const assets = Object.keys(balance.total).filter(asset => balance.total[asset] > 0);
+            console.log(`[LOG] User has non-zero balance for: ${assets.join(', ') || 'none'}`);
 
-            // 現物の通貨ペアを1つずつ順番に問い合わせ、エラーの根本原因である「先物(linear)」を完全に排除する
-            for (const market of spotMarkets) {
-              try {
-                const trades = await exchangeInstance.fetchMyTrades(market.symbol, since);
-                if (trades.length > 0) {
-                  console.log(`[LOG] ${conn.exchange}: Found ${trades.length} trades for ${market.symbol}.`);
-                  allExchangeRecords.push(...trades);
+            // 1b. 関連する可能性のある「現物」通貨ペアを構築
+            const marketsToCheck = new Set<string>();
+            const quoteCurrencies = ['USDT', 'BTC', 'ETH', 'JPY', 'BUSD', 'USDC']; // 主要な基軸通貨
+
+            for (const asset of assets) {
+                for (const quote of quoteCurrencies) {
+                    const symbol1 = `${asset}/${quote}`;
+                    if (exchangeInstance.markets[symbol1]?.spot) marketsToCheck.add(symbol1);
+                    const symbol2 = `${quote}/${asset}`;
+                    if (exchangeInstance.markets[symbol2]?.spot) marketsToCheck.add(symbol2);
                 }
-              } catch (e) {
-                // APIキーの権限不足などで個別エラーが起きても処理を止めない
-                console.warn(`[WARN] Could not fetch trades for symbol ${market.symbol}: ${e.message}`);
-              }
+            }
+
+            const symbols = Array.from(marketsToCheck);
+            if (symbols.length > 0) {
+                console.log(`[LOG] Checking for trades in ${symbols.length} relevant markets...`);
+
+                // 1c. 関連する通貨ペアの取引履歴を一括（並列）で取得
+                const promises = symbols.map(symbol =>
+                    exchangeInstance.fetchMyTrades(symbol, since)
+                        .then(trades => {
+                            if (trades.length > 0) {
+                                console.log(`[LOG] ${conn.exchange}: Found ${trades.length} trades for ${symbol}.`);
+                                return trades;
+                            }
+                            return [];
+                        })
+                        .catch(e => {
+                            console.warn(`[WARN] Could not fetch trades for symbol ${symbol}: ${e.message}`);
+                            return [];
+                        })
+                );
+                
+                const tradesBySymbol = await Promise.all(promises);
+                const allTrades = tradesBySymbol.flat();
+                allExchangeRecords.push(...allTrades);
+            } else {
+                console.log(`[LOG] No relevant markets to check for trades based on current balances.`);
             }
         }
       } catch (e) {
-          console.error(`[ERROR] ${conn.exchange}: Failed to load markets or process trades.`, e.message);
+          console.error(`[ERROR] ${conn.exchange}: Failed during intelligent trade fetching process.`, e.message);
       }
-      // ★★★★★ 修正ここまで ★★★★★
 
       // 2. 入金の取得
       if (exchangeInstance.has['fetchDeposits']) {
