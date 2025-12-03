@@ -1,179 +1,170 @@
+
 // src/pages/TransactionHistory.tsx
 
-"use client";
-import { useState, useEffect } from 'react';
-import { supabase } from '@/lib/supabaseClient';
-import { useAuth } from '@/hooks/useAuth';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { useToast } from '@/components/ui/use-toast';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { RefreshCw, Wallet, GitCompareArrows } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
+import { useAuth } from "@/hooks/useAuth";
+import { supabase } from "@/integrations/supabase/client";
 
-// --- 同期機能ハブ ---
-function SyncHub({ onSyncComplete }: { onSyncComplete: () => void }) {
-  const { session } = useAuth();
-  const { toast } = useToast();
-  const [wallets, setWallets] = useState<{ wallet_address: string, wallet_name: string | null, chain: string }[]>([]);
-  const [loading, setLoading] = useState<Record<string, boolean>>({});
+// NOTE: This interface is for the VIEW, not the raw table.
+interface UnifiedTransaction {
+  id: string; user_id: string; source: string; type: 'trade' | 'deposit' | 'withdrawal' | 'transfer';
+  asset: string; side: 'buy' | 'sell' | 'in' | 'out' | null; amount: number; price: number | null;
+  counter_asset: string | null; fee: number | null; fee_asset: string | null; ts: string;
+}
 
-  async function fetchConnections() {
-    if (!session) return;
-    const { data: walletData } = await supabase.from('wallet_connections').select('wallet_address, wallet_name, chain').eq('user_id', session.user.id);
-    setWallets(walletData || []);
-  }
+// ★★★ お客様のご要望に基づき、UIを画像のデザインに復元し、バックエンドロジックを接続 ★★★
+export default function TransactionHistory() {
+  const { user } = useAuth();
+  const [transactions, setTransactions] = useState<UnifiedTransaction[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [syncMessage, setSyncMessage] = useState("");
+  const toast = (msg: string) => alert(msg);
 
-  useEffect(() => { fetchConnections() }, [session]);
-
-  const handleWalletSync = async (identifier: string, chain: string) => {
-    const id = `wallet-${identifier}-${chain}`;
-    setLoading(prev => ({ ...prev, [id]: true }));
-    toast({ title: `Sync started for wallet ${identifier}...` });
-    try {
-        const { data, error } = await supabase.functions.invoke('sync-wallet-transactions', { body: { walletAddress: identifier, chain: chain } });
-        if (error) throw new Error(error.message);
-        toast({ title: `Wallet Sync Complete`, description: data.message });
-        if (data.count > 0) onSyncComplete();
-    } catch (e: any) {
-        toast({ variant: "destructive", title: "Wallet Sync Failed", description: e.message });
-    } finally {
-        setLoading(prev => ({ ...prev, [id]: false }));
+  const loadData = async () => {
+    if (!user?.id) return;
+    setLoading(true);
+    // v_all_transactions VIEWからデータを取得
+    const { data, error } = await supabase.from("v_all_transactions").select("*").eq("user_id", user.id).order("ts", { ascending: false }).limit(200);
+    if (error) {
+      console.error("[history] load error:", error);
+      setTransactions([]);
+    } else {
+      setTransactions((data as UnifiedTransaction[]) ?? []);
     }
+    setLoading(false);
   };
 
-  const handleExchangeSyncAll = async () => {
-    const id = 'sync-all-exchanges';
-    setLoading(prev => ({ ...prev, [id]: true }));
-    toast({ title: "Syncing all exchanges..." });
+  useEffect(() => { loadData(); }, [user?.id]);
+
+  // Wallet Sync用のプレースホルダー関数
+  const onSyncWallet = () => toast("Wallet sync feature is coming soon!");
+
+  // 「Sync All」ボタン用の新しい複数取引所対応同期ロジック
+  const onSyncAllExchanges = async () => {
+    if (!user?.id) { toast("Please login again."); return; }
+    setBusy(true);
+
+    const { data: sess } = await supabase.auth.getSession();
+    const headers = sess?.session?.access_token ? { Authorization: `Bearer ${sess.session.access_token}` } : {};
 
     try {
-      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-      if (sessionError || !session) throw new Error("Authentication session not found.");
-      
-      const accessToken = session.access_token;
-      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-      const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY; // <-- お客様の指摘の核心
+      // 1. ユーザーが連携している全ての取引所を取得
+      setSyncMessage("Fetching your connected exchanges...");
+      const { data: connections, error: connError } = await supabase.from('exchange_connections').select('exchange').eq('user_id', user.id);
+      if (connError) throw new Error(`Failed to fetch connections: ${connError.message}`);
+      if (!connections || connections.length === 0) {
+        toast("No connected exchanges found. Please add API keys via 'Manage API Keys'.");
+        return;
+      }
+      const exchangesToSync: string[] = connections.map(c => c.exchange);
+      let totalRecordsSaved = 0;
 
-      if (!supabaseUrl || !supabaseAnonKey) {
-        throw new Error("Supabase URL or Anon Key is not configured in environment variables.");
+      // 2. 各取引所をループして、3段階の同期処理を実行
+      for (let i = 0; i < exchangesToSync.length; i++) {
+        const currentExch = exchangesToSync[i] as string;
+        const allFetchedRecords: any[] = [];
+        const exchangeProgress = `(${i + 1}/${exchangesToSync.length})`;
+
+        // 2a. 準備 (Prep)
+        setSyncMessage(`[${currentExch} ${exchangeProgress}] Step 1/3: Preparing sync...`);
+        const { data: prepData, error: prepError } = await supabase.functions.invoke("exchange-sync-prep", {
+            headers, body: { exchange: currentExch, since: null, until: null },
+        });
+        if (prepError) throw new Error(`[${currentExch} Prep] ${prepError.message}`);
+        const { marketsToFetch, deposits, withdrawals } = prepData;
+        allFetchedRecords.push(...deposits, ...withdrawals);
+        setSyncMessage(`[${currentExch} ${exchangeProgress}] Step 1/3: Found ${marketsToFetch.length} markets to sync.`);
+
+        // 2b. 実行 (Worker)
+        for (let j = 0; j < marketsToFetch.length; j++) {
+            const market = marketsToFetch[j];
+            setSyncMessage(`[${currentExch} ${exchangeProgress}] Step 2/3: Syncing market ${j + 1}/${marketsToFetch.length}: ${market}...`);
+            const { data: workerData, error: workerError } = await supabase.functions.invoke("exchange-sync-worker", {
+                headers, body: { exchange: currentExch, symbol: market, since: null, until: null },
+            });
+            if (workerError) {
+                console.warn(`[${currentExch} Worker] Failed for ${market}, continuing...`, workerError);
+                continue;
+            }
+            allFetchedRecords.push(...workerData);
+        }
+
+        // 2c. 保存 (Save)
+        if (allFetchedRecords.length > 0) {
+            setSyncMessage(`[${currentExch} ${exchangeProgress}] Step 3/3: Saving ${allFetchedRecords.length} records...`);
+            const { data: saveData, error: saveError } = await supabase.functions.invoke("exchange-sync-save", {
+                headers, body: { exchange: currentExch, records: allFetchedRecords },
+            });
+            if (saveError) throw new Error(`[${currentExch} Save] ${saveError.message}`);
+            totalRecordsSaved += saveData.totalSaved ?? 0;
+        }
       }
       
-      const functionUrl = `${supabaseUrl}/functions/v1/exchange-sync-all`;
+      toast(`Sync complete! Saved ${totalRecordsSaved} new records across ${exchangesToSync.length} exchanges.`);
+      loadData();
 
-      const response = await fetch(functionUrl, {
-        method: 'POST',
-        headers: {
-          // [最重要修正] お客様のご指摘通り、必須のapikeyヘッダーを追加
-          'apikey': supabaseAnonKey,
-          'Authorization': `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-        },
-      });
-
-      const responseData = await response.json();
-      if (!response.ok) {
-        throw new Error(responseData.error || `Server responded with status ${response.status}`);
-      }
-
-      toast({ title: "Exchange Sync Complete", description: `Saved ${responseData.totalSaved || 0} new trades.` });
-      if (responseData.totalSaved > 0) {
-        onSyncComplete();
-      }
-
-    } catch (e: any) {
-      toast({ variant: "destructive", title: "Exchange Sync Failed", description: e.message });
+    } catch (error: any) {
+      console.error("[Sync All Flow Failed]", error);
+      toast(`Sync failed: ${error.message}`);
     } finally {
-      setLoading(prev => ({ ...prev, [id]: false }));
+      setBusy(false);
+      setSyncMessage("");
     }
   };
-
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Data Sync</CardTitle>
-        <CardDescription>Manually sync the latest transaction history from your connected sources.</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {wallets.map(w => (
-          <div key={w.wallet_address + w.chain} className="flex items-center justify-between p-3 border rounded-lg bg-background">
-            <div className='flex items-center'><Wallet className="h-4 w-4 mr-2" /> <span>{w.wallet_name || w.wallet_address} ({w.chain})</span></div>
-            <Button size="sm" onClick={() => handleWalletSync(w.wallet_address, w.chain)} disabled={loading[`wallet-${w.wallet_address}-${w.chain}`]}>
-              <RefreshCw className={`mr-2 h-4 w-4 ${loading[`wallet-${w.wallet_address}-${w.chain}`] ? 'animate-spin' : ''}`} /> Sync
-            </Button>
-          </div>
-        ))}
-        <div className="flex items-center justify-between p-3 border rounded-lg bg-background">
-            <div className='flex items-center'><GitCompareArrows className="h-4 w-4 mr-2" /> <span>All Connected Exchanges</span></div>
-            <Button size="sm" onClick={handleExchangeSyncAll} disabled={loading['sync-all-exchanges']}>
-                <RefreshCw className={`mr-2 h-4 w-4 ${loading['sync-all-exchanges'] ? 'animate-spin' : ''}`} /> Sync All
-            </Button>
+    <div className="space-y-6">
+        <h1 className="text-3xl font-bold">Transactions</h1>
+
+        <div className="space-y-4 p-6 border rounded-lg">
+            <h2 className="text-xl font-semibold">Data Sync</h2>
+            <p className="text-gray-600">Manually sync the latest transaction history from your connected sources.</p>
+            
+            <div className="grid md:grid-cols-2 gap-4 pt-2">
+                <div className="space-y-2">
+                    <div className="font-medium">Wallet (ethereum)</div>
+                    <button className="px-4 py-2 rounded border disabled:opacity-50 flex items-center gap-2" onClick={onSyncWallet} disabled={busy}>Sync</button>
+                </div>
+                <div className="space-y-2">
+                    <div className="font-medium">All Connected Exchanges</div>
+                    <button className="px-4 py-2 rounded border bg-blue-600 text-white disabled:opacity-50 flex items-center gap-2" onClick={onSyncAllExchanges} disabled={busy}>Sync All</button>
+                </div>
+            </div>
+            {syncMessage && <p className="text-sm text-blue-600 font-medium mt-4">{syncMessage}</p>}
+            <div className="pt-2"><Link to="/exchange/VCE" className="text-sm underline">Manage API Keys</Link></div>
         </div>
-      </CardContent>
-    </Card>
+
+        <div className="space-y-4">
+            <h2 className="text-xl font-semibold">All Transactions</h2>
+            <div className="border rounded-lg overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200">
+                    <thead className="bg-gray-50"><tr>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Source</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Description</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Amount</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Asset</th>
+                    </tr></thead>
+                    <tbody className="bg-white divide-y divide-gray-200">
+                        {loading ? (<tr><td colSpan={5} className="text-center py-4">Loading...</td></tr>) : transactions.length === 0 ? (<tr><td colSpan={5} className="text-center py-4 text-gray-500">No transactions found.</td></tr>) : (
+                            transactions.map((tx) => (
+                                <tr key={tx.id}>
+                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{new Date(tx.ts).toLocaleString()}</td>
+                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 capitalize">{tx.source}</td>
+                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 capitalize">{tx.type}</td>
+                                    <td className={`px-6 py-4 whitespace-nowrap text-sm ${tx.side === 'buy' || tx.side === 'in' ? 'text-green-600' : 'text-red-600'}`}>
+                                        {tx.side === 'buy' || tx.side === 'in' ? '+' : '-'}{tx.amount}
+                                    </td>
+                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-bold">{tx.asset}</td>
+                                </tr>
+                            ))
+                        )}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
   );
 }
-
-// --- 全取引テーブル ---
-function TransactionsTable({ refreshKey }: { refreshKey: number }) {
-    const { session } = useAuth();
-    const { toast } = useToast();
-    const [transactions, setTransactions] = useState<any[]>([]);
-    const [loading, setLoading] = useState(true);
-
-    async function fetchTransactions() {
-        if (!session) return;
-        setLoading(true);
-        const { data, error } = await supabase.from('all_transactions').select('*').order('date', { ascending: false });
-        if (error) {
-            toast({ variant: "destructive", title: "Failed to load transactions", description: error.message });
-        } else {
-            setTransactions(data);
-        }
-        setLoading(false);
-    }
-
-    useEffect(() => { fetchTransactions(); }, [session, refreshKey]);
-    
-    return (
-        <Card>
-            <CardHeader><CardTitle>All Transactions</CardTitle></CardHeader>
-            <CardContent>
-                <Table>
-                    <TableHeader>
-                        <TableRow>
-                            <TableHead>Date</TableHead> <TableHead>Source</TableHead> <TableHead>Description</TableHead>
-                            <TableHead className="text-right">Amount</TableHead> <TableHead>Asset</TableHead>
-                        </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                        {loading ? (<TableRow><TableCell colSpan={5} className="text-center h-24">Loading data...</TableCell></TableRow>) 
-                        : transactions.length > 0 ? (transactions.map(tx => (
-                            <TableRow key={`${tx.id}-${tx.source}`}>
-                                <TableCell className="text-sm text-muted-foreground">{new Date(tx.date).toLocaleString()}</TableCell>
-                                <TableCell><span className={`capitalize text-xs font-semibold px-2 py-1 rounded-full ${tx.source === 'on-chain' ? 'bg-blue-100 text-blue-800' : 'bg-amber-100 text-amber-800'}`}>{tx.source}</span></TableCell>
-                                <TableCell className="font-medium">{tx.description}</TableCell>
-                                <TableCell className={`text-right font-mono ${tx.type === 'buy' || tx.type === 'deposit' || tx.type === 'receive' ? 'text-green-600' : 'text-red-600'}`}>{tx.type === 'sell' || tx.type === 'withdrawal' || tx.type === 'send' ? '-' : ''}{Number(tx.amount).toFixed(6)}</TableCell>
-                                <TableCell>{tx.asset}</TableCell>
-                            </TableRow>
-                        ))) : (<TableRow><TableCell colSpan={5} className="text-center h-24">No transactions found.</TableCell></TableRow>)}
-                    </TableBody>
-                </Table>
-            </CardContent>
-        </Card>
-    );
-}
-// --- メインページ ---
-export function TransactionHistoryPage() { 
-  const [refreshKey, setRefreshKey] = useState(0);
-  const handleSyncComplete = () => setRefreshKey(prevKey => prevKey + 1);
-
-  return (
-    <div className="container mx-auto p-4 md:p-6 lg:p-8 space-y-6">
-      <h1 className="text-3xl font-bold tracking-tight">Transactions</h1>
-      <SyncHub onSyncComplete={handleSyncComplete} />
-      <TransactionsTable refreshKey={refreshKey} />
-    </div>
-  ) 
-}
-export default TransactionHistoryPage;
