@@ -138,12 +138,12 @@ Deno.serve(async (req) => {
             if (symbols.length > 0) {
               console.log(`[LOG] Checking for trades in ${symbols.length} relevant markets in mini-batches...`);
               
-              const miniBatchSize = 5;
+              const miniBatchSize = 5; // CPUタイムアウトを避けるための安全なバッチサイズ
               let allTrades = [];
 
               for (let i = 0; i < symbols.length; i += miniBatchSize) {
                   const batch = symbols.slice(i, i + miniBatchSize);
-                  console.log(`[LOG] Processing batch #${(i/miniBatchSize)+1}: ${batch.join(', ')}`);
+                  console.log(`[LOG] Processing batch #${Math.floor(i/miniBatchSize)+1}: ${batch.join(', ')}`);
                   
                   const promises = batch.map(symbol =>
                       exchangeInstance.fetchMyTrades(symbol, since)
