@@ -32,9 +32,9 @@ function transformRecord(record: any, userId: string, exchange: string) {
     return null;
   }
 
-  const side = record.side || record.type; // 'buy'/'sell' または 'deposit'/'withdrawal'
-  const symbol = record.symbol || record.currency; // トレードならsymbol, 入出金ならcurrency
-  const price = record.price ?? 0; // 入出金には価格がない
+  const side = record.side || record.type;
+  const symbol = record.symbol || record.currency;
+  const price = record.price ?? 0;
   const fee_cost = record.fee?.cost;
   const fee_currency = record.fee?.currency;
 
@@ -88,30 +88,37 @@ Deno.serve(async (req) => {
         apiKey: credentials.apiKey,
         secret: credentials.apiSecret,
         password: credentials.apiPassphrase,
-        options: { 'defaultType': 'spot' }, // 現物取引を明示
       });
       
-      // 1. 全ての取引履歴（売買）を取得する
+      // ★★★★★ 修正箇所 ★★★★★
+      // 1. 全ての「現物(spot)」取引履歴（売買）を取得する
       try {
-        console.log(`[LOG] ${conn.exchange}: Fetching all trades...`);
+        console.log(`[LOG] ${conn.exchange}: Fetching trades...`);
         if (exchangeInstance.has['fetchMyTrades']) {
-            // ★★★★★ 修正箇所 ★★★★★
-            // ライブラリが取引所のルールを理解するために必須の行
-            await exchangeInstance.loadMarkets(); 
+            await exchangeInstance.loadMarkets();
 
-            const params = conn.exchange === 'binance' ? { 'type': 'spot' } : {};
-            const trades = await exchangeInstance.fetchMyTrades(undefined, since, undefined, params);
+            // ccxtから取引所の全通貨ペア情報を取得し、「現物(spot)」のみに絞り込む
+            const spotMarkets = Object.values(exchangeInstance.markets).filter(market => market.spot === true);
+            console.log(`[LOG] Found ${spotMarkets.length} spot markets to check for trades.`);
 
-            if (trades.length > 0) {
-                console.log(`[LOG] ${conn.exchange}: Found ${trades.length} trades across all symbols.`);
-                allExchangeRecords.push(...trades);
-            } else {
-                console.log(`[LOG] ${conn.exchange}: Found no new trades.`);
+            // 現物の通貨ペアを1つずつ順番に問い合わせ、エラーの根本原因である「先物(linear)」を完全に排除する
+            for (const market of spotMarkets) {
+              try {
+                const trades = await exchangeInstance.fetchMyTrades(market.symbol, since);
+                if (trades.length > 0) {
+                  console.log(`[LOG] ${conn.exchange}: Found ${trades.length} trades for ${market.symbol}.`);
+                  allExchangeRecords.push(...trades);
+                }
+              } catch (e) {
+                // APIキーの権限不足などで個別エラーが起きても処理を止めない
+                console.warn(`[WARN] Could not fetch trades for symbol ${market.symbol}: ${e.message}`);
+              }
             }
         }
       } catch (e) {
-          console.error(`[ERROR] ${conn.exchange}: Could not fetch trades.`, e.message);
+          console.error(`[ERROR] ${conn.exchange}: Failed to load markets or process trades.`, e.message);
       }
+      // ★★★★★ 修正ここまで ★★★★★
 
       // 2. 入金の取得
       if (exchangeInstance.has['fetchDeposits']) {
