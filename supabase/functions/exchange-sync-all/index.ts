@@ -1,12 +1,17 @@
-// supabase/functions/exchange-sync-all/index.ts
 
+// supabase/functions/exchange-sync-all/index.ts
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
-import ccxt from 'https://esm.sh/ccxt@4.3.40'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import ccxt from "https://esm.sh/ccxt@4.3.46"
 import { decode } from "https://deno.land/std@0.177.0/encoding/base64.ts";
 
-const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+}
 
+// --- 共通の復号ロジック ---
 async function getKey() {
   const b64 = Deno.env.get("EDGE_KMS_KEY");
   if (!b64) throw new Error("EDGE_KMS_KEY secret is not set.");
@@ -24,172 +29,63 @@ async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: s
   return JSON.parse(new TextDecoder().decode(decryptedData));
 }
 
-// ccxtのレコードをDBスキーマに正確にマッピングする関数
-function transformRecord(record: any, userId: string, exchange: string) {
-  const recordId = record.id || record.txid;
-  if (!recordId) {
-    console.warn("[TRANSFORM-WARN] Record is missing a unique ID. Skipping:", record);
-    return null;
-  }
-
-  const side = record.side || record.type;
-  const symbol = record.symbol || record.currency;
-  const price = record.price ?? 0;
-  const fee_cost = record.fee?.cost;
-  const fee_currency = record.fee?.currency;
-
-  if (!symbol || !side || !record.amount || !record.timestamp) {
-      console.warn(`[TRANSFORM-WARN] Record is missing required fields. Skipping:`, record);
-      return null;
-  }
-
-  return {
-    user_id: userId,
-    exchange: exchange,
-    trade_id: String(recordId),
-    symbol: symbol,
-    side: side,
-    price: price,
-    amount: record.amount,
-    fee: fee_cost,
-    fee_asset: fee_currency,
-    ts: new Date(record.timestamp).toISOString(),
-    raw_data: record,
-  };
-}
-
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders });
+    return new Response('ok', { headers: corsHeaders })
   }
 
+  let exchange = 'unknown'
   try {
-    const supabaseAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
-    const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(req.headers.get('Authorization')!.replace('Bearer ', ''));
-    if (userError || !user) throw new Error('User not found.');
+    const supabaseAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
+    const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(req.headers.get('Authorization')!.replace('Bearer ', ''))
+    if (userError || !user) throw new Error(`User not found: ${userError?.message ?? 'Unknown error'}`)
 
-    const { data: connections, error: connError } = await supabaseAdmin.from('exchange_connections').select('id, exchange, encrypted_blob').eq('user_id', user.id);
-    if (connError) throw connError;
-    if (!connections || connections.length === 0) {
-      return new Response(JSON.stringify({ message: "No exchange connections found.", totalSaved: 0 }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-    }
+    const body = await req.json()
+    exchange = body.exchange
+    if (!exchange) throw new Error("Exchange is required.")
 
-    let allRecordsToUpsert = [];
-    const since = Date.now() - 90 * 24 * 60 * 60 * 1000;
+    console.log(`[${exchange} SYNC ALL] Received sync request. User: ${user.id}`)
 
-    for (const conn of connections) {
-      console.log(`[LOG] Processing ${conn.exchange}...`);
-      if (!conn.encrypted_blob) { console.warn(`[WARN] Skipping ${conn.exchange} due to missing blob.`); continue; }
-      
-      const credentials = await decryptBlob(conn.encrypted_blob);
-      let allExchangeRecords: any[] = [];
-      
-      const exchangeInstance = new ccxt[conn.exchange]({
-        apiKey: credentials.apiKey,
-        secret: credentials.apiSecret,
-        password: credentials.apiPassphrase,
-        options: { 'defaultType': 'spot' }, 
-      });
-      
-      try {
-        console.log(`[LOG] ${conn.exchange}: Fetching data via Sequential-Hybrid method...`);
-        await exchangeInstance.loadMarkets();
-
-        const relevantAssets = new Set<string>();
-        
-        // 1. 最初に、取引調査のヒントとなる情報を全て取得
-        const balance = await exchangeInstance.fetchBalance();
-        const balanceAssets = Object.keys(balance.total).filter(asset => balance.total[asset] > 0);
-        balanceAssets.forEach(asset => relevantAssets.add(asset));
-        console.log(`[LOG] Found ${balanceAssets.length} assets in balance.`);
-
-        let deposits: ccxt.Transaction[] = [];
-        if (exchangeInstance.has['fetchDeposits']) {
-            deposits = await exchangeInstance.fetchDeposits(undefined, since);
-            deposits.forEach(deposit => relevantAssets.add(deposit.currency));
-            allExchangeRecords.push(...deposits);
-        }
-        console.log(`[LOG] Found ${deposits.length} deposits.`);
-
-        let withdrawals: ccxt.Transaction[] = [];
-        if (exchangeInstance.has['fetchWithdrawals']) {
-            withdrawals = await exchangeInstance.fetchWithdrawals(undefined, since);
-            withdrawals.forEach(withdrawal => relevantAssets.add(withdrawal.currency));
-            allExchangeRecords.push(...withdrawals);
-        }
-        console.log(`[LOG] Found ${withdrawals.length} withdrawals.`);
-
-        console.log(`[LOG] Total relevant assets: ${Array.from(relevantAssets).join(', ')}`);
-
-        // ★★★★★ 最終解決策：「逐次実行」アーキテクチャ ★★★★★
-        if (exchangeInstance.has['fetchMyTrades']) {
-            const marketsToCheck = new Set<string>();
-            const quoteCurrencies = ['USDT', 'BTC', 'ETH', 'JPY', 'BUSD', 'USDC', 'BNB'];
-            for (const asset of relevantAssets) {
-                for (const quote of quoteCurrencies) {
-                    const symbol1 = `${asset}/${quote}`;
-                    if (exchangeInstance.markets[symbol1]?.spot) marketsToCheck.add(symbol1);
-                    const symbol2 = `${quote}/${asset}`;
-                    if (exchangeInstance.markets[symbol2]?.spot) marketsToCheck.add(symbol2);
-                }
-            }
-
-            const symbols = Array.from(marketsToCheck);
-            if (symbols.length > 0) {
-              console.log(`[LOG] Sequentially checking for trades in ${symbols.length} relevant markets...`);
-              
-              let allTrades = [];
-              for (const symbol of symbols) {
-                  try {
-                      console.log(`[LOG] Processing symbol: ${symbol}`);
-                      const trades = await exchangeInstance.fetchMyTrades(symbol, since);
-                      if (trades.length > 0) {
-                          console.log(`[LOG] Found ${trades.length} trades for ${symbol}.`);
-                          allTrades.push(...trades);
-                      }
-                  } catch (e) {
-                      console.warn(`[WARN] Could not fetch trades for symbol ${symbol}: ${e.message}`);
-                  }
-              }
-
-              if (allTrades.length > 0) {
-                  console.log(`[LOG] Found a total of ${allTrades.length} trades.`);
-                  allExchangeRecords.push(...allTrades);
-              }
-            } else {
-              console.log(`[LOG] No relevant markets to check for trades.`);
-            }
-        }
-
-      } catch (e) {
-          console.error(`[ERROR] ${conn.exchange}: A critical error occurred during the fetch process.`, e.message);
-      }
-      
-      console.log(`[LOG] Found a total of ${allExchangeRecords.length} records for ${conn.exchange}.`);
-      if (allExchangeRecords.length > 0) {
-        const transformed = allExchangeRecords.map(r => transformRecord(r, user.id, conn.exchange)).filter(r => r !== null);
-        allRecordsToUpsert.push(...transformed);
-      }
-    }
+    const { data: conn, error: connError } = await supabaseAdmin.from('exchange_connections').select('encrypted_blob').eq('user_id', user.id).eq('exchange', exchange).single();
+    if (connError || !conn) throw new Error(`Connection not found for ${exchange}`);
+    if (!conn.encrypted_blob) throw new Error(`Encrypted blob not found for ${exchange}`);
     
-    let totalSavedCount = 0;
-    if (allRecordsToUpsert.length > 0) {
-      console.log(`[LOG] Upserting ${allRecordsToUpsert.length} records to the database...`);
-      const { data, error } = await supabaseAdmin.from('exchange_trades').upsert(allRecordsToUpsert, { onConflict: 'user_id,exchange,trade_id' }).select();
-      if (error) {
-          console.error("[CRASH] DATABASE UPSERT FAILED:", error);
-          throw error;
-      }
-      totalSavedCount = data?.length ?? 0;
-      console.log(`[LOG] VICTORY! Successfully upserted ${totalSavedCount} records.`);
-    } else {
-      console.log("[LOG] No new records found across all exchanges to save.");
-    }
+    const credentials = await decryptBlob(conn.encrypted_blob);
 
-    return new Response(JSON.stringify({ message: `Sync complete.`, totalSaved: totalSavedCount }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    // @ts-ignore
+    const ex = new ccxt[exchange]({
+      apiKey: credentials.apiKey,
+      secret: credentials.apiSecret,
+      password: credentials.apiPassphrase,
+    })
+
+    // Binanceは90日という制限がある
+    const since = Date.now() - 89 * 24 * 60 * 60 * 1000; 
+
+    console.log(`[${exchange} SYNC ALL] Fetching all trades, deposits, and withdrawals... (Last 90 days)`)
+    
+    // ★★★ お客様の正解：たった3回のAPI呼び出しで、全てを取得する ★★★
+    const [trades, deposits, withdrawals] = await Promise.all([
+        ex.fetchMyTrades(undefined, since), // シンボルを指定せず「全取引」を取得
+        ex.fetchDeposits(undefined, since),
+        ex.fetchWithdrawals(undefined, since)
+    ]);
+
+    console.log(`[${exchange} SYNC ALL] VICTORY! Found: ${trades.length} trades, ${deposits.length} deposits, ${withdrawals.length} withdrawals.`)
+
+    // フロントエンドで処理しやすいように、取得したデータをそのまま返す
+    const records = [...trades, ...deposits, ...withdrawals];
+
+    return new Response(JSON.stringify(records), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      status: 200,
+    })
 
   } catch (err) {
-    console.error(`[CRASH] A critical error occurred in the function:`, err);
-    return new Response(JSON.stringify({ error: err.message, stack: err.stack }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 });
+    console.error(`[${exchange} SYNC ALL CRASH]`, err)
+    return new Response(JSON.stringify({ error: err.message, stack: err.stack }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      status: 500,
+    })
   }
-});
+})
