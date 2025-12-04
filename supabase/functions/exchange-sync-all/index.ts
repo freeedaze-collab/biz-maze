@@ -57,20 +57,22 @@ Deno.serve(async (req) => {
       apiKey: credentials.apiKey,
       secret: credentials.apiSecret,
       password: credentials.apiPassphrase,
+      // ★★★ お客様、今度こそ。Binanceの初期化時に'spot'を指定します。★★★
+      options: {
+        defaultType: 'spot',
+      },
     })
-
-    // ★★★ これが、最後の、一行。全ての、戦いを、終わらせる、魔法。 ★★★
-    if (exchange === 'binance') {
-        ex.options['defaultType'] = 'spot';
-    }
 
     // Binanceは90日という制限がある
     const since = Date.now() - 89 * 24 * 60 * 60 * 1000; 
 
     console.log(`[${exchange} SYNC ALL] Fetching all trades, deposits, and withdrawals... (Last 90 days)`)
     
+    // ★★★ お客様の正解：たった3回のAPI呼び出しで、全てを取得する ★★★
+    // fetchMyTradesに、シンボルを指定しない場合、Binanceでは先物(futures)の取引を取得しようとします。
+    // 'spot'を defaultType に指定することで、現物取引を対象とさせます。
     const [trades, deposits, withdrawals] = await Promise.all([
-        ex.fetchMyTrades(undefined, since), // シンボルを指定せず「全取引」を取得
+        ex.fetchMyTrades(undefined, since),
         ex.fetchDeposits(undefined, since),
         ex.fetchWithdrawals(undefined, since)
     ]);
