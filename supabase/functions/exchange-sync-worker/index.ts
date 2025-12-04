@@ -62,6 +62,9 @@ Deno.serve(async (req) => {
       password: credentials.apiPassphrase,
     })
 
+    // ★★★ 最後の鍵：workerにも市場情報を読み込ませる ★★★
+    await ex.loadMarkets();
+
     // ★★★ 原点回帰：取得期間を「過去90日間」に固定 ★★★
     const since = Date.now() - 89 * 24 * 60 * 60 * 1000; // 安全マージンをとって89日
 
