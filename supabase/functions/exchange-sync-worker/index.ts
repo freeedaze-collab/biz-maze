@@ -30,31 +30,6 @@ async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: s
 }
 // --- ここまでが移植されたコード ---
 
-// ★★★ 並行処理で90日間の壁を突破する、新しい分割取得ヘルパー ★★★
-async function fetchAllPaginated(fetchFunction: Function, symbol: string, since: number, until: number) {
-    const chunks: {since: number, until: number}[] = [];
-    let currentSince = since;
-    const ninetyDays = 89 * 24 * 60 * 60 * 1000; // 90日ではなく89日で区切る安全策
-
-    while (currentSince < until) {
-        const currentUntil = Math.min(currentSince + ninetyDays, until);
-        chunks.push({ since: currentSince, until: currentUntil });
-        currentSince = currentUntil;
-    }
-
-    console.log(`[PAGINATOR] Created ${chunks.length} parallel chunks for ${symbol}.`);
-
-    const promises = chunks.map(chunk => 
-        fetchFunction(symbol, chunk.since, undefined, { until: chunk.until })
-    );
-
-    const results = await Promise.all(promises);
-    const allResults = results.flat();
-
-    console.log(`[PAGINATOR] Completed all parallel fetches for ${symbol}. Total records: ${allResults.length}`);
-    return allResults;
-}
-
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
@@ -69,7 +44,7 @@ Deno.serve(async (req) => {
     const body = await req.json()
     exchange = body.exchange
     symbol = body.symbol
-    const { since, until } = body
+    // since, until は当面無視し、常に過去90日間に限定する
     if (!exchange || !symbol) throw new Error("Exchange and symbol are required.")
 
     console.log(`[${exchange} WORKER] Syncing trades for ${symbol}. User: ${user.id}`)
@@ -87,11 +62,10 @@ Deno.serve(async (req) => {
       password: credentials.apiPassphrase,
     })
 
-    const startTime = since ? new Date(since).getTime() : Date.now() - (365 * 24 * 60 * 60 * 1000); // Default to 1 year ago if no since
-    const endTime = until ? new Date(until).getTime() : Date.now();
+    // ★★★ 原点回帰：取得期間を「過去90日間」に固定 ★★★
+    const since = Date.now() - 89 * 24 * 60 * 60 * 1000; // 安全マージンをとって89日
 
-    // ★★★ 並行処理で一斉に取得 ★★★
-    const trades = await fetchAllPaginated(ex.fetchMyTrades.bind(ex), symbol, startTime, endTime);
+    const trades = await ex.fetchMyTrades(symbol, since, undefined)
 
     console.log(`[${exchange} WORKER] Found ${trades.length} trades for ${symbol}.`)
 
