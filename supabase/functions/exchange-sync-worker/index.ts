@@ -2,27 +2,30 @@
 // supabase/functions/exchange-sync-worker/index.ts
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
-import { ccxt } from "https://esm.sh/ccxt@4.3.46"
+// ★★★ 致命的な構文エラーを修正 ★★★
+import ccxt from "https://esm.sh/ccxt@4.3.46"
 
-// ★★★ CORS設定を完全なものに修正 ★★★
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS', // POSTメソッドを明示的に許可
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
 Deno.serve(async (req) => {
-  // Handle CORS preflight request
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
 
+  let exchange = 'unknown', symbol = 'unknown' // for logging
   try {
     const supabaseAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
     const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(req.headers.get('Authorization')!.replace('Bearer ', ''))
     if (userError || !user) throw new Error(`User not found: ${userError?.message ?? 'Unknown error'}`)
 
-    const { exchange, symbol, since, until } = await req.json()
+    const body = await req.json()
+    exchange = body.exchange
+    symbol = body.symbol
+    const { since, until } = body
     if (!exchange || !symbol) throw new Error("Exchange and symbol are required.")
 
     console.log(`[${exchange} WORKER] Syncing trades for ${symbol}. User: ${user.id}`)
