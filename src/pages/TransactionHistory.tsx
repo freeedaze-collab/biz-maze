@@ -41,7 +41,7 @@ export default function TransactionHistory() {
   // Wallet Sync用のプレースホルダー関数
   const onSyncWallet = () => toast("Wallet sync feature is coming soon!");
 
-  // 「Sync All」ボタン用の新しい複数取引所対応同期ロジック
+  // ★★★ これが、最後の、そして、唯一、正しい、同期ロジック ★★★
   const onSyncAllExchanges = async () => {
     if (!user?.id) { toast("Please login again."); return; }
     setBusy(true);
@@ -61,41 +61,27 @@ export default function TransactionHistory() {
       const exchangesToSync: string[] = connections.map(c => c.exchange);
       let totalRecordsSaved = 0;
 
-      // 2. 各取引所をループして、3段階の同期処理を実行
+      // 2. 各取引所をループして、新しい、単一の、正しい関数を呼び出す
       for (let i = 0; i < exchangesToSync.length; i++) {
         const currentExch = exchangesToSync[i] as string;
-        const allFetchedRecords: any[] = [];
         const exchangeProgress = `(${i + 1}/${exchangesToSync.length})`;
 
-        // 2a. 準備 (Prep)
-        setSyncMessage(`[${currentExch} ${exchangeProgress}] Step 1/3: Preparing sync...`);
-        const { data: prepData, error: prepError } = await supabase.functions.invoke("exchange-sync-prep", {
-            headers, body: { exchange: currentExch, since: null, until: null },
-        });
-        if (prepError) throw new Error(`[${currentExch} Prep] ${prepError.message}`);
-        const { marketsToFetch, deposits, withdrawals } = prepData;
-        allFetchedRecords.push(...deposits, ...withdrawals);
-        setSyncMessage(`[${currentExch} ${exchangeProgress}] Step 1/3: Found ${marketsToFetch.length} markets to sync.`);
+        setSyncMessage(`[${currentExch} ${exchangeProgress}] Syncing all records...`);
 
-        // 2b. 実行 (Worker)
-        for (let j = 0; j < marketsToFetch.length; j++) {
-            const market = marketsToFetch[j];
-            setSyncMessage(`[${currentExch} ${exchangeProgress}] Step 2/3: Syncing market ${j + 1}/${marketsToFetch.length}: ${market}...`);
-            const { data: workerData, error: workerError } = await supabase.functions.invoke("exchange-sync-worker", {
-                headers, body: { exchange: currentExch, symbol: market, since: null, until: null },
-            });
-            if (workerError) {
-                console.warn(`[${currentExch} Worker] Failed for ${market}, continuing...`, workerError);
-                continue;
-            }
-            allFetchedRecords.push(...workerData);
+        // 2a. 新しい `exchange-sync-all` を呼び出し、全てのレコードを一度に取得
+        const { data: allRecords, error: syncError } = await supabase.functions.invoke("exchange-sync-all", {
+            headers, body: { exchange: currentExch },
+        });
+        if (syncError) {
+            console.warn(`[${currentExch} Sync All] Failed, continuing...`, syncError);
+            continue; // エラーが発生しても、次の取引所の処理へ進む
         }
 
-        // 2c. 保存 (Save)
-        if (allFetchedRecords.length > 0) {
-            setSyncMessage(`[${currentExch} ${exchangeProgress}] Step 3/3: Saving ${allFetchedRecords.length} records...`);
+        // 2b. 取得したレコードを `exchange-sync-save` で保存
+        if (allRecords && allRecords.length > 0) {
+            setSyncMessage(`[${currentExch} ${exchangeProgress}] Saving ${allRecords.length} records...`);
             const { data: saveData, error: saveError } = await supabase.functions.invoke("exchange-sync-save", {
-                headers, body: { exchange: currentExch, records: allFetchedRecords },
+                headers, body: { exchange: currentExch, records: allRecords },
             });
             if (saveError) throw new Error(`[${currentExch} Save] ${saveError.message}`);
             totalRecordsSaved += saveData.totalSaved ?? 0;
@@ -103,7 +89,7 @@ export default function TransactionHistory() {
       }
       
       toast(`Sync complete! Saved ${totalRecordsSaved} new records across ${exchangesToSync.length} exchanges.`);
-      loadData();
+      loadData(); // 最後にデータをリロードして、画面を更新
 
     } catch (error: any) {
       console.error("[Sync All Flow Failed]", error);
@@ -113,6 +99,7 @@ export default function TransactionHistory() {
       setSyncMessage("");
     }
   };
+
 
   return (
     <div className="space-y-6">
@@ -168,3 +155,4 @@ export default function TransactionHistory() {
     </div>
   );
 }
+
