@@ -30,6 +30,35 @@ async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: s
 }
 // --- ここまでが移植されたコード ---
 
+// ★★★ 90日間の壁を突破するための、賢い分割取得ヘルパー ★★★
+async function fetchAllPaginated(fetchFunction: Function, symbol: string | undefined, since: number, limit: number | undefined, until: number) {
+    let allResults: any[] = [];
+    let currentSince = since;
+    const ninetyDays = 90 * 24 * 60 * 60 * 1000;
+
+    console.log(`[PAGINATOR] Starting fetch from ${new Date(since).toISOString()} to ${new Date(until).toISOString()}`);
+
+    while (currentSince < until) {
+        const currentUntil = Math.min(currentSince + ninetyDays, until);
+        console.log(`[PAGINATOR] Fetching chunk: ${new Date(currentSince).toISOString()} -> ${new Date(currentUntil).toISOString()}`);
+        
+        try {
+            const results = await fetchFunction(symbol, currentSince, limit, { until: currentUntil });
+            if (results.length > 0) {
+                allResults = allResults.concat(results);
+                console.log(`[PAGINATOR] Found ${results.length} records in this chunk. Total so far: ${allResults.length}`);
+            } else {
+                console.log(`[PAGINATOR] No records in this chunk.`);
+            }
+        } catch (error) {
+            console.error(`[PAGINATOR] Error fetching chunk:`, error);
+        }
+        currentSince = currentUntil;
+    }
+    console.log(`[PAGINATOR] Completed fetch. Total records: ${allResults.length}`);
+    return allResults;
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
@@ -48,7 +77,6 @@ Deno.serve(async (req) => {
 
     console.log(`[${exchange} PREP] Received sync request. User: ${user.id}`)
 
-    // ★★★ これが唯一の正しい方法でした ★★★
     const { data: conn, error: connError } = await supabaseAdmin.from('exchange_connections').select('encrypted_blob').eq('user_id', user.id).eq('exchange', exchange).single();
     if (connError || !conn) throw new Error(`Connection not found for ${exchange}`);
     if (!conn.encrypted_blob) throw new Error(`Encrypted blob not found for ${exchange}`);
@@ -59,14 +87,19 @@ Deno.serve(async (req) => {
     const ex = new ccxt[exchange]({
       apiKey: credentials.apiKey,
       secret: credentials.apiSecret,
-      password: credentials.apiPassphrase, // 念の為パスフレーズも追加
+      password: credentials.apiPassphrase,
     })
 
     console.log(`[${exchange} PREP] Fetching markets, deposits, and withdrawals...`)
     await ex.loadMarkets()
     const marketsToFetch = ex.symbols.filter(s => s.endsWith('/USDT') || s.endsWith('/USD'));
-    const deposits = await ex.fetchDeposits(undefined, since, undefined)
-    const withdrawals = await ex.fetchWithdrawals(undefined, since, undefined)
+    
+    const startTime = since ? new Date(since).getTime() : Date.now() - (365 * 24 * 60 * 60 * 1000); // Default to 1 year ago if no since
+    const endTime = until ? new Date(until).getTime() : Date.now();
+
+    // ★★★ 90日チャンクで取得 ★★★
+    const deposits = await fetchAllPaginated(ex.fetchDeposits.bind(ex), undefined, startTime, undefined, endTime);
+    const withdrawals = await fetchAllPaginated(ex.fetchWithdrawals.bind(ex), undefined, startTime, undefined, endTime);
 
     console.log(`[${exchange} PREP] Found: ${marketsToFetch.length} markets, ${deposits.length} deposits, ${withdrawals.length} withdrawals.`)
 
