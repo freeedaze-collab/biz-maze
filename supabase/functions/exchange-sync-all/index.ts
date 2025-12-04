@@ -24,25 +24,21 @@ async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: s
   return JSON.parse(new TextDecoder().decode(decryptedData));
 }
 
-// ccxtのレコードをDBスキーマに正確にマッピングする関数
 function transformRecord(record: any, userId: string, exchange: string) {
   const recordId = record.id || record.txid;
   if (!recordId) {
     console.warn("[TRANSFORM-WARN] Record is missing a unique ID. Skipping:", record);
     return null;
   }
-
   const side = record.side || record.type;
   const symbol = record.symbol || record.currency;
   const price = record.price ?? 0;
   const fee_cost = record.fee?.cost;
   const fee_currency = record.fee?.currency;
-
   if (!symbol || !side || !record.amount || !record.timestamp) {
       console.warn(`[TRANSFORM-WARN] Record is missing required fields. Skipping:`, record);
       return null;
   }
-
   return {
     user_id: userId,
     exchange: exchange,
@@ -68,9 +64,8 @@ Deno.serve(async (req) => {
     const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(req.headers.get('Authorization')!.replace('Bearer ', ''));
     if (userError || !user) throw new Error('User not found.');
 
-    // ★★★ フロントエンドからのリクエストボディを正しく処理 ★★★
     const body = await req.json();
-    const targetExchange = body.exchange; // フロントは取引所を一つずつ指定してくる
+    const targetExchange = body.exchange;
 
     const { data: conn, error: connError } = await supabaseAdmin.from('exchange_connections').select('id, exchange, encrypted_blob').eq('user_id', user.id).eq('exchange', targetExchange).single();
     if (connError) throw connError;
@@ -96,12 +91,11 @@ Deno.serve(async (req) => {
     });
     
     try {
-      console.log(`[LOG] ${conn.exchange}: Fetching data via Sequential-Intelligent method...`);
+      console.log(`[LOG] ${conn.exchange}: Fetching data via Tuned-Intelligent method...`);
       await exchangeInstance.loadMarkets();
 
       const relevantAssets = new Set<string>();
       
-      // 1. 最初に、取引調査のヒントとなる情報を全て取得
       const balance = await exchangeInstance.fetchBalance();
       const balanceAssets = Object.keys(balance.total).filter(asset => balance.total[asset] > 0);
       balanceAssets.forEach(asset => relevantAssets.add(asset));
@@ -123,10 +117,10 @@ Deno.serve(async (req) => {
 
       console.log(`[LOG] Total relevant assets: ${Array.from(relevantAssets).join(', ')}`);
 
-      // 2. 資産リストを基に、売買履歴を調査
       if (exchangeInstance.has['fetchMyTrades']) {
           const marketsToCheck = new Set<string>();
-          const quoteCurrencies = ['USDT', 'BTC', 'ETH', 'JPY', 'BUSD', 'USDC', 'BNB'];
+          // ★★★★★ 最終修正：CPUタイムアウトを回避するため、調査対象の通貨を主要なものに限定する ★★★★★
+          const quoteCurrencies = ['USDT', 'BTC', 'BUSD', 'USDC'];
           for (const asset of relevantAssets) {
               for (const quote of quoteCurrencies) {
                   const symbol1 = `${asset}/${quote}`;
@@ -138,7 +132,6 @@ Deno.serve(async (req) => {
 
           const symbols = Array.from(marketsToCheck);
           
-          // ★★★★★ 最終修正：CPUタイムアウトを回避するため、並列処理(Promise.all)を直列処理(for...of)に変更 ★★★★★
           if (symbols.length > 0) {
             console.log(`[LOG] Checking for trades in ${symbols.length} relevant markets sequentially...`);
             const allTrades: ccxt.Trade[] = [];
@@ -175,7 +168,6 @@ Deno.serve(async (req) => {
     let totalSavedCount = 0;
     if (allRecordsToUpsert.length > 0) {
       console.log(`[LOG] Upserting ${allRecordsToUpsert.length} records to the database...`);
-      // フロントエンドからの呼び出しは単一の取引所に対するものなので、DB保存もここで行う
       const { data, error } = await supabaseAdmin.from('exchange_trades').upsert(allRecordsToUpsert, { onConflict: 'user_id,exchange,trade_id' }).select();
       if (error) {
           console.error("[CRASH] DATABASE UPSERT FAILED:", error);
@@ -187,7 +179,6 @@ Deno.serve(async (req) => {
       console.log(`[LOG] No new records found for ${conn.exchange} to save.`);
     }
 
-    // フロントエンドは、呼び出しごとにレスポンスを期待している
     return new Response(JSON.stringify({ message: `Sync complete for ${conn.exchange}.`, totalSaved: totalSavedCount }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
   } catch (err) {
