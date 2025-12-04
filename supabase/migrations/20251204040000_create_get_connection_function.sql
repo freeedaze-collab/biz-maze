@@ -4,7 +4,7 @@
 -- First, drop the old function if it exists, to ensure a clean setup
 DROP FUNCTION IF EXISTS get_decrypted_connection(p_user_id uuid, p_exchange text);
 
--- Then, create the new, fully specified function
+-- Then, create the new function that queries the correct decrypted view
 CREATE OR REPLACE FUNCTION get_decrypted_connection(p_user_id uuid, p_exchange text)
 RETURNS TABLE (
   api_key text,
@@ -12,19 +12,20 @@ RETURNS TABLE (
 )
 LANGUAGE plpgsql
 SECURITY DEFINER
--- ★★★ 暗号解読器の場所を明記し、セキュリティを強化する最終修正 ★★★
-SET search_path = public, pgsodium
+-- ★★★ 正しい「秘密の通路」（復号化済みビュー）の場所を指し示す ★★★
+SET search_path = decrypted, public
 AS $$
 BEGIN
-  -- この関数は、正しい search_path を持つことで、
-  -- Supabase Vault が提供する復号化済みビューに正しくアクセスできます。
+  -- public.exchange_connections テーブルではなく、
+  -- Vaultが提供する復号化済みビュー「decrypted.exchange_connections_decrypted」を直接参照する。
+  -- これが、かつての exchange-sync-all が行っていた、唯一の正しい方法です。
   RETURN QUERY
   SELECT
-    c.api_key,
-    c.api_secret
+    v.api_key,
+    v.api_secret
   FROM
-    public.exchange_connections AS c
+    decrypted.exchange_connections_decrypted AS v
   WHERE
-    c.user_id = p_user_id AND c.exchange = p_exchange;
+    v.user_id = p_user_id AND v.exchange = p_exchange;
 END;
 $$;
