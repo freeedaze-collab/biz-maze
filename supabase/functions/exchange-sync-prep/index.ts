@@ -63,7 +63,9 @@ Deno.serve(async (req) => {
 
     console.log(`[${exchange} PREP] Fetching markets, deposits, and withdrawals... (Last 90 days)`)
     await ex.loadMarkets()
-    const marketsToFetch = ex.symbols.filter(s => s.endsWith('/USDT') || s.endsWith('/USD'));
+
+    // ★★★ 最後の修正：JPY市場もれっきとした調査対象に加える ★★★
+    const marketsToFetch = ex.symbols.filter(s => s.endsWith('/USDT') || s.endsWith('/USD') || s.endsWith('/JPY'));
     
     // ★★★ 原点回帰：取得期間を「過去90日間」に固定 ★★★
     const since = Date.now() - 89 * 24 * 60 * 60 * 1000; // 安全マージンをとって89日
