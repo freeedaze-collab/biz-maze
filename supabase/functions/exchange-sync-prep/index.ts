@@ -30,31 +30,6 @@ async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: s
 }
 // --- ここまでが移植されたコード ---
 
-// ★★★ 並行処理で90日間の壁を突破する、新しい分割取得ヘルパー ★★★
-async function fetchAllPaginated(fetchFunction: Function, fetchType: string, since: number, until: number) {
-    const chunks: {since: number, until: number}[] = [];
-    let currentSince = since;
-    const ninetyDays = 89 * 24 * 60 * 60 * 1000; // 90日ではなく89日で区切る安全策
-
-    while (currentSince < until) {
-        const currentUntil = Math.min(currentSince + ninetyDays, until);
-        chunks.push({ since: currentSince, until: currentUntil });
-        currentSince = currentUntil;
-    }
-
-    console.log(`[PAGINATOR] Created ${chunks.length} parallel chunks for ${fetchType}.`);
-
-    const promises = chunks.map(chunk => 
-        fetchFunction(undefined, chunk.since, undefined, { until: chunk.until })
-    );
-
-    const results = await Promise.all(promises);
-    const allResults = results.flat();
-
-    console.log(`[PAGINATOR] Completed all parallel fetches for ${fetchType}. Total records: ${allResults.length}`);
-    return allResults;
-}
-
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
@@ -64,18 +39,19 @@ Deno.serve(async (req) => {
   try {
     const supabaseAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
     const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(req.headers.get('Authorization')!.replace('Bearer ', ''))
-    if (userError || !user) throw new Error(`User not found: ${userError?.message ?? 'Unknown error'}`)
+    if (userError || !user) throw new Error(\`User not found: \${userError?.message ?? 'Unknown error'}\`)
 
     const body = await req.json()
     exchange = body.exchange
-    const { since, until } = body
+    // since, until は当面無視し、常に過去90日間に限定する
+    // const { since, until } = body 
     if (!exchange) throw new Error("Exchange is required.")
 
-    console.log(`[${exchange} PREP] Received sync request. User: ${user.id}`)
+    console.log(\`[\${exchange} PREP] Received sync request. User: \${user.id}\`)
 
     const { data: conn, error: connError } = await supabaseAdmin.from('exchange_connections').select('encrypted_blob').eq('user_id', user.id).eq('exchange', exchange).single();
-    if (connError || !conn) throw new Error(`Connection not found for ${exchange}`);
-    if (!conn.encrypted_blob) throw new Error(`Encrypted blob not found for ${exchange}`);
+    if (connError || !conn) throw new Error(\`Connection not found for \${exchange}\`);
+    if (!conn.encrypted_blob) throw new Error(\`Encrypted blob not found for \${exchange}\`);
     
     const credentials = await decryptBlob(conn.encrypted_blob);
 
@@ -86,21 +62,19 @@ Deno.serve(async (req) => {
       password: credentials.apiPassphrase,
     })
 
-    console.log(`[${exchange} PREP] Fetching markets...`)
+    console.log(\`[\${exchange} PREP] Fetching markets, deposits, and withdrawals... (Last 90 days)\`)
     await ex.loadMarkets()
     const marketsToFetch = ex.symbols.filter(s => s.endsWith('/USDT') || s.endsWith('/USD'));
     
-    const startTime = since ? new Date(since).getTime() : Date.now() - (365 * 24 * 60 * 60 * 1000); // Default to 1 year ago if no since
-    const endTime = until ? new Date(until).getTime() : Date.now();
+    // ★★★ 原点回帰：取得期間を「過去90日間」に固定 ★★★
+    const since = Date.now() - 89 * 24 * 60 * 60 * 1000; // 安全マージンをとって89日
 
-    // ★★★ 並行処理を直列化して、一度に行うリクエスト数を減らす ★★★
-    console.log(`[${exchange} PREP] Fetching deposits...`);
-    const deposits = await fetchAllPaginated(ex.fetchDeposits.bind(ex), 'deposits', startTime, endTime);
+    const [deposits, withdrawals] = await Promise.all([
+        ex.fetchDeposits(undefined, since, undefined),
+        ex.fetchWithdrawals(undefined, since, undefined)
+    ]);
 
-    console.log(`[${exchange} PREP] Fetching withdrawals...`);
-    const withdrawals = await fetchAllPaginated(ex.fetchWithdrawals.bind(ex), 'withdrawals', startTime, endTime);
-
-    console.log(`[${exchange} PREP] VICTORY! Found: ${marketsToFetch.length} markets, ${deposits.length} deposits, ${withdrawals.length} withdrawals.`)
+    console.log(\`[\${exchange} PREP] Found: \${marketsToFetch.length} markets, \${deposits.length} deposits, \${withdrawals.length} withdrawals.\`)
 
     return new Response(JSON.stringify({ marketsToFetch, deposits, withdrawals }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -108,7 +82,7 @@ Deno.serve(async (req) => {
     })
 
   } catch (err) {
-    console.error(`[${exchange} PREP CRASH]`, err)
+    console.error(\`[\${exchange} PREP CRASH]\`, err)
     return new Response(JSON.stringify({ error: err.message, stack: err.stack }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       status: 500,
