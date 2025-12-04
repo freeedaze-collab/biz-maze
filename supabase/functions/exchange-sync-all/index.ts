@@ -1,17 +1,12 @@
-
 // supabase/functions/exchange-sync-all/index.ts
+
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
+import ccxt from 'https://esm.sh/ccxt@4.3.40'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
-import ccxt from "https://esm.sh/ccxt@4.3.46"
 import { decode } from "https://deno.land/std@0.177.0/encoding/base64.ts";
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-}
+const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 
-// --- 共通の復号ロジック (変更なし) ---
 async function getKey() {
   const b64 = Deno.env.get("EDGE_KMS_KEY");
   if (!b64) throw new Error("EDGE_KMS_KEY secret is not set.");
@@ -29,112 +24,175 @@ async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: s
   return JSON.parse(new TextDecoder().decode(decryptedData));
 }
 
-// ★★★ お客様の洞察に基づき、ccxtを捨て、直接APIを呼び出すロジックを実装 ★★★
-async function fetchBinanceTradesDirectly(apiKey: string, apiSecret: string, since: number): Promise<any[]> {
-    console.log("[Binance Direct] Starting direct API fetch for trades.");
-    const BINANCE_API_ENDPOINT = "https://api.binance.com";
-    // Binance APIが要求する 'BTCUSDT' 形式のシンボルリスト (ccxtの '/' 区切りではない)
-    const BINANCE_SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"];
-    const allTrades: any[] = [];
+// ccxtのレコードをDBスキーマに正確にマッピングする関数
+function transformRecord(record: any, userId: string, exchange: string) {
+  const recordId = record.id || record.txid;
+  if (!recordId) {
+    console.warn("[TRANSFORM-WARN] Record is missing a unique ID. Skipping:", record);
+    return null;
+  }
 
-    // 各シンボルに対して、署名付きリクエストを作成
-    for (const symbol of BINANCE_SYMBOLS) {
-        const params = {
-            symbol,
-            startTime: since.toString(),
-            limit: "1000",
-            timestamp: Date.now().toString(),
-        };
-        const queryString = new URLSearchParams(params).toString();
+  const side = record.side || record.type;
+  const symbol = record.symbol || record.currency;
+  const price = record.price ?? 0;
+  const fee_cost = record.fee?.cost;
+  const fee_currency = record.fee?.currency;
 
-        // HMAC-SHA256 署名の作成
-        const encoder = new TextEncoder();
-        const key = await crypto.subtle.importKey(
-            'raw', 
-            encoder.encode(apiSecret), 
-            { name: 'HMAC', hash: 'SHA-256' }, 
-            false, 
-            ['sign']
-        );
-        const signatureBuffer = await crypto.subtle.sign('HMAC', key, encoder.encode(queryString));
-        const signature = Array.from(new Uint8Array(signatureBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+  if (!symbol || !side || !record.amount || !record.timestamp) {
+      console.warn(`[TRANSFORM-WARN] Record is missing required fields. Skipping:`, record);
+      return null;
+  }
 
-        const url = `${BINANCE_API_ENDPOINT}/api/v3/myTrades?${queryString}&signature=${signature}`;
-
-        try {
-            const res = await fetch(url, { headers: { "X-MBX-APIKEY": apiKey } });
-            if (!res.ok) {
-                console.warn(`[Binance Direct] Failed to fetch trades for ${symbol}: ${res.statusText}`);
-                continue; // 失敗した場合は次のシンボルへ
-            }
-            const trades = await res.json();
-            if (trades.length > 0) {
-                console.log(`[Binance Direct] Fetched ${trades.length} trades for ${symbol}.`);
-                // ccxtのフォーマットに合わせるため、sourceとtypeを付与
-                const formattedTrades = trades.map(t => ({ ...t, source: 'binance', type: 'trade' }));
-                allTrades.push(...formattedTrades);
-            }
-        } catch (e) {
-            console.warn(`[Binance Direct] Error fetching trades for ${symbol}:`, e);
-        }
-    }
-    return allTrades;
+  return {
+    user_id: userId,
+    exchange: exchange,
+    trade_id: String(recordId),
+    symbol: symbol,
+    side: side,
+    price: price,
+    amount: record.amount,
+    fee: fee_cost,
+    fee_asset: fee_currency,
+    ts: new Date(record.timestamp).toISOString(),
+    raw_data: record,
+  };
 }
 
-
 Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { headers: corsHeaders });
+  }
 
-  let exchange = 'unknown'
   try {
-    const supabaseAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
-    const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(req.headers.get('Authorization')!.replace('Bearer ', ''))
-    if (userError || !user) throw new Error(`User not found: ${userError?.message ?? 'Unknown error'}`)
+    const supabaseAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+    const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(req.headers.get('Authorization')!.replace('Bearer ', ''));
+    if (userError || !user) throw new Error('User not found.');
 
-    const body = await req.json()
-    exchange = body.exchange
-    if (!exchange) throw new Error("Exchange is required.")
-
-    const { data: conn, error: connError } = await supabaseAdmin.from('exchange_connections').select('encrypted_blob').eq('user_id', user.id).eq('exchange', exchange).single();
-    if (connError || !conn) throw new Error(`Connection not found for ${exchange}`);
-    
-    const credentials = await decryptBlob(conn.encrypted_blob);
-
-    const since = Date.now() - 89 * 24 * 60 * 60 * 1000;
-
-    // ccxtインスタンスは、入出金取得と、Binance以外の取引所のために引き続き使用
-    // @ts-ignore
-    const ex = new ccxt[exchange]({ apiKey: credentials.apiKey, secret: credentials.apiSecret, password: credentials.apiPassphrase, });
-
-    // --- 1. 入金と出金の取得 (ここはccxtで問題なし) ---
-    console.log(`[${exchange}] Fetching deposits and withdrawals via ccxt...`);
-    const [deposits, withdrawals] = await Promise.all([
-        ex.fetchDeposits(undefined, since),
-        ex.fetchWithdrawals(undefined, since)
-    ]);
-    console.log(`[${exchange}] Found ${deposits.length} deposits, ${withdrawals.length} withdrawals.`);
-
-    // --- 2. 取引履歴の取得 (取引所に応じて戦略を切り替え) ---
-    let trades: any[] = [];
-    if (exchange === 'binance') {
-        trades = await fetchBinanceTradesDirectly(credentials.apiKey, credentials.apiSecret, since);
-    } else {
-        console.log(`[${exchange}] Fetching trades via ccxt...`);
-        try {
-            trades = await ex.fetchMyTrades(undefined, since);
-        } catch (e) {
-            console.warn(`[${exchange}] ccxt.fetchMyTrades failed. This exchange might need a direct API implementation like Binance.`, e);
-        }
+    const { data: connections, error: connError } = await supabaseAdmin.from('exchange_connections').select('id, exchange, encrypted_blob').eq('user_id', user.id);
+    if (connError) throw connError;
+    if (!connections || connections.length === 0) {
+      return new Response(JSON.stringify({ message: "No exchange connections found.", totalSaved: 0 }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
-    console.log(`[${exchange} SYNC ALL] FINAL TALLY: ${trades.length} trades, ${deposits.length} deposits, ${withdrawals.length} withdrawals.`)
+    let allRecordsToUpsert = [];
+    const since = Date.now() - 90 * 24 * 60 * 60 * 1000;
 
-    const records = [...trades, ...deposits, ...withdrawals];
+    for (const conn of connections) {
+      console.log(`[LOG] Processing ${conn.exchange}...`);
+      if (!conn.encrypted_blob) { console.warn(`[WARN] Skipping ${conn.exchange} due to missing blob.`); continue; }
+      
+      const credentials = await decryptBlob(conn.encrypted_blob);
+      let allExchangeRecords: any[] = [];
+      
+      const exchangeInstance = new ccxt[conn.exchange]({
+        apiKey: credentials.apiKey,
+        secret: credentials.apiSecret,
+        password: credentials.apiPassphrase,
+        options: { 'defaultType': 'spot' }, 
+      });
+      
+      // ★★★★★ 最終修正：ロジックの順序を完全に修正 ★★★★★
+      try {
+        console.log(`[LOG] ${conn.exchange}: Fetching data via Final Hybrid-Intelligent method...`);
+        await exchangeInstance.loadMarkets();
 
-    return new Response(JSON.stringify(records), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 });
+        const relevantAssets = new Set<string>();
+        
+        // 1. 最初に、取引調査のヒントとなる情報を全て取得
+        // 1a. 現在の資産残高
+        const balance = await exchangeInstance.fetchBalance();
+        const balanceAssets = Object.keys(balance.total).filter(asset => balance.total[asset] > 0);
+        balanceAssets.forEach(asset => relevantAssets.add(asset));
+        console.log(`[LOG] Found ${balanceAssets.length} assets in balance.`);
+
+        // 1b. 入金履歴
+        let deposits: ccxt.Transaction[] = [];
+        if (exchangeInstance.has['fetchDeposits']) {
+            deposits = await exchangeInstance.fetchDeposits(undefined, since);
+            deposits.forEach(deposit => relevantAssets.add(deposit.currency));
+            allExchangeRecords.push(...deposits);
+        }
+        console.log(`[LOG] Found ${deposits.length} deposits.`);
+
+        // 1c. 出金履歴
+        let withdrawals: ccxt.Transaction[] = [];
+        if (exchangeInstance.has['fetchWithdrawals']) {
+            withdrawals = await exchangeInstance.fetchWithdrawals(undefined, since);
+            withdrawals.forEach(withdrawal => relevantAssets.add(withdrawal.currency));
+            allExchangeRecords.push(...withdrawals);
+        }
+        console.log(`[LOG] Found ${withdrawals.length} withdrawals.`);
+
+        console.log(`[LOG] Total relevant assets (from balance, deposits & withdrawals): ${Array.from(relevantAssets).join(', ')}`);
+
+        // 2. 完全な資産リストを基に、売買履歴を調査
+        if (exchangeInstance.has['fetchMyTrades']) {
+            const marketsToCheck = new Set<string>();
+            const quoteCurrencies = ['USDT', 'BTC', 'ETH', 'JPY', 'BUSD', 'USDC', 'BNB'];
+            for (const asset of relevantAssets) {
+                for (const quote of quoteCurrencies) {
+                    const symbol1 = `${asset}/${quote}`;
+                    if (exchangeInstance.markets[symbol1]?.spot) marketsToCheck.add(symbol1);
+                    const symbol2 = `${quote}/${asset}`;
+                    if (exchangeInstance.markets[symbol2]?.spot) marketsToCheck.add(symbol2);
+                }
+            }
+
+            const symbols = Array.from(marketsToCheck);
+            if (symbols.length > 0) {
+              console.log(`[LOG] Checking for trades in ${symbols.length} relevant markets...`);
+              const promises = symbols.map(symbol =>
+                  exchangeInstance.fetchMyTrades(symbol, since)
+                      .then(trades => {
+                          if (trades.length > 0) console.log(`[LOG] Found ${trades.length} trades for ${symbol}.`);
+                          return trades;
+                      })
+                      .catch(e => {
+                          console.warn(`[WARN] Could not fetch trades for symbol ${symbol}: ${e.message}`);
+                          return [];
+                      })
+              );
+              const tradesBySymbol = await Promise.all(promises);
+              const allTrades = tradesBySymbol.flat();
+
+              if (allTrades.length > 0) {
+                  console.log(`[LOG] Found a total of ${allTrades.length} trades.`);
+                  allExchangeRecords.push(...allTrades);
+              }
+            } else {
+              console.log(`[LOG] No relevant markets to check for trades.`);
+            }
+        }
+
+      } catch (e) {
+          console.error(`[ERROR] ${conn.exchange}: A critical error occurred during the fetch process.`, e.message);
+      }
+      
+      console.log(`[LOG] Found a total of ${allExchangeRecords.length} records for ${conn.exchange}.`);
+      if (allExchangeRecords.length > 0) {
+        const transformed = allExchangeRecords.map(r => transformRecord(r, user.id, conn.exchange)).filter(r => r !== null);
+        allRecordsToUpsert.push(...transformed);
+      }
+    }
+    
+    let totalSavedCount = 0;
+    if (allRecordsToUpsert.length > 0) {
+      console.log(`[LOG] Upserting ${allRecordsToUpsert.length} records to the database...`);
+      const { data, error } = await supabaseAdmin.from('exchange_trades').upsert(allRecordsToUpsert, { onConflict: 'user_id,exchange,trade_id' }).select();
+      if (error) {
+          console.error("[CRASH] DATABASE UPSERT FAILED:", error);
+          throw error;
+      }
+      totalSavedCount = data?.length ?? 0;
+      console.log(`[LOG] VICTORY! Successfully upserted ${totalSavedCount} records.`);
+    } else {
+      console.log("[LOG] No new records found across all exchanges to save.");
+    }
+
+    return new Response(JSON.stringify({ message: `Sync complete.`, totalSaved: totalSavedCount }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
   } catch (err) {
-    console.error(`[${exchange} SYNC ALL CRASH]`, err)
+    console.error(`[CRASH] A critical error occurred in the function:`, err);
     return new Response(JSON.stringify({ error: err.message, stack: err.stack }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 });
   }
-})
+});
