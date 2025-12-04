@@ -30,20 +30,28 @@ Deno.serve(async (req) => {
 
     console.log(`[${exchange} PREP] Received sync request. User: ${user.id}`)
 
-    // ★★★ データベースの列名を、今度こそ、正しいものに修正 ★★★
     const { data: conn, error: connErr } = await supabaseAdmin
       .from('exchange_connections')
-      .select('api_key, api_secret') // 'secret_key' ではなく 'api_secret' が正解だった
+      .select('api_key, api_secret')
       .eq('user_id', user.id)
       .eq('exchange', exchange)
       .single()
 
-    if (connErr || !conn) throw new Error(`API keys for ${exchange} not found. DB Error: ${connErr?.message}`)
+    if (connErr) throw new Error(`Failed to fetch API keys for ${exchange}. DB Error: ${connErr.message}`)
+    if (!conn) throw new Error(`API key connection object not found for ${exchange}. It might not be set up.`)
+
+    // ★★★ デバッグログを追加：取得したキーの中身を詳細に確認 ★★★
+    console.log(`[${exchange} PREP] Retrieved conn object. api_key type: ${typeof conn.api_key}, api_secret type: ${typeof conn.api_secret}`);
+    console.log(`[${exchange} PREP] api_key value: ${conn.api_key}`); // セキュリティのため、本番では削除すべきログ
+
+    if (!conn.api_key || !conn.api_secret) {
+      throw new Error(`Authentication failed: api_key or api_secret is missing from the fetched connection data for ${exchange}.`);
+    }
 
     // @ts-ignore
     const ex = new ccxt[exchange]({
       apiKey: conn.api_key,
-      secret: conn.api_secret, // 正しい列名を指定
+      secret: conn.api_secret,
     })
 
     console.log(`[${exchange} PREP] Fetching markets, deposits, and withdrawals...`)
