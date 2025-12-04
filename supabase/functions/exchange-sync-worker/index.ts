@@ -29,10 +29,10 @@ Deno.serve(async (req) => {
 
     console.log(`[${exchange} WORKER] Syncing trades for ${symbol}. User: ${user.id}`)
 
-    // ★★★ データベースの列名を正しいものに修正 ★★★
+    // ★★★ データベースの列名を、今度こそ、正しいものに修正 ★★★
     const { data: conn, error: connErr } = await supabaseAdmin
       .from('exchange_connections')
-      .select('api_key, secret_key') // 'decrypted_...' は間違いだった
+      .select('api_key, api_secret') // 'secret_key' ではなく 'api_secret' が正解だった
       .eq('user_id', user.id)
       .eq('exchange', exchange)
       .single()
@@ -42,7 +42,7 @@ Deno.serve(async (req) => {
     // @ts-ignore
     const ex = new ccxt[exchange]({
       apiKey: conn.api_key,
-      secret: conn.secret_key,
+      secret: conn.api_secret, // 正しい列名を指定
     })
 
     const trades = await ex.fetchMyTrades(symbol, since, undefined, { until })
