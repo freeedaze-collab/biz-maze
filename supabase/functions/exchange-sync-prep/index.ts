@@ -3,12 +3,32 @@
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import ccxt from "https://esm.sh/ccxt@4.3.46"
+import { decode } from "https://deno.land/std@0.177.0/encoding/base64.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
+
+// --- exchange-sync-all から移植された、唯一の正しい復号ロジック ---
+async function getKey() {
+  const b64 = Deno.env.get("EDGE_KMS_KEY");
+  if (!b64) throw new Error("EDGE_KMS_KEY secret is not set.");
+  const raw = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+  return await crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["decrypt"]);
+}
+
+async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> {
+  const parts = blob.split(":");
+  if (parts.length !== 3 || parts[0] !== 'v1') throw new Error("Invalid encrypted blob format.");
+  const iv = decode(parts[1]);
+  const ct = decode(parts[2]);
+  const key = await getKey();
+  const decryptedData = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
+  return JSON.parse(new TextDecoder().decode(decryptedData));
+}
+// --- ここまでが移植されたコード ---
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -28,19 +48,18 @@ Deno.serve(async (req) => {
 
     console.log(`[${exchange} PREP] Received sync request. User: ${user.id}`)
 
-    // ★★★ データベースを直接参照するのではなく、「神の関数」を呼び出す ★★★
-    const { data: conn, error: connErr } = await supabaseAdmin
-      .rpc('get_decrypted_connection', { p_user_id: user.id, p_exchange: exchange })
-      .single()
-
-    if (connErr) throw new Error(`Failed to call get_decrypted_connection. DB Error: ${connErr.message}`)
-    if (!conn) throw new Error(`Decrypted connection object not found for ${exchange}.`)
-    if (!conn.api_key || !conn.api_secret) throw new Error(`API key or secret is missing from decrypted data for ${exchange}.`)
+    // ★★★ これが唯一の正しい方法でした ★★★
+    const { data: conn, error: connError } = await supabaseAdmin.from('exchange_connections').select('encrypted_blob').eq('user_id', user.id).eq('exchange', exchange).single();
+    if (connError || !conn) throw new Error(`Connection not found for ${exchange}`);
+    if (!conn.encrypted_blob) throw new Error(`Encrypted blob not found for ${exchange}`);
+    
+    const credentials = await decryptBlob(conn.encrypted_blob);
 
     // @ts-ignore
     const ex = new ccxt[exchange]({
-      apiKey: conn.api_key,
-      secret: conn.api_secret,
+      apiKey: credentials.apiKey,
+      secret: credentials.apiSecret,
+      password: credentials.apiPassphrase, // 念の為パスフレーズも追加
     })
 
     console.log(`[${exchange} PREP] Fetching markets, deposits, and withdrawals...`)
