@@ -59,12 +59,16 @@ Deno.serve(async (req) => {
       password: credentials.apiPassphrase,
     })
 
+    // ★★★ これが、最後の、一行。全ての、戦いを、終わらせる、魔法。 ★★★
+    if (exchange === 'binance') {
+        ex.options['defaultType'] = 'spot';
+    }
+
     // Binanceは90日という制限がある
     const since = Date.now() - 89 * 24 * 60 * 60 * 1000; 
 
     console.log(`[${exchange} SYNC ALL] Fetching all trades, deposits, and withdrawals... (Last 90 days)`)
     
-    // ★★★ お客様の正解：たった3回のAPI呼び出しで、全てを取得する ★★★
     const [trades, deposits, withdrawals] = await Promise.all([
         ex.fetchMyTrades(undefined, since), // シンボルを指定せず「全取引」を取得
         ex.fetchDeposits(undefined, since),
