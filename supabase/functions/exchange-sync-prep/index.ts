@@ -2,7 +2,6 @@
 // supabase/functions/exchange-sync-prep/index.ts
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
-// ★★★ 致命的な構文エラーを修正 ★★★
 import ccxt from "https://esm.sh/ccxt@4.3.46"
 
 const corsHeaders = {
@@ -31,19 +30,20 @@ Deno.serve(async (req) => {
 
     console.log(`[${exchange} PREP] Received sync request. User: ${user.id}`)
 
+    // ★★★ データベースの列名を正しいものに修正 ★★★
     const { data: conn, error: connErr } = await supabaseAdmin
       .from('exchange_connections')
-      .select('decrypted_api_key, decrypted_secret_key')
+      .select('api_key, secret_key') // 'decrypted_...' は間違いだった
       .eq('user_id', user.id)
       .eq('exchange', exchange)
       .single()
 
-    if (connErr || !conn) throw new Error(`API keys for ${exchange} not found.`)
+    if (connErr || !conn) throw new Error(`API keys for ${exchange} not found. DB Error: ${connErr?.message}`)
 
     // @ts-ignore
     const ex = new ccxt[exchange]({
-      apiKey: conn.decrypted_api_key,
-      secret: conn.decrypted_secret_key,
+      apiKey: conn.api_key,
+      secret: conn.secret_key,
     })
 
     console.log(`[${exchange} PREP] Fetching markets, deposits, and withdrawals...`)
