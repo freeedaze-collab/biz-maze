@@ -39,19 +39,18 @@ Deno.serve(async (req) => {
   try {
     const supabaseAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
     const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(req.headers.get('Authorization')!.replace('Bearer ', ''))
-    if (userError || !user) throw new Error(\`User not found: \${userError?.message ?? 'Unknown error'}\`)
+    if (userError || !user) throw new Error(`User not found: ${userError?.message ?? 'Unknown error'}`)
 
     const body = await req.json()
     exchange = body.exchange
     // since, until は当面無視し、常に過去90日間に限定する
-    // const { since, until } = body 
     if (!exchange) throw new Error("Exchange is required.")
 
-    console.log(\`[\${exchange} PREP] Received sync request. User: \${user.id}\`)
+    console.log(`[${exchange} PREP] Received sync request. User: ${user.id}`)
 
     const { data: conn, error: connError } = await supabaseAdmin.from('exchange_connections').select('encrypted_blob').eq('user_id', user.id).eq('exchange', exchange).single();
-    if (connError || !conn) throw new Error(\`Connection not found for \${exchange}\`);
-    if (!conn.encrypted_blob) throw new Error(\`Encrypted blob not found for \${exchange}\`);
+    if (connError || !conn) throw new Error(`Connection not found for ${exchange}`);
+    if (!conn.encrypted_blob) throw new Error(`Encrypted blob not found for ${exchange}`);
     
     const credentials = await decryptBlob(conn.encrypted_blob);
 
@@ -62,7 +61,7 @@ Deno.serve(async (req) => {
       password: credentials.apiPassphrase,
     })
 
-    console.log(\`[\${exchange} PREP] Fetching markets, deposits, and withdrawals... (Last 90 days)\`)
+    console.log(`[${exchange} PREP] Fetching markets, deposits, and withdrawals... (Last 90 days)`)
     await ex.loadMarkets()
     const marketsToFetch = ex.symbols.filter(s => s.endsWith('/USDT') || s.endsWith('/USD'));
     
@@ -74,7 +73,7 @@ Deno.serve(async (req) => {
         ex.fetchWithdrawals(undefined, since, undefined)
     ]);
 
-    console.log(\`[\${exchange} PREP] Found: \${marketsToFetch.length} markets, \${deposits.length} deposits, \${withdrawals.length} withdrawals.\`)
+    console.log(`[${exchange} PREP] Found: ${marketsToFetch.length} markets, ${deposits.length} deposits, ${withdrawals.length} withdrawals.`)
 
     return new Response(JSON.stringify({ marketsToFetch, deposits, withdrawals }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -82,7 +81,7 @@ Deno.serve(async (req) => {
     })
 
   } catch (err) {
-    console.error(\`[\${exchange} PREP CRASH]\`, err)
+    console.error(`[${exchange} PREP CRASH]`, err)
     return new Response(JSON.stringify({ error: err.message, stack: err.stack }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       status: 500,
