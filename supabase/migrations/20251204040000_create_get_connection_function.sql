@@ -4,7 +4,7 @@
 -- First, drop the old function if it exists, to ensure a clean setup
 DROP FUNCTION IF EXISTS get_decrypted_connection(p_user_id uuid, p_exchange text);
 
--- Then, create the new function that queries the correct decrypted view
+-- Then, create the new function that queries the correct decrypted view with its correct name
 CREATE OR REPLACE FUNCTION get_decrypted_connection(p_user_id uuid, p_exchange text)
 RETURNS TABLE (
   api_key text,
@@ -16,15 +16,14 @@ SECURITY DEFINER
 SET search_path = decrypted, public
 AS $$
 BEGIN
-  -- public.exchange_connections テーブルではなく、
-  -- Vaultが提供する復号化済みビュー「decrypted.exchange_connections_decrypted」を直接参照する。
-  -- これが、かつての exchange-sync-all が行っていた、唯一の正しい方法です。
+  -- Vaultが提供する復号化済みビューの、正しい名前「decrypted.exchange_connections」を直接参照する。
+  -- 私が勝手に追加していた「_decrypted」という接尾辞が、全ての元凶でした。
   RETURN QUERY
   SELECT
     v.api_key,
     v.api_secret
   FROM
-    decrypted.exchange_connections_decrypted AS v
+    decrypted.exchange_connections AS v -- ここが「exchange_connections_decrypted」ではなく「exchange_connections」だった
   WHERE
     v.user_id = p_user_id AND v.exchange = p_exchange;
 END;
