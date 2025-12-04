@@ -30,32 +30,28 @@ async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: s
 }
 // --- ここまでが移植されたコード ---
 
-// ★★★ 90日間の壁を突破するための、賢い分割取得ヘルパー ★★★
-async function fetchAllPaginated(fetchFunction: Function, symbol: string | undefined, since: number, limit: number | undefined, until: number) {
-    let allResults: any[] = [];
+// ★★★ 並行処理で90日間の壁を突破する、新しい分割取得ヘルパー ★★★
+async function fetchAllPaginated(fetchFunction: Function, fetchType: string, since: number, until: number) {
+    const chunks: {since: number, until: number}[] = [];
     let currentSince = since;
-    const ninetyDays = 90 * 24 * 60 * 60 * 1000;
-
-    console.log(`[PAGINATOR] Starting fetch from ${new Date(since).toISOString()} to ${new Date(until).toISOString()}`);
+    const ninetyDays = 89 * 24 * 60 * 60 * 1000; // 90日ではなく89日で区切る安全策
 
     while (currentSince < until) {
         const currentUntil = Math.min(currentSince + ninetyDays, until);
-        console.log(`[PAGINATOR] Fetching chunk: ${new Date(currentSince).toISOString()} -> ${new Date(currentUntil).toISOString()}`);
-        
-        try {
-            const results = await fetchFunction(symbol, currentSince, limit, { until: currentUntil });
-            if (results.length > 0) {
-                allResults = allResults.concat(results);
-                console.log(`[PAGINATOR] Found ${results.length} records in this chunk. Total so far: ${allResults.length}`);
-            } else {
-                console.log(`[PAGINATOR] No records in this chunk.`);
-            }
-        } catch (error) {
-            console.error(`[PAGINATOR] Error fetching chunk:`, error);
-        }
+        chunks.push({ since: currentSince, until: currentUntil });
         currentSince = currentUntil;
     }
-    console.log(`[PAGINATOR] Completed fetch. Total records: ${allResults.length}`);
+
+    console.log(`[PAGINATOR] Created ${chunks.length} parallel chunks for ${fetchType}.`);
+
+    const promises = chunks.map(chunk => 
+        fetchFunction(undefined, chunk.since, undefined, { until: chunk.until })
+    );
+
+    const results = await Promise.all(promises);
+    const allResults = results.flat();
+
+    console.log(`[PAGINATOR] Completed all parallel fetches for ${fetchType}. Total records: ${allResults.length}`);
     return allResults;
 }
 
@@ -97,9 +93,11 @@ Deno.serve(async (req) => {
     const startTime = since ? new Date(since).getTime() : Date.now() - (365 * 24 * 60 * 60 * 1000); // Default to 1 year ago if no since
     const endTime = until ? new Date(until).getTime() : Date.now();
 
-    // ★★★ 90日チャンクで取得 ★★★
-    const deposits = await fetchAllPaginated(ex.fetchDeposits.bind(ex), undefined, startTime, undefined, endTime);
-    const withdrawals = await fetchAllPaginated(ex.fetchWithdrawals.bind(ex), undefined, startTime, undefined, endTime);
+    // ★★★ 並行処理で一斉に取得 ★★★
+    const [deposits, withdrawals] = await Promise.all([
+        fetchAllPaginated(ex.fetchDeposits.bind(ex), 'deposits', startTime, endTime),
+        fetchAllPaginated(ex.fetchWithdrawals.bind(ex), 'withdrawals', startTime, endTime),
+    ]);
 
     console.log(`[${exchange} PREP] Found: ${marketsToFetch.length} markets, ${deposits.length} deposits, ${withdrawals.length} withdrawals.`)
 
@@ -110,7 +108,7 @@ Deno.serve(async (req) => {
 
   } catch (err) {
     console.error(`[${exchange} PREP CRASH]`, err)
-    return new Response(JSON.stringify({ error: err.message }), {
+    return new Response(JSON.stringify({ error: err.message, stack: err.stack }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       status: 500,
     })
