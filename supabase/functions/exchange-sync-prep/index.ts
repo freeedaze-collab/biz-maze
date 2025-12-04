@@ -86,20 +86,21 @@ Deno.serve(async (req) => {
       password: credentials.apiPassphrase,
     })
 
-    console.log(`[${exchange} PREP] Fetching markets, deposits, and withdrawals...`)
+    console.log(`[${exchange} PREP] Fetching markets...`)
     await ex.loadMarkets()
     const marketsToFetch = ex.symbols.filter(s => s.endsWith('/USDT') || s.endsWith('/USD'));
     
     const startTime = since ? new Date(since).getTime() : Date.now() - (365 * 24 * 60 * 60 * 1000); // Default to 1 year ago if no since
     const endTime = until ? new Date(until).getTime() : Date.now();
 
-    // ★★★ 並行処理で一斉に取得 ★★★
-    const [deposits, withdrawals] = await Promise.all([
-        fetchAllPaginated(ex.fetchDeposits.bind(ex), 'deposits', startTime, endTime),
-        fetchAllPaginated(ex.fetchWithdrawals.bind(ex), 'withdrawals', startTime, endTime),
-    ]);
+    // ★★★ 並行処理を直列化して、一度に行うリクエスト数を減らす ★★★
+    console.log(`[${exchange} PREP] Fetching deposits...`);
+    const deposits = await fetchAllPaginated(ex.fetchDeposits.bind(ex), 'deposits', startTime, endTime);
 
-    console.log(`[${exchange} PREP] Found: ${marketsToFetch.length} markets, ${deposits.length} deposits, ${withdrawals.length} withdrawals.`)
+    console.log(`[${exchange} PREP] Fetching withdrawals...`);
+    const withdrawals = await fetchAllPaginated(ex.fetchWithdrawals.bind(ex), 'withdrawals', startTime, endTime);
+
+    console.log(`[${exchange} PREP] VICTORY! Found: ${marketsToFetch.length} markets, ${deposits.length} deposits, ${withdrawals.length} withdrawals.`)
 
     return new Response(JSON.stringify({ marketsToFetch, deposits, withdrawals }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
