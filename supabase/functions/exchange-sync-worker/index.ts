@@ -29,20 +29,19 @@ Deno.serve(async (req) => {
 
     console.log(`[${exchange} WORKER] Syncing trades for ${symbol}. User: ${user.id}`)
 
-    // ★★★ データベースの列名を、今度こそ、正しいものに修正 ★★★
+    // ★★★ データベースを直接参照するのではなく、「神の関数」を呼び出す ★★★
     const { data: conn, error: connErr } = await supabaseAdmin
-      .from('exchange_connections')
-      .select('api_key, api_secret') // 'secret_key' ではなく 'api_secret' が正解だった
-      .eq('user_id', user.id)
-      .eq('exchange', exchange)
+      .rpc('get_decrypted_connection', { p_user_id: user.id, p_exchange: exchange })
       .single()
 
-    if (connErr || !conn) throw new Error(`API keys for ${exchange} not found. DB Error: ${connErr?.message}`)
+    if (connErr) throw new Error(`Failed to call get_decrypted_connection. DB Error: ${connErr.message}`)
+    if (!conn) throw new Error(`Decrypted connection object not found for ${exchange}.`)
+    if (!conn.api_key || !conn.api_secret) throw new Error(`API key or secret is missing from decrypted data for ${exchange}.`)
 
     // @ts-ignore
     const ex = new ccxt[exchange]({
       apiKey: conn.api_key,
-      secret: conn.api_secret, // 正しい列名を指定
+      secret: conn.api_secret,
     })
 
     const trades = await ex.fetchMyTrades(symbol, since, undefined, { until })
