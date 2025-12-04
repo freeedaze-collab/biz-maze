@@ -19,9 +19,7 @@ Deno.serve(async (req) => {
   try {
     const supabaseAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
     const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(req.headers.get('Authorization')!.replace('Bearer ', ''))
-    if (userError || !user) {
-      throw new Error(`User not found: ${userError?.message ?? 'Unknown error'}`)
-    }
+    if (userError || !user) throw new Error(`User not found: ${userError?.message ?? 'Unknown error'}`)
 
     const body = await req.json()
     exchange = body.exchange
@@ -30,23 +28,14 @@ Deno.serve(async (req) => {
 
     console.log(`[${exchange} PREP] Received sync request. User: ${user.id}`)
 
+    // ★★★ データベースを直接参照するのではなく、「神の関数」を呼び出す ★★★
     const { data: conn, error: connErr } = await supabaseAdmin
-      .from('exchange_connections')
-      .select('api_key, api_secret')
-      .eq('user_id', user.id)
-      .eq('exchange', exchange)
+      .rpc('get_decrypted_connection', { p_user_id: user.id, p_exchange: exchange })
       .single()
 
-    if (connErr) throw new Error(`Failed to fetch API keys for ${exchange}. DB Error: ${connErr.message}`)
-    if (!conn) throw new Error(`API key connection object not found for ${exchange}. It might not be set up.`)
-
-    // ★★★ デバッグログを追加：取得したキーの中身を詳細に確認 ★★★
-    console.log(`[${exchange} PREP] Retrieved conn object. api_key type: ${typeof conn.api_key}, api_secret type: ${typeof conn.api_secret}`);
-    console.log(`[${exchange} PREP] api_key value: ${conn.api_key}`); // セキュリティのため、本番では削除すべきログ
-
-    if (!conn.api_key || !conn.api_secret) {
-      throw new Error(`Authentication failed: api_key or api_secret is missing from the fetched connection data for ${exchange}.`);
-    }
+    if (connErr) throw new Error(`Failed to call get_decrypted_connection. DB Error: ${connErr.message}`)
+    if (!conn) throw new Error(`Decrypted connection object not found for ${exchange}.`)
+    if (!conn.api_key || !conn.api_secret) throw new Error(`API key or secret is missing from decrypted data for ${exchange}.`)
 
     // @ts-ignore
     const ex = new ccxt[exchange]({
@@ -55,10 +44,8 @@ Deno.serve(async (req) => {
     })
 
     console.log(`[${exchange} PREP] Fetching markets, deposits, and withdrawals...`)
-
     await ex.loadMarkets()
     const marketsToFetch = ex.symbols.filter(s => s.endsWith('/USDT') || s.endsWith('/USD'));
-
     const deposits = await ex.fetchDeposits(undefined, since, undefined)
     const withdrawals = await ex.fetchWithdrawals(undefined, since, undefined)
 
