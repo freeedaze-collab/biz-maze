@@ -5,10 +5,10 @@ import { Link } from 'react-router-dom';
 import { supabase } from "../integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 
-// スキーマはこれで確定
+// スキーマは確定
 interface Transaction {
-    ts: string;
-    tx_hash: string;
+    ts: string; 
+    tx_hash: string; 
     source: string;
     amount: number;
     asset: string | null;
@@ -16,8 +16,8 @@ interface Transaction {
     symbol: string | null;
 }
 
-// ★★★【最終接続オペレーション版】★★★
-// Sync Allボタンを有効化し、新しいバックエンドロジックに接続する
+// ★★★【最終・完成版】★★★
+// 自己完結型バックエンド(exchange-sync-all)と連携する最終形態
 export default function TransactionHistory() {
     const [transactions, setTransactions] = useState<Transaction[]>([]);
     const [isLoading, setIsLoading] = useState(true);
@@ -50,49 +50,29 @@ export default function TransactionHistory() {
         fetchTransactions();
     }, []);
 
-    // --- Sync Logic ---
+    // --- Sync Logic (最終版) ---
     const handleSyncAll = async () => {
         setIsSyncing(true);
-        setSyncProgress(['Starting sync...']);
+        setSyncProgress(['Starting all exchange syncs...']);
 
         try {
-            const { data: connections, error: connectionsError } = await supabase
-                .from('exchange_connections')
-                .select('exchange');
+            // [変更] バックエンドは、引数を、必要とせず、内部で、全コネクションを、処理する
+            const { data: result, error: invokeError } = await supabase.functions.invoke('exchange-sync-all', {
+                // [変更] bodyは空で良い
+            });
 
-            if (connectionsError || !connections || connections.length === 0) {
-                setSyncProgress(prev => [...prev, 'No exchange connections found. Please add API keys first.']);
-                setIsSyncing(false);
-                return;
-            }
+            if (invokeError) throw invokeError;
+            // バックエンドからのエラーメッセージをハンドリング
+            if (result.error) throw new Error(result.error);
 
-            const exchangesToSync = connections.map(c => c.exchange);
-            setSyncProgress(prev => [...prev, `Found ${exchangesToSync.length} exchanges: ${exchangesToSync.join(', ')}`]);
+            // [最重要] バックエンドからの完了報告を受け取る
+            const { message, totalSaved } = result;
+            setSyncProgress(prev => [...prev, `---`, `Backend process finished.`]);
+            setSyncProgress(prev => [...prev, `Message: ${message}`]);
+            setSyncProgress(prev => [...prev, `Total records saved: ${totalSaved}`]);
 
-            for (const exchange of exchangesToSync) {
-                setSyncProgress(prev => [...prev, `---`, `Syncing ${exchange}...`]);
-                
-                const { data: trades, error: invokeError } = await supabase.functions.invoke('exchange-sync-all', {
-                    body: { exchange: exchange },
-                });
-
-                if (invokeError) throw invokeError;
-                if (trades.error) throw new Error(trades.error);
-
-                setSyncProgress(prev => [...prev, `Fetched ${trades.length} trades from ${exchange}.`]);
-                console.log(`[${exchange}] Fetched raw trades:`, trades);
-
-                if (trades.length > 0) {
-                    setSyncProgress(prev => [...prev, `Next step: Save these ${trades.length} trades to the database.`]);
-                    // TODO: ここで、取得した`trades`をDBに保存する関数を呼び出す。
-                    // 例: await saveTradesToDatabase(trades, exchange);
-                } else {
-                    setSyncProgress(prev => [...prev, `No new trades found.`]);
-                }
-            }
-
-            setSyncProgress(prev => [...prev, '---', 'All syncs complete. Refreshing transaction list...']);
-            await fetchTransactions(); // テーブルを再読み込み
+            setSyncProgress(prev => [...prev, '---', 'Syncs complete. Refreshing transaction list...']);
+            await fetchTransactions(); // テーブルを再読み込みして最新データを表示
 
         } catch (error: any) {
             console.error("Sync failed:", error);
@@ -119,32 +99,7 @@ export default function TransactionHistory() {
                 <p className="text-gray-600 dark:text-gray-400 mb-4">
                     Manually sync the latest transaction history from your connected sources.
                 </p>
-                <div className="space-y-3">
-                    <div>
-                        <p>Wallet (ethereum)</p>
-                        <Button variant="outline" size="sm">Sync</Button>
-                    </div>
-                    <div>
-                        <p>All Connected Exchanges</p>
-                        <Button variant="outline" size="sm" onClick={handleSyncAll} disabled={isSyncing}>
-                            {isSyncing ? 'Syncing...' : 'Sync All'}
-                        </Button>
-                    </div>
-                    <div>
-                        <Link to="/vce" className="text-sm font-medium text-blue-600 hover:underline">
-                            Manage API Keys
-                        </Link>
-                    </div>
-                </div>
-                {/* Sync Progress Display */}
-                {syncProgress.length > 0 && (
-                    <div className="mt-4 p-4 bg-gray-100 dark:bg-gray-800 rounded-lg text-sm font-mono">
-                        <h3 className="font-semibold mb-2">Sync Progress</h3>
-                        <div className="whitespace-pre-wrap max-h-40 overflow-y-auto">
-                            {syncProgress.join('\n')}
-                        </div>
-                    </div>
-                )}
+                <div className。
             </section>
 
             {/* All Transactions Section */}
