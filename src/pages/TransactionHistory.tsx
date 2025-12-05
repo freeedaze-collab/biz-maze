@@ -5,43 +5,40 @@ import { Link } from 'react-router-dom';
 import { supabase } from "../integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 
-// スキーマはこれで確定
-interface Transaction {
-    date: string;
-    source: string;
-    description: string | null;
-    amount: number;
-    asset: string | null;
-}
+// The interface will be generic for now to accept any data from the DB
+interface Transaction { [key: string]: any; }
 
-// ★★★【最終FIX・テーブルレイアウト版】★★★
-// divレイアウトを破棄し、堅牢な`<table>`要素で再構築
+// ★★★【最終手段：データベースの真実を問う】★★★
+// 度重なるエラーのため、推測を完全に放棄します。
+// データベースに「v_all_transactionsに、一体、何のカラムがあるのか」を直接尋ね、
+// その「生の(RAW)」データを、そのまま画面に表示させます。
 export default function TransactionHistory() {
-    const [transactions, setTransactions] = useState<Transaction[]>([]);
+    const [rawData, setRawData] = useState<Transaction[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
-        const fetchData = async () => {
+        const fetchTheTruth = async () => {
             setIsLoading(true);
             setError(null);
             try {
+                // [最重要] "select('*')" を使い、存在する全てのカラムを取得します。
                 const { data, error } = await supabase
                     .from('v_all_transactions')
-                    .select('date, source, description, amount, asset')
-                    .order('date', { ascending: false })
-                    .limit(100);
+                    .select('*') 
+                    .limit(5); // 5件だけ取得して確認します
 
                 if (error) throw error;
-                setTransactions(data || []);
+                setRawData(data || []);
+
             } catch (err: any) {
-                console.error("Error fetching v_all_transactions:", err);
-                setError(`Failed to load data: ${err.message}`);
+                console.error("CRITICAL: Failed to fetch schema with '*':", err);
+                setError(`Failed to introspect the database. The view 'v_all_transactions' might not exist or there is a network issue. Error: ${err.message}`);
             } finally {
                 setIsLoading(false);
             }
         };
-        fetchData();
+        fetchTheTruth();
     }, []);
 
     return (
@@ -71,45 +68,23 @@ export default function TransactionHistory() {
                 </div>
             </section>
 
-            {/* All Transactions Section: `<table>`でレイアウトを再構築 */}
+            {/* All Transactions Section: データベースからの生データを表示 */}
             <section>
-                <h2 className="text-2xl font-semibold mb-4">All Transactions</h2>
+                <h2 className="text-2xl font-semibold mb-4">Database Schema Truth (Raw Data)</h2>
+                <p className="mb-4 text-gray-600">
+                    Below is the raw data fetched from the 'v_all_transactions' view. Please copy this and provide it, so I can write the final, correct code.
+                </p>
                 
                 {isLoading ? (
-                    <p>Loading transactions...</p>
+                    <p>Asking the database for the truth...</p>
                 ) : error ? (
                     <p className="text-red-500 font-mono">{error}</p>
                 ) : (
-                    <div className="w-full overflow-x-auto">
-                        <table className="min-w-full text-sm text-left">
-                            <thead className="font-mono text-gray-500">
-                                <tr>
-                                    <th className="p-2 font-semibold">Date</th>
-                                    <th className="p-2 font-semibold">Source</th>
-                                    <th className="p-2 font-semibold">Description</th>
-                                    <th className="p-2 font-semibold text-right">Amount</th>
-                                    <th className="p-2 font-semibold text-right">Asset</th>
-                                </tr>
-                            </thead>
-                            <tbody className="font-mono">
-                                {transactions.length > 0 ? transactions.map((tx, index) => (
-                                    <tr key={`${tx.date}-${index}`} className="border-b border-gray-200 dark:border-gray-700">
-                                        <td className="p-2 whitespace-nowrap">{new Date(tx.date).toLocaleString()}</td>
-                                        <td className="p-2 whitespace-nowrap">{tx.source}</td>
-                                        <td className="p-2 text-gray-600 dark:text-gray-400">{tx.description || ''}</td>
-                                        <td className="p-2 text-right">{tx.amount.toString()}</td>
-                                        <td className="p-2 text-right text-gray-600 dark:text-gray-400">{tx.asset || ''}</td>
-                                    </tr>
-                                )) : (
-                                    <tr>
-                                        <td colSpan={5} className="text-center text-gray-500 py-4">
-                                            No transactions found.
-                                        </td>
-                                    </tr>
-                                )}
-                            </tbody>
-                        </table>
-                    </div>
+                    <pre className="bg-gray-100 dark:bg-gray-800 p-4 rounded-lg text-sm font-mono overflow-x-auto">
+                        <code>
+                            {JSON.stringify(rawData, null, 2)}
+                        </code>
+                    </pre>
                 )}
             </section>
         </div>
