@@ -5,11 +5,11 @@ import { Link } from 'react-router-dom';
 import { supabase } from "../integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 
-// 【緊急修正】sourceカラムが、存在しないため、interfaceから、一時的に、除外
+// 【最終FIX】データベースのスキーマ（真実）に合わせてinterfaceを修正
 interface Transaction {
     id: string;
-    created_at: string;
-    // source: string; 
+    date: string; // created_at ではなく date
+    source: string;
     description: string | null;
     amount: number;
     asset: string | null;
@@ -26,11 +26,11 @@ export default function TransactionHistory() {
         const fetchData = async () => {
             setIsLoading(true);
             try {
-                // 【緊急修正】SELECT文から、存在しない`source`カラムを、削除
+                // 【最終FIX】SELECT文をDBスキーマ（真実）に完全に一致させる
                 const { data, error } = await supabase
                     .from('v_all_transactions')
-                    .select('id, created_at, description, amount, asset')
-                    .order('created_at', { ascending: false })
+                    .select('id, date, source, description, amount, asset')
+                    .order('date', { ascending: false })
                     .limit(100);
 
                 if (error) throw error;
@@ -38,7 +38,7 @@ export default function TransactionHistory() {
 
             } catch (err: any) {
                 console.error("Error fetching v_all_transactions:", err);
-                setError(`Failed to load data: ${err.message}`);
+                setError(`Failed to load data from v_all_transactions: ${err.message}`);
             } finally {
                 setIsLoading(false);
             }
@@ -51,7 +51,7 @@ export default function TransactionHistory() {
         <div className="p-4 md:p-6 lg:p-8">
             <h1 className="text-3xl font-bold mb-6">Transactions</h1>
 
-            {/* Data Sync Section:変更なし */}
+            {/* Data Sync Section: 変更なし */}
             <section className="mb-8">
                 <h2 className="text-2xl font-semibold mb-2">Data Sync</h2>
                 <p className="text-gray-600 dark:text-gray-400 mb-4">
@@ -95,9 +95,10 @@ export default function TransactionHistory() {
                         {/* Data Rows */}
                         {transactions.length > 0 ? transactions.map(tx => (
                             <div key={tx.id} className="flex space-x-4 items-baseline">
-                                <div className="w-48">{new Date(tx.created_at).toLocaleString()}</div>
-                                {/* 【緊急修正】sourceが存在しないため、仮の値を表示 */}
-                                <div className="w-24">-</div>
+                                {/* 【最終FIX】created_at を date に修正 */}
+                                <div className="w-48">{new Date(tx.date).toLocaleString()}</div>
+                                {/* 【最終FIX】source を表示するように戻す */}
+                                <div className="w-24">{tx.source}</div>
                                 <div className="flex-1 text-gray-600">{tx.description || ''}</div>
                                 <div className="w-40 text-right">{tx.amount.toString()}</div>
                                 <div className="w-20 text-right text-gray-600">{tx.asset || ''}</div>
