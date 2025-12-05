@@ -93,11 +93,19 @@ Deno.serve(async (req) => {
       });
 
       if (res.ok) {
-        const { totalSaved: saved } = await res.json();
-        totalSaved += saved ?? 0;
+        try {
+          const json = await res.json();
+          if (!json || typeof json.totalSaved !== 'number') {
+            console.warn(`[WARN] Worker response missing totalSaved for market ${market}:`, json);
+            continue;
+          }
+          totalSaved += json.totalSaved;
+        } catch (parseError) {
+          console.warn(`[WARN] Failed to parse worker response for market ${market}:`, parseError);
+        }
       } else {
-        const errText = await res.text();
-        console.warn(`[WARN] Worker failed for market ${market}:`, res.status, errText);
+        const err = await res.text();
+        console.warn(`[WARN] Worker failed for market ${market}:`, err);
       }
     }
 
@@ -113,4 +121,3 @@ Deno.serve(async (req) => {
     });
   }
 });
-
