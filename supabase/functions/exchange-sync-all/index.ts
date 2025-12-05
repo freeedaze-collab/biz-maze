@@ -4,11 +4,10 @@ import ccxt from 'https://esm.sh/ccxt@4.3.46'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { decode } from "https://deno.land/std@0.177.0/encoding/base64.ts";
 
-// --- 定数 ---
 const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const NINETY_DAYS_AGO = Date.now() - 90 * 24 * 60 * 60 * 1000;
 
-// --- ヘルパー関数 (workerと共通) ---
+// --- 復号ロジック ---
 async function getKey() {
   const b64 = Deno.env.get("EDGE_KMS_KEY");
   if (!b64) throw new Error("EDGE_KMS_KEY secret is not set.");
@@ -26,86 +25,105 @@ async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: s
   return JSON.parse(new TextDecoder().decode(decryptedData));
 }
 
-// --- メインハンドラ (司令塔) ---
+
+// ★★★【最終FIX・統合版】★★★
+// 司令塔と兵隊を統合。推測に頼らず、全取引履歴を一括取得する堅牢なアプローチ。
 Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders });
-  }
-
-  try {
-    const supabaseAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
-    const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(req.headers.get('Authorization')!.replace('Bearer ', ''));
-    if (userError || !user) throw new Error('User not found.');
-
-    const { exchange: targetExchange } = await req.json();
-    if (!targetExchange) throw new Error("Exchange is required.");
-    
-    console.log(`[ALL - PREP] Received sync request for ${targetExchange}. User: ${user.id}`);
-
-    const { data: conn, error: connError } = await supabaseAdmin.from('exchange_connections').select('id, exchange, encrypted_blob').eq('user_id', user.id).eq('exchange', targetExchange).single();
-    if (connError || !conn) throw new Error(`Connection not found for ${targetExchange}`);
-    if (!conn.encrypted_blob) throw new Error(`Encrypted blob not found for ${targetExchange}`);
-
-    const credentials = await decryptBlob(conn.encrypted_blob);
-    
-    // @ts-ignore
-    const exchange = new ccxt[conn.exchange]({
-        apiKey: credentials.apiKey,
-        secret: credentials.apiSecret,
-        password: credentials.apiPassphrase,
-    });
-
-    await exchange.loadMarkets();
-
-    // ★ STEP 1: 関連アセット特定のため、残高・入出金を取得
-    console.log(`[ALL - PREP] Fetching balance, deposits, and withdrawals...`);
-    const relevantAssets = new Set<string>();
-    const initialRecords: any[] = []; // 入出金履歴を格納
-
-    const balance = await exchange.fetchBalance().catch(() => ({ total: {} }));
-    Object.keys(balance.total).filter(asset => balance.total[asset] > 0).forEach(asset => relevantAssets.add(asset));
-
-    if (exchange.has['fetchDeposits']) {
-        const deposits = await exchange.fetchDeposits(undefined, NINETY_DAYS_AGO).catch(() => []);
-        deposits.forEach(d => relevantAssets.add(d.currency));
-        initialRecords.push(...deposits);
+    if (req.method === 'OPTIONS') {
+        return new Response('ok', { headers: corsHeaders });
     }
 
-    if (exchange.has['fetchWithdrawals']) {
-        const withdrawals = await exchange.fetchWithdrawals(undefined, NINETY_DAYS_AGO).catch(() => []);
-        withdrawals.forEach(w => relevantAssets.add(w.currency));
-        initialRecords.push(...withdrawals);
-    }
-    console.log(`[ALL - PREP] Found ${relevantAssets.size} relevant assets and ${initialRecords.length} initial records.`);
+    let exchangeName = 'unknown'; // for logging
+    try {
+        // --- 準備 (APIキー取得など) ---
+        const supabaseAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+        const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(req.headers.get('Authorization')!.replace('Bearer ', ''));
+        if (userError || !user) throw new Error('User not found.');
 
-    // ★ STEP 2: 関連アセットに基づいて、調査対象の取引ペアリストを作成
-    const marketsToCheck = new Set<string>();
-    const quoteCurrencies = ['USDT', 'BTC', 'BUSD', 'USDC', 'JPY', 'ETH', 'BNB'];
-    relevantAssets.forEach(asset => {
-        quoteCurrencies.forEach(quote => {
-            if (asset === quote) return;
-            if (exchange.markets[`${asset}/${quote}`]?.spot) marketsToCheck.add(`${asset}/${quote}`);
-            if (exchange.markets[`${quote}/${asset}`]?.spot) marketsToCheck.add(`${quote}/${asset}`);
+        const { exchange: targetExchange } = await req.json();
+        if (!targetExchange) throw new Error("Exchange is required.");
+        exchangeName = targetExchange;
+        
+        console.log(`[ALL-SYNC] Received sync request for ${exchangeName}. User: ${user.id}`);
+
+        const { data: conn, error: connError } = await supabaseAdmin.from('exchange_connections').select('encrypted_blob').eq('user_id', user.id).eq('exchange', exchangeName).single();
+        if (connError || !conn) throw new Error(`Connection not found for ${exchangeName}`);
+        if (!conn.encrypted_blob) throw new Error(`Encrypted blob not found for ${exchangeName}`);
+
+        const credentials = await decryptBlob(conn.encrypted_blob);
+        
+        // @ts-ignore
+        const exchange = new ccxt[exchangeName]({
+            apiKey: credentials.apiKey,
+            secret: credentials.apiSecret,
+            password: credentials.apiPassphrase,
         });
-    });
 
-    const marketsToFetch = Array.from(marketsToCheck);
-    console.log(`[ALL - PREP] Found ${marketsToFetch.length} markets to fetch trades from.`);
+        await exchange.loadMarkets();
 
-    // ★ STEP 3: 「計画書」として、入出金履歴と取引ペアリストをクライアントに返す
-    return new Response(JSON.stringify({
-        initialRecords,
-        marketsToFetch,
-        encrypted_blob: conn.encrypted_blob // workerが再利用できるようにblobも渡す
-    }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-    });
+        // --- メインロジック：全取引履歴の取得 ---
+        console.log(`[ALL-SYNC] Attempting to fetch all trades for ${exchangeName}...`);
+        let allTrades: any[] = [];
 
-  } catch (err) {
-    console.error(`[ALL - PREP CRASH]`, err.message);
-    return new Response(JSON.stringify({ error: err.message }), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        status: 500
-    });
-  }
+        // [最重要] exchangeが「全市場の取引履歴の一括取得」をサポートしているか確認
+        if (exchange.has['fetchMyTrades'] && exchange.has['fetchMyTrades'] !== false) {
+            console.log(`[ALL-SYNC] ${exchangeName} supports unified fetchMyTrades. Fetching all at once.`);
+            // ★★★ 最も理想的な方法 ★★★
+            // symbolを指定せず、全市場の取引履歴を取得する
+            const trades = await exchange.fetchMyTrades(undefined, NINETY_DAYS_AGO);
+            allTrades.push(...trades);
+
+        } else {
+            // [フォールバック] 一括取得がサポートされていない場合の、旧来のロジック
+            console.log(`[ALL-SYNC] ${exchangeName} does not support unified fetchMyTrades. Falling back to market-by-market fetching.`);
+            
+            const balance = await exchange.fetchBalance().catch(() => ({ total: {} }));
+            const relevantAssets = new Set<string>();
+            Object.keys(balance.total).filter(asset => balance.total[asset] > 0).forEach(asset => relevantAssets.add(asset));
+
+            if (relevantAssets.size === 0) {
+                 console.log(`[ALL-SYNC] No assets with a balance found on ${exchangeName}. Cannot determine markets.`);
+            } else {
+                const marketsToCheck = new Set<string>();
+                const quoteCurrencies = ['USDT', 'BTC', 'BUSD', 'USDC', 'JPY', 'ETH', 'BNB'];
+                relevantAssets.forEach(asset => {
+                    quoteCurrencies.forEach(quote => {
+                        if (asset === quote) return;
+                        if (exchange.markets[`${asset}/${quote}`]?.spot) marketsToCheck.add(`${asset}/${quote}`);
+                        if (exchange.markets[`${quote}/${asset}`]?.spot) marketsToCheck.add(`${quote}/${asset}`);
+                    });
+                });
+
+                const marketsToFetch = Array.from(marketsToCheck);
+                console.log(`[ALL-SYNC] Fallback: Found ${marketsToFetch.length} markets to fetch trades from.`);
+
+                for (const market of marketsToFetch) {
+                    try {
+                        const trades = await exchange.fetchMyTrades(market, NINETY_DAYS_AGO);
+                        if(trades.length > 0) {
+                            console.log(`[ALL-SYNC] Fallback: Fetched ${trades.length} trades from ${market}`);
+                            allTrades.push(...trades);
+                        }
+                    } catch (e) {
+                         console.warn(`[ALL-SYNC] Fallback: Could not fetch trades for market ${market}`, e.message);
+                    }
+                }
+            }
+        }
+        
+        console.log(`[ALL-SYNC] Successfully fetched a total of ${allTrades.length} trades from ${exchangeName}.`);
+
+        // ★★★ 取得した「生」の取引データを、そのまま返す
+        return new Response(JSON.stringify(allTrades), { 
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            status: 200,
+        });
+
+    } catch (err) {
+        console.error(`[ALL-SYNC CRASH - ${exchangeName}]`, err.message, err.stack);
+        return new Response(JSON.stringify({ error: err.message }), {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            status: 500
+        });
+    }
 });
