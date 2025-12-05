@@ -7,7 +7,7 @@ import { decode } from "https://deno.land/std@0.177.0/encoding/base64.ts";
 // --- 定数 ---
 const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const NINETY_DAYS_AGO = Date.now() - 90 * 24 * 60 * 60 * 1000;
-const TRADE_FETCH_BATCH_SIZE = 5; // CPU負荷を考慮し、一度に並列処理する取引ペアの数をさらに絞る
+const TRADE_FETCH_BATCH_SIZE = 5; // CPU負荷を考慮し、一度に並列処理する取引ペアの数を絞る
 
 // --- ヘルパー関数 ---
 async function getKey() {
@@ -68,8 +68,17 @@ Deno.serve(async (req) => {
 
     let totalSavedCount = 0;
     const credentials = await decryptBlob(conn.encrypted_blob);
+
+    // ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    // ★【最終修正】CCXTの初期化を、確実な、元の形式に、戻します ★
+    // ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
     // @ts-ignore
-    const exchange = new ccxt[conn.exchange]({ ...credentials, options: { 'defaultType': 'spot' } });
+    const exchange = new ccxt[conn.exchange]({
+        apiKey: credentials.apiKey,
+        secret: credentials.apiSecret, // `apiSecret` を `secret` にマッピング
+        password: credentials.apiPassphrase, // `apiPassphrase` を `password` にマッピング
+        options: { 'defaultType': 'spot' },
+    });
 
     await exchange.loadMarkets();
 
