@@ -5,7 +5,7 @@ import { Link } from 'react-router-dom';
 import { supabase } from "../integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 
-// スキーマは、これで、確定
+// スキーマはこれで確定
 interface Transaction {
     date: string;
     source: string;
@@ -14,8 +14,8 @@ interface Transaction {
     asset: string | null;
 }
 
-// ★★★【UI最終調整版】★★★
-// CSS Gridを、用いて、テーブルの、表示崩れを、完全に、防ぐ
+// ★★★【最終FIX・テーブルレイアウト版】★★★
+// divレイアウトを破棄し、堅牢な`<table>`要素で再構築
 export default function TransactionHistory() {
     const [transactions, setTransactions] = useState<Transaction[]>([]);
     const [isLoading, setIsLoading] = useState(true);
@@ -71,7 +71,7 @@ export default function TransactionHistory() {
                 </div>
             </section>
 
-            {/* All Transactions Section: CSS Gridで、堅牢な、レイアウトに */}
+            {/* All Transactions Section: `<table>`でレイアウトを再構築 */}
             <section>
                 <h2 className="text-2xl font-semibold mb-4">All Transactions</h2>
                 
@@ -80,34 +80,35 @@ export default function TransactionHistory() {
                 ) : error ? (
                     <p className="text-red-500 font-mono">{error}</p>
                 ) : (
-                    <div className="text-sm">
-                        {/* Grid Layout Container */}
-                        <div className="grid grid-cols-[1fr_1fr_2fr_1fr_1fr] gap-x-4 gap-y-2 font-mono">
-                            {/* Header */}
-                            <div className="font-bold text-gray-500">Date</div>
-                            <div className="font-bold text-gray-500">Source</div>
-                            <div className="font-bold text-gray-500">Description</div>
-                            <div className="font-bold text-gray-500 text-right">Amount</div>
-                            <div className="font-bold text-gray-500 text-right">Asset</div>
-
-                            {/* Separator */}
-                            <div className="col-span-5 border-b my-1"></div>
-
-                            {/* Data Rows */}
-                            {transactions.length > 0 ? transactions.map((tx, index) => (
-                                <React.Fragment key={`${tx.date}-${index}`}>
-                                    <div className="py-1">{new Date(tx.date).toLocaleString()}</div>
-                                    <div className="py-1">{tx.source}</div>
-                                    <div className="py-1 text-gray-600">{tx.description || ''}</div>
-                                    <div className="py-1 text-right">{tx.amount.toString()}</div>
-                                    <div className="py-1 text-right text-gray-600">{tx.asset || ''}</div>
-                                </React.Fragment>
-                            )) : (
-                                <div className="col-span-5 text-center text-gray-500 py-4">
-                                    No transactions found.
-                                </div>
-                            )}
-                        </div>
+                    <div className="w-full overflow-x-auto">
+                        <table className="min-w-full text-sm text-left">
+                            <thead className="font-mono text-gray-500">
+                                <tr>
+                                    <th className="p-2 font-semibold">Date</th>
+                                    <th className="p-2 font-semibold">Source</th>
+                                    <th className="p-2 font-semibold">Description</th>
+                                    <th className="p-2 font-semibold text-right">Amount</th>
+                                    <th className="p-2 font-semibold text-right">Asset</th>
+                                </tr>
+                            </thead>
+                            <tbody className="font-mono">
+                                {transactions.length > 0 ? transactions.map((tx, index) => (
+                                    <tr key={`${tx.date}-${index}`} className="border-b border-gray-200 dark:border-gray-700">
+                                        <td className="p-2 whitespace-nowrap">{new Date(tx.date).toLocaleString()}</td>
+                                        <td className="p-2 whitespace-nowrap">{tx.source}</td>
+                                        <td className="p-2 text-gray-600 dark:text-gray-400">{tx.description || ''}</td>
+                                        <td className="p-2 text-right">{tx.amount.toString()}</td>
+                                        <td className="p-2 text-right text-gray-600 dark:text-gray-400">{tx.asset || ''}</td>
+                                    </tr>
+                                )) : (
+                                    <tr>
+                                        <td colSpan={5} className="text-center text-gray-500 py-4">
+                                            No transactions found.
+                                        </td>
+                                    </tr>
+                                )}
+                            </tbody>
+                        </table>
                     </div>
                 )}
             </section>
