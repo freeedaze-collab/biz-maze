@@ -56,22 +56,21 @@ export default function TransactionHistory() {
         setSyncProgress(['Starting all exchange syncs...']);
 
         try {
-            // [変更] バックエンドは、引数を、必要とせず、内部で、全コネクションを、処理する
+            // バックエンドは引数不要で、内部で全コネクションを処理する自己完結型
             const { data: result, error: invokeError } = await supabase.functions.invoke('exchange-sync-all', {
-                // [変更] bodyは空で良い
+                // bodyは空でOK
             });
 
             if (invokeError) throw invokeError;
-            // バックエンドからのエラーメッセージをハンドリング
-            if (result.error) throw new Error(result.error);
+            if (result.error) throw new Error(result.stack); // バックエンドからのスタックトレースをスローする
 
-            // [最重要] バックエンドからの完了報告を受け取る
+            // バックエンドからの完了報告を受け取る
             const { message, totalSaved } = result;
             setSyncProgress(prev => [...prev, `---`, `Backend process finished.`]);
             setSyncProgress(prev => [...prev, `Message: ${message}`]);
-            setSyncProgress(prev => [...prev, `Total records saved: ${totalSaved}`]);
+            setSyncProgress(prev => [...prev, `Total new records saved: ${totalSaved}`]);
 
-            setSyncProgress(prev => [...prev, '---', 'Syncs complete. Refreshing transaction list...']);
+            setSyncProgress(prev => [...prev, '---', 'Sync complete. Refreshing transaction list...']);
             await fetchTransactions(); // テーブルを再読み込みして最新データを表示
 
         } catch (error: any) {
@@ -93,13 +92,38 @@ export default function TransactionHistory() {
         <div className="p-4 md:p-6 lg:p-8">
             <h1 className="text-3xl font-bold mb-6">Transactions</h1>
 
-            {/* Data Sync Section */}
+            {/* Data Sync Section (破損箇所を修復) */}
             <section className="mb-8">
                 <h2 className="text-2xl font-semibold mb-2">Data Sync</h2>
                 <p className="text-gray-600 dark:text-gray-400 mb-4">
                     Manually sync the latest transaction history from your connected sources.
                 </p>
-                <div className。
+                <div className="space-y-3">
+                    <div>
+                        <p>Wallet (ethereum)</p>
+                        <Button variant="outline" size="sm">Sync</Button>
+                    </div>
+                    <div>
+                        <p>All Connected Exchanges</p>
+                        <Button variant="outline" size="sm" onClick={handleSyncAll} disabled={isSyncing}>
+                            {isSyncing ? 'Syncing...' : 'Sync All'}
+                        </Button>
+                    </div>
+                    <div>
+                        <Link to="/vce" className="text-sm font-medium text-blue-600 hover:underline">
+                            Manage API Keys
+                        </Link>
+                    </div>
+                </div>
+                {/* Sync Progress Display */}
+                {syncProgress.length > 0 && (
+                    <div className="mt-4 p-4 bg-gray-100 dark:bg-gray-800 rounded-lg text-sm font-mono">
+                        <h3 className="font-semibold mb-2">Sync Progress</h3>
+                        <div className="whitespace-pre-wrap max-h-40 overflow-y-auto">
+                            {syncProgress.join('\n')}
+                        </div>
+                    </div>
+                )}
             </section>
 
             {/* All Transactions Section */}
