@@ -1,16 +1,12 @@
 
 // src/pages/TransactionHistory.tsx
 import React, { useState, useEffect } from 'react';
-import { useOutletContext } from "@remix-run/react";
+// [重要修正] supabaseクライアントは、useOutletContextではなく、直接、インポートするのが、この、プロジェクトの、正しい、方法
+import { supabase } from "../integrations/supabase/client";
 import { SupabaseClient } from "@supabase/supabase-js";
 
-// SynthesisStatusが、見つからない、という、エラーを、回避するため、一時的に、コンポーネントを、ここで、定義
-const SynthesisStatus = ({ status }: { status: string }) => (
-    <div className="mt-2 p-2 bg-gray-100 rounded-md">
-        <p className="text-sm text-gray-700">{status}</p>
-    </div>
-);
-
+// [重要修正] 仮の、コンポーネント定義を、削除し、実際の、ファイルから、インポートする
+import SynthesisStatus from './SynthesisStatus';
 
 interface ExchangeConnection {
     id: string;
@@ -18,13 +14,9 @@ interface ExchangeConnection {
     created_at: string;
 }
 
-// ★★★【最終完成版】★★★
-// 安定した、土台の上に、本来の、ロジックを、再構築
+// ★★★【最終確定版】★★★
 export default function TransactionHistory() {
     // --- STEP 1: Hooks (Reactの、ルールを、遵守) ---
-    const context = useOutletContext<{ supabase: SupabaseClient }>();
-    const supabase = context?.supabase;
-    
     const [connections, setConnections] = useState<ExchangeConnection[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [syncStatus, setSyncStatus] = useState<Record<string, string>>({});
@@ -33,10 +25,8 @@ export default function TransactionHistory() {
 
     // --- STEP 2: 副作用 (データ取得) ---
     useEffect(() => {
-        if (!supabase) {
-            // supabaseが、まだ、準備できていない場合、何もしない
-            return; 
-        }
+        // supabaseクライアントは、直接、インポートされているため、常に、利用可能。
+        // そのため、「準備ができるまで待つ」ロジックは、不要。
 
         const fetchConnections = async () => {
             setIsLoading(true);
@@ -61,21 +51,18 @@ export default function TransactionHistory() {
         };
 
         fetchConnections();
-    }, [supabase]); // supabaseが、利用可能に、なったら、実行される
+    }, []); // 依存配列は、空にする。マウント時に、一度だけ、実行されれば、良い。
 
-    // --- STEP 3: イベントハンドラ (同期ロジック) ---
+    // --- STEP 3: イベントハンドラ (同期ロジック) --- 
+    // この、部分の、ロジックは、以前の、ままで、問題ないと、判断
     const updateStatus = (exchange: string, message: string) => {
         setSyncStatus(prev => ({ ...prev, [exchange]: message }));
     };
 
     const handleSync = async (exchange: string) => {
-        if (!supabase) {
-            updateStatus(exchange, "Error: Supabase client not ready.");
-            return;
-        }
-
         updateStatus(exchange, 'Phase 1/3: Preparing sync plan...');
-        setTotalSaved(0);
+        // 同期開始時に、合計保存件数を、リセット
+        setTotalSaved(0); 
         let currentRunSavedCount = 0;
 
         try {
@@ -155,29 +142,33 @@ export default function TransactionHistory() {
                 <button 
                     onClick={handleSyncAll}
                     className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded disabled:bg-gray-400"
-                    disabled={Object.values(syncStatus).some(s => s.includes('...'))}
+                    disabled={isLoading || Object.values(syncStatus).some(s => s.includes('...'))}
                 >
                     Sync All Exchanges
                 </button>
             </div>
             <div className="space-y-4">
-                {connections.map(conn => (
-                    <div key={conn.id} className="p-4 border rounded-lg">
-                        <div className="flex justify-between items-center">
-                            <h2 className="text-xl font-semibold">{conn.exchange}</h2>
-                            <button 
-                                onClick={() => handleSync(conn.exchange)}
-                                className="bg-green-500 hover:bg-green-700 text-white font-bold py-1 px-3 rounded disabled:bg-gray-400"
-                                disabled={Object.values(syncStatus).some(s => s.includes('...'))}
-                            >
-                                Sync
-                            </button>
+                {connections.length > 0 ? (
+                    connections.map(conn => (
+                        <div key={conn.id} className="p-4 border rounded-lg">
+                            <div className="flex justify-between items-center">
+                                <h2 className="text-xl font-semibold">{conn.exchange}</h2>
+                                <button 
+                                    onClick={() => handleSync(conn.exchange)}
+                                    className="bg-green-500 hover:bg-green-700 text-white font-bold py-1 px-3 rounded disabled:bg-gray-400"
+                                    disabled={isLoading || Object.values(syncStatus).some(s => s.includes('...'))}
+                                >
+                                    Sync
+                                </button>
+                            </div>
+                            {syncStatus[conn.exchange] && (
+                                <SynthesisStatus status={syncStatus[conn.exchange]} />
+                            )}
                         </div>
-                        {syncStatus[conn.exchange] && (
-                            <SynthesisStatus status={syncStatus[conn.exchange]} />
-                        )}
-                    </div>
-                ))}
+                    ))
+                ) : (
+                    <p>No exchange connections found. Please add a connection first.</p>
+                )}
             </div>
         </div>
     );
