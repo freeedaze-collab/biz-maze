@@ -3,7 +3,9 @@
 import React, { useState, useEffect } from 'react';
 import { useOutletContext } from "@remix-run/react";
 import { SupabaseClient } from "@supabase/supabase-js";
-import SynthesisStatus from './SynthesisStatus'; // UIコンポーネントはそのまま利用
+
+// SynthesisStatusは、この、安全版では、不要なため、コメントアウト
+// import SynthesisStatus from './SynthesisStatus'; 
 
 interface ExchangeConnection {
     id: string;
@@ -11,41 +13,44 @@ interface ExchangeConnection {
     created_at: string;
 }
 
-// ★★★【最終安定版】Reactの、ルールを、遵守した、完全な、コード ★★★
+// ★★★【デバッグ用・安全第一版】★★★
+// まずは、このコンポーネントが、クラッシュせずに、正しく、表示されることを、最優先します。
+// 同期ロジックは、この、バージョンでは、意図的に、全て、削除しています。
 export default function TransactionHistory() {
-    // --- STEP 1: Hooksの、呼び出し (無条件で、全て、実行) ---
+    // --- STEP 1: Hooks (Reactの、ルールに従い、全て、トップレベルで、呼び出す) ---
     const context = useOutletContext<{ supabase: SupabaseClient }>();
-    // この、時点では、`supabase`は、未定義の、可能性がある
     const supabase = context?.supabase;
     
     const [connections, setConnections] = useState<ExchangeConnection[]>([]);
-    // isLoadingの、初期値を、trueにすることで、最初の、描画で、ローディング画面を、表示させる
     const [isLoading, setIsLoading] = useState(true);
-    const [syncStatus, setSyncStatus] = useState<Record<string, string>>({});
-    const [totalSaved, setTotalSaved] = useState(0);
+    const [error, setError] = useState<string | null>(null); // エラー表示専用の、状態
 
-    // --- STEP 2: 副作用の、管理 (useEffect) ---
+    // --- STEP 2: データ取得の、副作用 (useEffect) ---
     useEffect(() => {
-        // `useEffect`の、中で、`supabase`の、存在を、確認する。
-        // これが、安全な、方法。
+        // supabaseクライアントの、準備が、できるまで、何もしない。
+        // 準備が、できたら、依存配列の、おかげで、この、Effectが、再実行される。
         if (!supabase) {
-            setIsLoading(false); // supabaseが、なければ、ローディングを、終了
-            return; // 何もせず、終了
+            setIsLoading(false);
+            // supabaseがない場合、エラーメッセージを設定して、ユーザーに、状況を、知らせる
+            setError("Supabase client is not available. Please try refreshing the page.");
+            return; 
         }
 
         const fetchConnections = async () => {
-            const { data: { session } } = await supabase.auth.getSession();
-            if (!session) {
+            const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+            if (sessionError || !session) {
                 setIsLoading(false);
+                setError("Authentication session not found. Please log in again.");
                 return;
             }
 
-            const { data, error } = await supabase
+            const { data, error: dbError } = await supabase
                 .from('exchange_connections')
                 .select('id, exchange, created_at');
 
-            if (error) {
-                console.error("Error fetching connections:", error);
+            if (dbError) {
+                console.error("Error fetching connections:", dbError);
+                setError(`Failed to fetch connections: ${dbError.message}`);
             } else {
                 setConnections(data || []);
             }
@@ -53,121 +58,54 @@ export default function TransactionHistory() {
         };
 
         fetchConnections();
-    }, [supabase]); // supabaseの、準備が、できたら、この、Effectが、再実行される
+    }, [supabase]); // supabaseクライアントが、準備でき次第、この、Effectが、実行される
 
-    // --- STEP 3: イベントハンドラ --- 
-    const updateStatus = (exchange: string, message: string) => {
-        setSyncStatus(prev => ({ ...prev, [exchange]: message }));
-    };
-
-    // 同期処理の、本体ロジックは、変更なし
-    const handleSync = async (exchange: string) => {
-        if (!supabase) { //念のため、ここでも、ガードする
-            updateStatus(exchange, "Error: Supabase client not ready.");
-            return;
-        }
-
-        updateStatus(exchange, 'Phase 1/3: Preparing sync plan...');
-        setTotalSaved(0);
-        let currentRunSavedCount = 0;
-
-        try {
-            const { data: plan, error: planError } = await supabase.functions.invoke('exchange-sync-all', {
-                body: { exchange },
-            });
-            if (planError) throw new Error(`[Prep Failed] ${planError.message}`);
-
-            const { initialRecords, marketsToFetch, encrypted_blob } = plan;
-            updateStatus(exchange, `Plan received. Found ${initialRecords.length} initial records and ${marketsToFetch.length} markets.`);
-
-            if (initialRecords && initialRecords.length > 0) {
-                updateStatus(exchange, `Phase 2/3: Saving ${initialRecords.length} initial records...`);
-                const { data: saveData, error: saveError } = await supabase.functions.invoke('exchange-sync-save', {
-                    body: { exchange, records: initialRecords },
-                });
-                if (saveError) throw new Error(`[Save Failed - Initial] ${saveError.message}`);
-                
-                const newSaves = saveData.totalSaved || 0;
-                currentRunSavedCount += newSaves;
-                setTotalSaved(currentRunSavedCount);
-            }
-
-            updateStatus(exchange, `Phase 3/3: Fetching trades from ${marketsToFetch.length} markets...`);
-            for (let i = 0; i < marketsToFetch.length; i++) {
-                const market = marketsToFetch[i];
-                updateStatus(exchange, `[${i + 1}/${marketsToFetch.length}] Fetching trades for ${market}...`);
-
-                const { data: trades, error: workerError } = await supabase.functions.invoke('exchange-sync-worker', {
-                    body: { exchange, market, encrypted_blob },
-                });
-                if (workerError) {
-                    console.warn(`[Worker Failed for ${market}]`, workerError);
-                    continue;
-                }
-
-                if (trades && trades.length > 0) {
-                    updateStatus(exchange, `[${i + 1}/${marketsToFetch.length}] Found ${trades.length} trades. Saving...`);
-                    const { data: saveData, error: saveError } = await supabase.functions.invoke('exchange-sync-save', {
-                        body: { exchange, records: trades },
-                    });
-                    if (saveError) {
-                         console.warn(`[Save Failed for ${market}]`, saveError);
-                         continue;
-                    }
-                    const newSaves = saveData.totalSaved || 0;
-                    currentRunSavedCount += newSaves;
-                    setTotalSaved(currentRunSavedCount);
-                }
-            }
-
-            updateStatus(exchange, `Sync complete! Saved ${currentRunSavedCount} new records.`);
-
-        } catch (error: any) {
-            console.error(`[Orchestration Failed for ${exchange}]`, error);
-            updateStatus(exchange, `Error: ${error.message}`);
-        }
-    };
-
-    const handleSyncAll = () => {
-        connections.forEach(conn => handleSync(conn.exchange));
-    };
-
-    // --- STEP 4: 条件付きの、描画 ---
+    // --- STEP 3: UIの、描画 ---
+    
+    // ローディング状態を、最優先で、チェック
     if (isLoading) {
-        return <div>Loading connections...</div>;
+        return <div className="p-4">Loading connections...</div>;
     }
 
-    // JSX (UI) は、一切、変更なし
+    // エラーが、発生した場合、ユーザーに、エラーメッセージを、明確に、表示
+    if (error) {
+        return <div className="p-4 text-red-500"><b>Error:</b> {error}</div>;
+    }
+    
+    // 正常な、UIを、描画
     return (
         <div className="p-4">
             <h1 className="text-2xl font-bold mb-4">Transaction History</h1>
             <div className="mb-6">
+                {/* 同期ボタンは、デバッグ中は、無効化し、見た目だけ、表示する */}
                 <button 
-                    onClick={handleSyncAll}
-                    className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded disabled:bg-gray-400"
-                    disabled={Object.values(syncStatus).some(s => s.includes('...'))}
+                    className="bg-gray-400 text-white font-bold py-2 px-4 rounded cursor-not-allowed"
+                    disabled={true}
+                    title="Temporarily disabled for debugging"
                 >
                     Sync All Exchanges
                 </button>
             </div>
             <div className="space-y-4">
-                {connections.map(conn => (
-                    <div key={conn.id} className="p-4 border rounded-lg">
-                        <div className="flex justify-between items-center">
-                            <h2 className="text-xl font-semibold">{conn.exchange}</h2>
-                            <button 
-                                onClick={() => handleSync(conn.exchange)}
-                                className="bg-green-500 hover:bg-green-700 text-white font-bold py-1 px-3 rounded disabled:bg-gray-400"
-                                disabled={Object.values(syncStatus).some(s => s.includes('...'))}
-                            >
-                                Sync
-                            </button>
+                {connections.length > 0 ? (
+                    connections.map(conn => (
+                        <div key={conn.id} className="p-4 border rounded-lg">
+                            <div className="flex justify-between items-center">
+                                <h2 className="text-xl font-semibold">{conn.exchange}</h2>
+                                {/* 同期ボタンは、デバッグ中は、無効化し、見た目だけ、表示する */}
+                                <button 
+                                    className="bg-gray-400 text-white font-bold py-1 px-3 rounded cursor-not-allowed"
+                                    disabled={true}
+                                    title="Temporarily disabled for debugging"
+                                >
+                                    Sync
+                                </button>
+                            </div>
                         </div>
-                        {syncStatus[conn.exchange] && (
-                            <SynthesisStatus status={syncStatus[conn.exchange]} />
-                        )}
-                    </div>
-                ))}
+                    ))
+                ) : (
+                    <p>No exchange connections found.</p>
+                )}
             </div>
         </div>
     );
