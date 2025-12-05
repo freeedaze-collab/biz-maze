@@ -88,8 +88,7 @@ Deno.serve(async (req) => {
         body: JSON.stringify({
           exchange,
           encrypted_blob: conn.encrypted_blob,
-          markets: [market],
-          user_id: user.id // ✅ 追加
+          markets: [market]
         })
       });
 
@@ -97,8 +96,8 @@ Deno.serve(async (req) => {
         const { totalSaved: saved } = await res.json();
         totalSaved += saved ?? 0;
       } else {
-        const err = await res.text();
-        console.warn(`[WARN] Worker failed for market ${market}:`, err);
+        const errText = await res.text();
+        console.warn(`[WARN] Worker failed for market ${market}:`, res.status, errText);
       }
     }
 
