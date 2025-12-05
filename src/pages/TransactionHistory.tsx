@@ -5,43 +5,37 @@ import { Link } from 'react-router-dom';
 import { supabase } from "../integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 
-// 【最終FIX】真のビュー「all_transactions」のスキーマに、完全に、一致させたinterface
+// スキーマは、これで、確定
 interface Transaction {
-    id: string;
-    date: string;       // 正: date
-    source: string;     // 正: source
+    date: string;
+    source: string;
     description: string | null;
     amount: number;
     asset: string | null;
 }
 
-// ★★★【最終・完全修正版】★★★
-// 真のビュー名と、真のカラム名に基づき、UIを、完全に、復元する
+// ★★★【UI最終調整版】★★★
+// CSS Gridを、用いて、テーブルの、表示崩れを、完全に、防ぐ
 export default function TransactionHistory() {
-    // --- STATE ---
     const [transactions, setTransactions] = useState<Transaction[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
-    // --- DATA FETCHING ---
     useEffect(() => {
         const fetchData = async () => {
             setIsLoading(true);
             setError(null);
             try {
-                // [最重要修正] 真のビュー名 'all_transactions' を使用する
-                // [最重要修正] 真のカラム名のみを、selectで、指定する
                 const { data, error } = await supabase
-                    .from('all_transactions') // これが真の名前
-                    .select('id, date, source, description, amount, asset')
+                    .from('v_all_transactions')
+                    .select('date, source, description, amount, asset')
                     .order('date', { ascending: false })
                     .limit(100);
 
                 if (error) throw error;
                 setTransactions(data || []);
-
             } catch (err: any) {
-                console.error("Error fetching all_transactions:", err);
+                console.error("Error fetching v_all_transactions:", err);
                 setError(`Failed to load data: ${err.message}`);
             } finally {
                 setIsLoading(false);
@@ -50,7 +44,6 @@ export default function TransactionHistory() {
         fetchData();
     }, []);
 
-    // --- RENDER ---
     return (
         <div className="p-4 md:p-6 lg:p-8">
             <h1 className="text-3xl font-bold mb-6">Transactions</h1>
@@ -78,7 +71,7 @@ export default function TransactionHistory() {
                 </div>
             </section>
 
-            {/* All Transactions Section */}
+            {/* All Transactions Section: CSS Gridで、堅牢な、レイアウトに */}
             <section>
                 <h2 className="text-2xl font-semibold mb-4">All Transactions</h2>
                 
@@ -87,27 +80,34 @@ export default function TransactionHistory() {
                 ) : error ? (
                     <p className="text-red-500 font-mono">{error}</p>
                 ) : (
-                    <div className="font-mono text-sm space-y-2">
-                        {/* Header Row */}
-                        <div className="flex space-x-4 text-gray-500">
-                            <div className="w-48">Date</div>
-                            <div className="w-24">Source</div>
-                            <div className="flex-1">Description</div>
-                            <div className="w-40 text-right">Amount</div>
-                            <div className="w-20 text-right">Asset</div>
+                    <div className="text-sm">
+                        {/* Grid Layout Container */}
+                        <div className="grid grid-cols-[1fr_1fr_2fr_1fr_1fr] gap-x-4 gap-y-2 font-mono">
+                            {/* Header */}
+                            <div className="font-bold text-gray-500">Date</div>
+                            <div className="font-bold text-gray-500">Source</div>
+                            <div className="font-bold text-gray-500">Description</div>
+                            <div className="font-bold text-gray-500 text-right">Amount</div>
+                            <div className="font-bold text-gray-500 text-right">Asset</div>
+
+                            {/* Separator */}
+                            <div className="col-span-5 border-b my-1"></div>
+
+                            {/* Data Rows */}
+                            {transactions.length > 0 ? transactions.map((tx, index) => (
+                                <React.Fragment key={`${tx.date}-${index}`}>
+                                    <div className="py-1">{new Date(tx.date).toLocaleString()}</div>
+                                    <div className="py-1">{tx.source}</div>
+                                    <div className="py-1 text-gray-600">{tx.description || ''}</div>
+                                    <div className="py-1 text-right">{tx.amount.toString()}</div>
+                                    <div className="py-1 text-right text-gray-600">{tx.asset || ''}</div>
+                                </React.Fragment>
+                            )) : (
+                                <div className="col-span-5 text-center text-gray-500 py-4">
+                                    No transactions found.
+                                </div>
+                            )}
                         </div>
-                        {/* Data Rows */}
-                        {transactions.length > 0 ? transactions.map(tx => (
-                            <div key={tx.id} className="flex space-x-4 items-baseline">
-                                <div className="w-48">{new Date(tx.date).toLocaleString()}</div>
-                                <div className="w-24">{tx.source}</div>
-                                <div className="flex-1 text-gray-600">{tx.description || ''}</div>
-                                <div className="w-40 text-right">{tx.amount.toString()}</div>
-                                <div className="w-20 text-right text-gray-600">{tx.asset || ''}</div>
-                            </div>
-                        )) : (
-                            <p className="text-gray-500">No transactions found.</p>
-                        )}
                     </div>
                 )}
             </section>
