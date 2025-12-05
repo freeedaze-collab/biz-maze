@@ -11,17 +11,30 @@ interface ExchangeConnection {
     created_at: string;
 }
 
-// ★★★ 「超」分散処理モデルの、最終形態 (UI変更なし) ★★★
+// ★★★ 安定性を、向上させた、最終形態 ★★★
 export default function TransactionHistory() {
     const { supabase } = useOutletContext<{ supabase: SupabaseClient }>();
     const [connections, setConnections] = useState<ExchangeConnection[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [syncStatus, setSyncStatus] = useState<Record<string, string>>({});
+    // [修正] 削除されていた`totalSaved`状態を、完全に復元
+    const [totalSaved, setTotalSaved] = useState(0);
 
     useEffect(() => {
+        // ★★★【最重要修正】★★★
+        // supabaseオブジェクトが、利用可能になるまで待つ「ガード」を追加。
+        // これが、ないと、ページの、読み込みの、タイミングで、アプリが、クラッシュする。
+        if (!supabase) {
+            setIsLoading(false);
+            return;
+        }
+
         const fetchConnections = async () => {
             const { data: { session } } = await supabase.auth.getSession();
-            if (!session) { setIsLoading(false); return; }
+            if (!session) {
+                setIsLoading(false);
+                return;
+            }
 
             const { data, error } = await supabase
                 .from('exchange_connections')
@@ -34,20 +47,22 @@ export default function TransactionHistory() {
             }
             setIsLoading(false);
         };
+
         fetchConnections();
-    }, [supabase]);
+    }, [supabase]); // supabaseの準備ができたら、このeffectが実行される
 
     const updateStatus = (exchange: string, message: string) => {
         setSyncStatus(prev => ({ ...prev, [exchange]: message }));
     };
 
-    // ★★★ ここからが、新しい「現場監督」のロジック ★★★
     const handleSync = async (exchange: string) => {
         updateStatus(exchange, 'Phase 1/3: Preparing sync plan...');
-        let totalSavedCount = 0; // 保存件数をローカルで追跡
+        // [修正] 同期処理の開始時に、保存件数をリセット
+        setTotalSaved(0);
+        // この関数スコープ内で、完了まで、件数を、正確に、追跡するための、ローカル変数
+        let currentRunSavedCount = 0;
 
         try {
-            // STEP 1: `exchange-sync-all`を呼び出し、「計画書」を取得
             const { data: plan, error: planError } = await supabase.functions.invoke('exchange-sync-all', {
                 body: { exchange },
             });
@@ -56,32 +71,31 @@ export default function TransactionHistory() {
             const { initialRecords, marketsToFetch, encrypted_blob } = plan;
             updateStatus(exchange, `Plan received. Found ${initialRecords.length} initial records and ${marketsToFetch.length} markets.`);
 
-            // STEP 2: `all`が取得した入出金履歴(initialRecords)を、まず保存
             if (initialRecords && initialRecords.length > 0) {
                 updateStatus(exchange, `Phase 2/3: Saving ${initialRecords.length} initial records...`);
                 const { data: saveData, error: saveError } = await supabase.functions.invoke('exchange-sync-save', {
                     body: { exchange, records: initialRecords },
                 });
                 if (saveError) throw new Error(`[Save Failed - Initial] ${saveError.message}`);
-                totalSavedCount += saveData.totalSaved || 0;
+                
+                const newSaves = saveData.totalSaved || 0;
+                currentRunSavedCount += newSaves;
+                setTotalSaved(currentRunSavedCount); // 状態も更新
             }
 
-            // STEP 3: `worker`と`save`を、ループで、小刻みに呼び出す
             updateStatus(exchange, `Phase 3/3: Fetching trades from ${marketsToFetch.length} markets...`);
             for (let i = 0; i < marketsToFetch.length; i++) {
                 const market = marketsToFetch[i];
                 updateStatus(exchange, `[${i + 1}/${marketsToFetch.length}] Fetching trades for ${market}...`);
 
-                // 3a. `worker`を呼び出し、単一ペアの取引履歴を取得
                 const { data: trades, error: workerError } = await supabase.functions.invoke('exchange-sync-worker', {
                     body: { exchange, market, encrypted_blob },
                 });
                 if (workerError) {
                     console.warn(`[Worker Failed for ${market}]`, workerError);
-                    continue; // 一つのペアで失敗しても、全体は止めずに続行
+                    continue;
                 }
 
-                // 3b. `worker`から受け取った履歴を、`save`で、即座に、保存
                 if (trades && trades.length > 0) {
                     updateStatus(exchange, `[${i + 1}/${marketsToFetch.length}] Found ${trades.length} trades. Saving...`);
                     const { data: saveData, error: saveError } = await supabase.functions.invoke('exchange-sync-save', {
@@ -89,13 +103,15 @@ export default function TransactionHistory() {
                     });
                     if (saveError) {
                          console.warn(`[Save Failed for ${market}]`, saveError);
-                         continue; // 保存で失敗しても続行
+                         continue;
                     }
-                    totalSavedCount += saveData.totalSaved || 0;
+                    const newSaves = saveData.totalSaved || 0;
+                    currentRunSavedCount += newSaves;
+                    setTotalSaved(currentRunSavedCount); // 状態も更新
                 }
             }
 
-            updateStatus(exchange, `Sync complete! Saved ${totalSavedCount} new records.`);
+            updateStatus(exchange, `Sync complete! Saved ${currentRunSavedCount} new records.`);
 
         } catch (error: any) {
             console.error(`[Orchestration Failed for ${exchange}]`, error);
@@ -111,11 +127,10 @@ export default function TransactionHistory() {
         return <div>Loading connections...</div>;
     }
 
-    // ★★★ JSX (UI) は、一切、変更していません ★★★
+    // JSX (UI) は、一切、変更なし
     return (
         <div className="p-4">
             <h1 className="text-2xl font-bold mb-4">Transaction History</h1>
-            
             <div className="mb-6">
                 <button 
                     onClick={handleSyncAll}
@@ -125,7 +140,6 @@ export default function TransactionHistory() {
                     Sync All Exchanges
                 </button>
             </div>
-
             <div className="space-y-4">
                 {connections.map(conn => (
                     <div key={conn.id} className="p-4 border rounded-lg">
