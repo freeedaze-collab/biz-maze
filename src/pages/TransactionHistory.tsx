@@ -11,22 +11,26 @@ interface ExchangeConnection {
     created_at: string;
 }
 
-// ★★★ 安定性を、向上させた、最終形態 ★★★
+// ★★★【最終安定版】Reactの、ルールを、遵守した、完全な、コード ★★★
 export default function TransactionHistory() {
-    const { supabase } = useOutletContext<{ supabase: SupabaseClient }>();
+    // --- STEP 1: Hooksの、呼び出し (無条件で、全て、実行) ---
+    const context = useOutletContext<{ supabase: SupabaseClient }>();
+    // この、時点では、`supabase`は、未定義の、可能性がある
+    const supabase = context?.supabase;
+    
     const [connections, setConnections] = useState<ExchangeConnection[]>([]);
+    // isLoadingの、初期値を、trueにすることで、最初の、描画で、ローディング画面を、表示させる
     const [isLoading, setIsLoading] = useState(true);
     const [syncStatus, setSyncStatus] = useState<Record<string, string>>({});
-    // [修正] 削除されていた`totalSaved`状態を、完全に復元
     const [totalSaved, setTotalSaved] = useState(0);
 
+    // --- STEP 2: 副作用の、管理 (useEffect) ---
     useEffect(() => {
-        // ★★★【最重要修正】★★★
-        // supabaseオブジェクトが、利用可能になるまで待つ「ガード」を追加。
-        // これが、ないと、ページの、読み込みの、タイミングで、アプリが、クラッシュする。
+        // `useEffect`の、中で、`supabase`の、存在を、確認する。
+        // これが、安全な、方法。
         if (!supabase) {
-            setIsLoading(false);
-            return;
+            setIsLoading(false); // supabaseが、なければ、ローディングを、終了
+            return; // 何もせず、終了
         }
 
         const fetchConnections = async () => {
@@ -49,17 +53,22 @@ export default function TransactionHistory() {
         };
 
         fetchConnections();
-    }, [supabase]); // supabaseの準備ができたら、このeffectが実行される
+    }, [supabase]); // supabaseの、準備が、できたら、この、Effectが、再実行される
 
+    // --- STEP 3: イベントハンドラ --- 
     const updateStatus = (exchange: string, message: string) => {
         setSyncStatus(prev => ({ ...prev, [exchange]: message }));
     };
 
+    // 同期処理の、本体ロジックは、変更なし
     const handleSync = async (exchange: string) => {
+        if (!supabase) { //念のため、ここでも、ガードする
+            updateStatus(exchange, "Error: Supabase client not ready.");
+            return;
+        }
+
         updateStatus(exchange, 'Phase 1/3: Preparing sync plan...');
-        // [修正] 同期処理の開始時に、保存件数をリセット
         setTotalSaved(0);
-        // この関数スコープ内で、完了まで、件数を、正確に、追跡するための、ローカル変数
         let currentRunSavedCount = 0;
 
         try {
@@ -80,7 +89,7 @@ export default function TransactionHistory() {
                 
                 const newSaves = saveData.totalSaved || 0;
                 currentRunSavedCount += newSaves;
-                setTotalSaved(currentRunSavedCount); // 状態も更新
+                setTotalSaved(currentRunSavedCount);
             }
 
             updateStatus(exchange, `Phase 3/3: Fetching trades from ${marketsToFetch.length} markets...`);
@@ -107,7 +116,7 @@ export default function TransactionHistory() {
                     }
                     const newSaves = saveData.totalSaved || 0;
                     currentRunSavedCount += newSaves;
-                    setTotalSaved(currentRunSavedCount); // 状態も更新
+                    setTotalSaved(currentRunSavedCount);
                 }
             }
 
@@ -123,6 +132,7 @@ export default function TransactionHistory() {
         connections.forEach(conn => handleSync(conn.exchange));
     };
 
+    // --- STEP 4: 条件付きの、描画 ---
     if (isLoading) {
         return <div>Loading connections...</div>;
     }
