@@ -1,7 +1,7 @@
 
 // supabase/functions/exchange-sync-all/index.ts
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
-import ccxt from 'https://esm.sh/ccxt@4.3.40' //【最重要】バグのない安定バージョンに固定
+import ccxt from 'https://esm.sh/ccxt@4.3.40' // 安定バージョンに固定
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { decode } from "https://deno.land/std@0.177.0/encoding/base64.ts";
 
@@ -24,37 +24,31 @@ async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: s
   return JSON.parse(new TextDecoder().decode(decryptedData));
 }
 
-// ccxtのレコードをDBスキーマに正確にマッピングする関数
 function transformRecord(record: any, userId: string, exchange: string) {
   const recordId = record.id || record.txid;
   if (!recordId) {
     console.warn("[TRANSFORM-WARN] Record is missing a unique ID. Skipping:", record);
-    return null; // IDがないレコードは処理不能なのでスキップ
+    return null;
   }
-
-  // レコードタイプに応じて各フィールドを正規化
-  const side = record.side || record.type; // 'buy'/'sell' または 'deposit'/'withdrawal'
-  const symbol = record.symbol || record.currency; // トレードならsymbol, 入出金ならcurrency
-  const price = record.price ?? 0; // 入出金には価格がない場合があるため、nullなら0を設定
+  const side = record.side || record.type;
+  const symbol = record.symbol || record.currency;
+  const price = record.price ?? 0;
   const fee_cost = record.fee?.cost;
   const fee_currency = record.fee?.currency;
-
-  // 必須カラムがnullでないか最終チェック
   if (!symbol || !side || !record.amount || !record.timestamp) {
-      console.warn(`[TRANSFORM-WARN] Record is missing required fields (symbol, side, amount, or timestamp). Skipping:`, record);
+      console.warn(`[TRANSFORM-WARN] Record is missing required fields. Skipping:`, record);
       return null;
   }
-
   return {
     user_id: userId,
     exchange: exchange,
-    trade_id: String(recordId), // UNIQUE制約 (user_id, exchange, trade_id) のため
+    trade_id: String(recordId),
     symbol: symbol,
     side: side,
     price: price,
     amount: record.amount,
     fee: fee_cost,
-    fee_asset: fee_currency, // スキーマに合わせて復活
+    fee_asset: fee_currency,
     ts: new Date(record.timestamp).toISOString(),
     raw_data: record,
   };
@@ -92,10 +86,10 @@ Deno.serve(async (req) => {
         apiKey: credentials.apiKey,
         secret: credentials.apiSecret,
         password: credentials.apiPassphrase,
-        options: { 'defaultType': 'spot' }, // 現物取引を明示
+        options: { 'defaultType': 'spot' },
       });
       
-      // 1. トレードの取得 (より安定した方法)
+      // 1. トレードの取得 (ロジック超強化版)
       try {
         console.log(`[LOG] ${conn.exchange}: Fetching trades...`);
         if (exchangeInstance.has['fetchMyTrades']) {
@@ -104,11 +98,24 @@ Deno.serve(async (req) => {
             const heldAssets = Object.keys(balance.total).filter(asset => balance.total[asset] > 0);
             const symbolsToFetch = new Set<string>();
             
-            // JPY, USDT, BTC, ETHとのペアを探索
+            // ★★★【最終修正】★★★
+            // JPY, USDT等とのペアを「両方向」で網羅的に探索し、取りこぼしをなくす
+            const quoteCurrencies = ['JPY', 'USDT', 'BTC', 'ETH', 'BUSD', 'USDC', 'BNB']; 
             for (const asset of heldAssets) {
-                const potentialPairs = [`${asset}/JPY`, `${asset}/USDT`, `${asset}/BTC`, `${asset}/ETH`];
-                for (const pair of potentialPairs) {
-                    if (exchangeInstance.markets[pair]) symbolsToFetch.add(pair);
+                for (const quote of quoteCurrencies) {
+                    if (asset === quote) continue; // 例: BTC/BTC のようなペアはスキップ
+
+                    // 方向1: ASSET/QUOTE (例: ETH/JPY)
+                    const pair1 = `${asset}/${quote}`;
+                    if (exchangeInstance.markets[pair1]) {
+                        symbolsToFetch.add(pair1);
+                    }
+
+                    // 方向2: QUOTE/ASSET (例: JPY/ETH - 取引所によっては存在しない)
+                    const pair2 = `${quote}/${asset}`;
+                    if (exchangeInstance.markets[pair2]) {
+                        symbolsToFetch.add(pair2);
+                    }
                 }
             }
 
