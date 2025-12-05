@@ -1,3 +1,5 @@
+
+// src/hooks/useAuth.tsx
 import { createContext, useContext, useEffect, useState } from "react";
 import type { User, Session } from "@supabase/supabase-js";
 import { supabase } from "../integrations/supabase/client";
@@ -17,57 +19,53 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const initSession = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-
-      if (session) {
-        setSession(session);
-        setUser(session.user);
-      } else {
-        // fallback: localStorage を直接読む
-        try {
-          const keys = Object.keys(localStorage).filter(k => k.startsWith("sb-") && k.endsWith("-auth-token"));
-          if (keys.length > 0) {
-            const raw = localStorage.getItem(keys[0]);
-            if (raw) {
-              const parsed = JSON.parse(raw);
-              setSession(parsed);
-              setUser(parsed.user ?? null);
-              console.log("[Auth] fallback session restored from", keys[0]);
-            }
-          }
-        } catch (e) {
-          console.error("[Auth] fallback parse error:", e);
-        }
+    // STEP 1: まず、現在のセッション情報を、取得する
+    const getSession = async () => {
+      const { data: { session }, error } = await supabase.auth.getSession();
+      if (error) {
+        console.error("[Auth] Error getting session:", error);
       }
-      setLoading(false);
+      setSession(session ?? null);
+      setUser(session?.user ?? null);
+      setLoading(false); // 重要な、タイミング：セッション取得の、試みが、完了した、時点で、ローディングを、終了する
     };
 
-    initSession();
+    getSession();
 
+    // STEP 2: 認証状態の、変化を、監視する
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (_event, session) => {
         setSession(session ?? null);
         setUser(session?.user ?? null);
+        // 認証状態が、変化した、場合も、ローディングは、完了しているはず
         setLoading(false);
       }
     );
 
-    return () => subscription.unsubscribe();
+    // クリーンアップ関数
+    return () => {
+      subscription.unsubscribe();
+    };
   }, []);
 
   const signOut = async () => {
     await supabase.auth.signOut();
   };
 
+  // valueプロパティは、変更なし
+  const value = { user, session, loading, signOut };
+
+  // ★★★【最重要修正】★★★
+  // ローディング中は、子コンポーネントを、一切、描画しない。
+  // これにより、認証が、完了する前に、保護された、ルートが、描画されて、クラッシュするのを、防ぐ。
   return (
-    <AuthContext.Provider value={{ user, session, loading, signOut }}>
-      {loading && <p className="p-4">Loading session...</p>}
-      {children}
+    <AuthContext.Provider value={value}>
+      {loading ? <div className="p-4">Loading session...</div> : children}
     </AuthContext.Provider>
   );
 }
 
+// この、カスタムフックは、変更の、必要なし
 export function useAuth() {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error("useAuth must be used within an AuthProvider");
