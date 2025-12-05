@@ -1,175 +1,161 @@
 
 // src/pages/TransactionHistory.tsx
 import React, { useState, useEffect } from 'react';
-// [重要修正] supabaseクライアントは、useOutletContextではなく、直接、インポートするのが、この、プロジェクトの、正しい、方法
+import { Link } from 'react-router-dom';
 import { supabase } from "../integrations/supabase/client";
-import { SupabaseClient } from "@supabase/supabase-js";
+import { Button } from "@/components/ui/button";
 
-// [重要修正] 仮の、コンポーネント定義を、削除し、実際の、ファイルから、インポートする
-import SynthesisStatus from './SynthesisStatus';
-
+// インターフェース定義
 interface ExchangeConnection {
     id: string;
     exchange: string;
-    created_at: string;
 }
 
-// ★★★【最終確定版】★★★
+interface Transaction {
+    id: string;
+    created_at: string;
+    source: string;
+    description: string | null;
+    amount: number;
+    asset: string;
+}
+
+// ★★★【UI復元版】★★★
+// ご提示の、スクリーンショットに、基づいて、UIを、完全に、再構築
 export default function TransactionHistory() {
-    // --- STEP 1: Hooks (Reactの、ルールを、遵守) ---
+    // --- STATE --- 
     const [connections, setConnections] = useState<ExchangeConnection[]>([]);
+    const [transactions, setTransactions] = useState<Transaction[]>([]);
     const [isLoading, setIsLoading] = useState(true);
-    const [syncStatus, setSyncStatus] = useState<Record<string, string>>({});
-    const [totalSaved, setTotalSaved] = useState(0);
     const [error, setError] = useState<string | null>(null);
+    const [syncStatus, setSyncStatus] = useState<Record<string, string>>({});
+    const isSyncing = Object.values(syncStatus).some(s => s.includes('...'));
 
-    // --- STEP 2: 副作用 (データ取得) ---
+    // --- DATA FETCHING --- 
     useEffect(() => {
-        // supabaseクライアントは、直接、インポートされているため、常に、利用可能。
-        // そのため、「準備ができるまで待つ」ロジックは、不要。
-
-        const fetchConnections = async () => {
+        const fetchData = async () => {
             setIsLoading(true);
-            const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-            if (sessionError || !session) {
-                setError("Authentication session not found.");
+            try {
+                // 取引所接続と、取引履歴を、並行して、取得
+                const [connectionsRes, transactionsRes] = await Promise.all([
+                    supabase.from('exchange_connections').select('id, exchange'),
+                    supabase.from('transactions').select('id, created_at, source, description, amount, asset').order('created_at', { ascending: false }).limit(100)
+                ]);
+
+                if (connectionsRes.error) throw connectionsRes.error;
+                setConnections(connectionsRes.data || []);
+
+                if (transactionsRes.error) throw transactionsRes.error;
+                setTransactions(transactionsRes.data || []);
+
+            } catch (err: any) {
+                console.error("Error fetching page data:", err);
+                setError(`Failed to load data: ${err.message}`);
+            } finally {
                 setIsLoading(false);
-                return;
             }
-
-            const { data, error: dbError } = await supabase
-                .from('exchange_connections')
-                .select('id, exchange, created_at');
-
-            if (dbError) {
-                console.error("Error fetching connections:", dbError);
-                setError(`Failed to fetch connections: ${dbError.message}`);
-            } else {
-                setConnections(data || []);
-            }
-            setIsLoading(false);
         };
+        fetchData();
+    }, []);
 
-        fetchConnections();
-    }, []); // 依存配列は、空にする。マウント時に、一度だけ、実行されれば、良い。
-
-    // --- STEP 3: イベントハンドラ (同期ロジック) --- 
-    // この、部分の、ロジックは、以前の、ままで、問題ないと、判断
-    const updateStatus = (exchange: string, message: string) => {
-        setSyncStatus(prev => ({ ...prev, [exchange]: message }));
+    // --- SYNC LOGIC --- 
+    const updateStatus = (target: string, message: string) => {
+        setSyncStatus(prev => ({ ...prev, [target]: message }));
     };
 
-    const handleSync = async (exchange: string) => {
-        updateStatus(exchange, 'Phase 1/3: Preparing sync plan...');
-        // 同期開始時に、合計保存件数を、リセット
-        setTotalSaved(0); 
-        let currentRunSavedCount = 0;
-
+    const handleSyncWallet = () => {
+        updateStatus('wallet', "Wallet sync is not yet implemented.");
+    };
+    
+    const handleSyncExchange = async (exchange: string) => {
+        updateStatus(exchange, `Syncing ${exchange}...`);
         try {
-            const { data: plan, error: planError } = await supabase.functions.invoke('exchange-sync-all', {
-                body: { exchange },
-            });
-            if (planError) throw new Error(`[Prep Failed] ${planError.message}`);
-
-            const { initialRecords, marketsToFetch, encrypted_blob } = plan;
-            updateStatus(exchange, `Plan received. Found ${initialRecords.length} initial records and ${marketsToFetch.length} markets.`);
-
-            if (initialRecords && initialRecords.length > 0) {
-                updateStatus(exchange, `Phase 2/3: Saving ${initialRecords.length} initial records...`);
-                const { data: saveData, error: saveError } = await supabase.functions.invoke('exchange-sync-save', {
-                    body: { exchange, records: initialRecords },
-                });
-                if (saveError) throw new Error(`[Save Failed - Initial] ${saveError.message}`);
-                
-                const newSaves = saveData.totalSaved || 0;
-                currentRunSavedCount += newSaves;
-                setTotalSaved(currentRunSavedCount);
-            }
-
-            updateStatus(exchange, `Phase 3/3: Fetching trades from ${marketsToFetch.length} markets...`);
-            for (let i = 0; i < marketsToFetch.length; i++) {
-                const market = marketsToFetch[i];
-                updateStatus(exchange, `[${i + 1}/${marketsToFetch.length}] Fetching trades for ${market}...`);
-
-                const { data: trades, error: workerError } = await supabase.functions.invoke('exchange-sync-worker', {
-                    body: { exchange, market, encrypted_blob },
-                });
-                if (workerError) {
-                    console.warn(`[Worker Failed for ${market}]`, workerError);
-                    continue;
-                }
-
-                if (trades && trades.length > 0) {
-                    updateStatus(exchange, `[${i + 1}/${marketsToFetch.length}] Found ${trades.length} trades. Saving...`);
-                    const { data: saveData, error: saveError } = await supabase.functions.invoke('exchange-sync-save', {
-                        body: { exchange, records: trades },
-                    });
-                    if (saveError) {
-                         console.warn(`[Save Failed for ${market}]`, saveError);
-                         continue;
-                    }
-                    const newSaves = saveData.totalSaved || 0;
-                    currentRunSavedCount += newSaves;
-                    setTotalSaved(prev => prev + newSaves);
-                }
-            }
-
-            updateStatus(exchange, `Sync complete! Saved ${currentRunSavedCount} new records in total.`);
-
-        } catch (error: any) {
-            console.error(`[Orchestration Failed for ${exchange}]`, error);
-            updateStatus(exchange, `Error: ${error.message}`);
+            const { error } = await supabase.functions.invoke('exchange-sync-all', { body: { exchange } });
+            if (error) throw new Error(error.message);
+            updateStatus(exchange, `${exchange} sync completed.`);
+            // TODO: 同期後に、取引リストを、再読み込みする
+        } catch (err: any) {
+            console.error(`Error syncing ${exchange}:`, err);
+            updateStatus(exchange, `Error syncing ${exchange}: ${err.message}`);
         }
     };
 
-    const handleSyncAll = () => {
-        connections.forEach(conn => handleSync(conn.exchange));
+    const handleSyncAllExchanges = () => {
+        if (connections.length === 0) {
+            updateStatus('all_exchanges', 'No connected exchanges to sync.');
+            return;
+        }
+        connections.forEach(conn => handleSyncExchange(conn.exchange));
     };
 
-    // --- STEP 4: 描画 ---
-    if (isLoading) {
-        return <div className="p-4">Loading connections...</div>;
-    }
-
-    if (error) {
-        return <div className="p-4 text-red-500"><b>Error:</b> {error}</div>;
-    }
-
+    // --- RENDER --- 
     return (
-        <div className="p-4">
-            <h1 className="text-2xl font-bold mb-4">Transaction History</h1>
-            <div className="mb-6">
-                <button 
-                    onClick={handleSyncAll}
-                    className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded disabled:bg-gray-400"
-                    disabled={isLoading || Object.values(syncStatus).some(s => s.includes('...'))}
-                >
-                    Sync All Exchanges
-                </button>
-            </div>
-            <div className="space-y-4">
-                {connections.length > 0 ? (
-                    connections.map(conn => (
-                        <div key={conn.id} className="p-4 border rounded-lg">
-                            <div className="flex justify-between items-center">
-                                <h2 className="text-xl font-semibold">{conn.exchange}</h2>
-                                <button 
-                                    onClick={() => handleSync(conn.exchange)}
-                                    className="bg-green-500 hover:bg-green-700 text-white font-bold py-1 px-3 rounded disabled:bg-gray-400"
-                                    disabled={isLoading || Object.values(syncStatus).some(s => s.includes('...'))}
-                                >
-                                    Sync
-                                </button>
-                            </div>
-                            {syncStatus[conn.exchange] && (
-                                <SynthesisStatus status={syncStatus[conn.exchange]} />
-                            )}
-                        </div>
-                    ))
-                ) : (
-                    <p>No exchange connections found. Please add a connection first.</p>
-                )}
-            </div>
+        <div className="p-4 md:p-6 lg:p-8">
+            <h1 className="text-3xl font-bold mb-6">Transactions</h1>
+
+            {/* Data Sync Section */}
+            <section className="mb-8">
+                <h2 className="text-2xl font-semibold mb-2">Data Sync</h2>
+                <p className="text-gray-600 dark:text-gray-400 mb-4">
+                    Manually sync the latest transaction history from your connected sources.
+                </p>
+                <div className="p-4 border dark:border-gray-700 rounded-lg space-y-4 bg-gray-50 dark:bg-gray-800/30">
+                    <div className="flex items-center justify-between">
+                        <span>Wallet (ethereum)</span>
+                        <Button onClick={handleSyncWallet} variant="outline" disabled={isSyncing}>Sync</Button>
+                    </div>
+                    <div className="flex items-center justify-between">
+                        <span>All Connected Exchanges</span>
+                        <Button onClick={handleSyncAllExchanges} variant="outline" disabled={isSyncing}>Sync All</Button>
+                    </div>
+                    <div className="pt-2">
+                         <Link to="/vce" className="text-sm font-medium text-blue-600 hover:underline">
+                            Manage API Keys
+                        </Link>
+                    </div>
+                </div>
+            </section>
+
+            {/* All Transactions Section */}
+            <section>
+                <h2 className="text-2xl font-semibold mb-4">All Transactions</h2>
+                <div className="border rounded-lg overflow-x-auto">
+                     {isLoading ? (
+                        <p className="p-4 text-center">Loading transactions...</p>
+                    ) : error ? (
+                         <p className="p-4 text-center text-red-500">{error}</p>
+                    ) : (
+                        <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                            <thead className="bg-gray-50 dark:bg-gray-700/50">
+                                <tr>
+                                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Date</th>
+                                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Source</th>
+                                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Description</th>
+                                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Amount</th>
+                                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Asset</th>
+                                </tr>
+                            </thead>
+                            <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
+                                {transactions.length > 0 ? transactions.map(tx => (
+                                    <tr key={tx.id}>
+                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-200">{new Date(tx.created_at).toLocaleString()}</td>
+                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{tx.source}</td>
+                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{tx.description || '-'}</td>
+                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-200">{tx.amount}</td>
+                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{tx.asset}</td>
+                                    </tr>
+                                )) : (
+                                    <tr>
+                                        <td colSpan={5} className="px-6 py-4 text-center text-sm text-gray-500">
+                                            No transactions found. Try syncing your wallets or exchanges.
+                                        </td>
+                                    </tr>
+                                )}
+                            </tbody>
+                        </table>
+                    )}
+                </div>
+            </section>
         </div>
     );
 }
