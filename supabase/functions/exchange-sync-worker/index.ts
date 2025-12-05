@@ -13,18 +13,15 @@ const corsHeaders = {
 const NINETY_DAYS_AGO = Date.now() - 89 * 24 * 60 * 60 * 1000;
 const TRADE_FETCH_BATCH_SIZE = 5;
 
-async function getKey() {
-  const b64 = Deno.env.get("EDGE_KMS_KEY");
-  if (!b64) throw new Error("EDGE_KMS_KEY secret is not set.");
-  const raw = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
-  return await crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["decrypt"]);
-}
-
-async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> {
-  const parts = blob.split(":"), iv = decode(parts[1]), ct = decode(parts[2]);
-  const key = await getKey();
+async function decrypt(blob: string): Promise<string> {
+  const parts = blob.split(":");
+  if (parts.length !== 3 || parts[0] !== "v1") throw new Error("Invalid encrypted blob format.");
+  const iv = decode(parts[1]);
+  const ct = decode(parts[2]);
+  const keyRaw = Uint8Array.from(atob(Deno.env.get("EDGE_KMS_KEY")!), c => c.charCodeAt(0));
+  const key = await crypto.subtle.importKey("raw", keyRaw, "AES-GCM", false, ["decrypt"]);
   const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
-  return JSON.parse(new TextDecoder().decode(decrypted));
+  return new TextDecoder().decode(decrypted);
 }
 
 function transformRecord(record: any, userId: string, exchange: string) {
@@ -59,7 +56,8 @@ Deno.serve(async (req) => {
     const { exchange: exchangeName, encrypted_blob, markets } = body;
     if (!encrypted_blob || !exchangeName || !markets?.length) throw new Error("Missing input.");
 
-    const creds = await decryptBlob(encrypted_blob);
+    const decryptedStr = await decrypt(encrypted_blob);
+    const creds = JSON.parse(decryptedStr);
     const exchange = new ccxt[exchangeName]({
       apiKey: creds.apiKey,
       secret: creds.apiSecret,
