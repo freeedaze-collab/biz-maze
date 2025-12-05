@@ -1,4 +1,3 @@
-// File: exchange-sync-worker/index.ts
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts';
 import ccxt from 'https://esm.sh/ccxt@4.3.40';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
@@ -13,15 +12,18 @@ const corsHeaders = {
 const NINETY_DAYS_AGO = Date.now() - 89 * 24 * 60 * 60 * 1000;
 const TRADE_FETCH_BATCH_SIZE = 5;
 
-async function decrypt(blob: string): Promise<string> {
-  const parts = blob.split(":");
-  if (parts.length !== 3 || parts[0] !== "v1") throw new Error("Invalid encrypted blob format.");
-  const iv = decode(parts[1]);
-  const ct = decode(parts[2]);
-  const keyRaw = Uint8Array.from(atob(Deno.env.get("EDGE_KMS_KEY")!), c => c.charCodeAt(0));
-  const key = await crypto.subtle.importKey("raw", keyRaw, "AES-GCM", false, ["decrypt"]);
+async function getKey() {
+  const b64 = Deno.env.get("EDGE_KMS_KEY");
+  if (!b64) throw new Error("EDGE_KMS_KEY secret is not set.");
+  const raw = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+  return await crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["decrypt"]);
+}
+
+async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> {
+  const parts = blob.split(":"), iv = decode(parts[1]), ct = decode(parts[2]);
+  const key = await getKey();
   const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
-  return new TextDecoder().decode(decrypted);
+  return JSON.parse(new TextDecoder().decode(decrypted));
 }
 
 function transformRecord(record: any, userId: string, exchange: string) {
@@ -49,15 +51,11 @@ Deno.serve(async (req) => {
 
   try {
     const supabaseAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
-    const { data: { user }, error } = await supabaseAdmin.auth.getUser(req.headers.get('Authorization')!.replace('Bearer ', ''));
-    if (error || !user) throw new Error("User not found.");
-
     const body = await req.json();
-    const { exchange: exchangeName, encrypted_blob, markets } = body;
-    if (!encrypted_blob || !exchangeName || !markets?.length) throw new Error("Missing input.");
+    const { exchange: exchangeName, encrypted_blob, markets, user_id } = body;
+    if (!encrypted_blob || !exchangeName || !markets?.length || !user_id) throw new Error("Missing input.");
 
-    const decryptedStr = await decrypt(encrypted_blob);
-    const creds = JSON.parse(decryptedStr);
+    const creds = await decryptBlob(encrypted_blob);
     const exchange = new ccxt[exchangeName]({
       apiKey: creds.apiKey,
       secret: creds.apiSecret,
@@ -75,7 +73,7 @@ Deno.serve(async (req) => {
       )).flat();
 
       if (trades.length > 0) {
-        const records = trades.map(r => transformRecord(r, user.id, exchangeName)).filter(Boolean);
+        const records = trades.map(r => transformRecord(r, user_id, exchangeName)).filter(Boolean);
         const { error: upsertError } = await supabaseAdmin.from('exchange_trades')
           .upsert(records, { onConflict: 'user_id,exchange,trade_id' });
         if (upsertError) console.error("[DB UPSERT ERROR]", upsertError);
