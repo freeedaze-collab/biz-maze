@@ -1,94 +1,91 @@
 // supabase/functions/exchange-sync-worker/index.ts
-
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import ccxt from "https://esm.sh/ccxt@4.3.40";
-import { decode as b64decode } from "https://deno.land/std@0.177.0/encoding/base64.ts";
+import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
+import ccxt from 'https://esm.sh/ccxt@4.3.46'
+import { decode } from "https://deno.land/std@0.177.0/encoding/base64.ts";
 
 const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-};
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+}
 
+// --- 復号ロジック (他と共通) ---
 async function getKey() {
   const b64 = Deno.env.get("EDGE_KMS_KEY");
   if (!b64) throw new Error("EDGE_KMS_KEY secret is not set.");
-  const raw = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  const raw = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
   return await crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["decrypt"]);
 }
 
-async function decryptBlob(blob: string): Promise<{ apiKey: string; secret: string; password?: string }> {
+async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> {
   const parts = blob.split(":");
-  if (parts.length !== 3 || parts[0] !== "v1") throw new Error("Invalid encrypted blob format.");
-  const iv = b64decode(parts[1]);
-  const ct = b64decode(parts[2]);
+  if (parts.length !== 3 || parts[0] !== 'v1') throw new Error("Invalid encrypted blob format.");
+  const iv = decode(parts[1]);
+  const ct = decode(parts[2]);
   const key = await getKey();
   const decryptedData = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
   return JSON.parse(new TextDecoder().decode(decryptedData));
 }
 
-serve(async (req) => {
-  if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders });
+// --- メインハンドラ ---
+Deno.serve(async (req) => {
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { headers: corsHeaders });
   }
 
+  let exchangeName = 'unknown', symbol = 'unknown' // for logging
   try {
-    const body = await req.json();
-    const { encrypted_blob, market, exchange_name, user_id } = body;
-    if (!encrypted_blob || !market || !exchange_name || !user_id) {
-      throw new Error("Missing required fields in request body.");
+    // ★ 司令塔(クライアント)から、必要な情報を全て受け取る
+    const { encrypted_blob, exchange, market } = await req.json();
+    exchangeName = exchange;
+    symbol = market;
+
+    if (!encrypted_blob || !exchangeName || !symbol) {
+      throw new Error("encrypted_blob, exchange, and market are required.");
     }
 
-    const { apiKey, secret, password } = await decryptBlob(encrypted_blob);
-    const exchange = new ccxt[exchange_name]({
-      apiKey,
-      secret,
-      password,
-      options: { defaultType: "spot" },
+    console.log(`[WORKER] Received job for ${exchangeName} - ${symbol}`);
+
+    const credentials = await decryptBlob(encrypted_blob);
+
+    // @ts-ignore
+    const ex = new ccxt[exchangeName]({
+      apiKey: credentials.apiKey,
+      secret: credentials.apiSecret,
+      password: credentials.apiPassphrase,
+      options: { 'defaultType': 'spot' },
     });
 
-    console.log(`[WORKER] Fetching trades for ${market}`);
-    let trades: any[] = [];
-    if (exchange.has["fetchMyTrades"]) {
-      try {
-        await exchange.loadMarkets();
-        if (exchange.markets[market]) {
-          trades = await exchange.fetchMyTrades(market, Date.now() - 90 * 24 * 60 * 60 * 1000);
-          console.log(`[WORKER] Got ${trades.length} trades for ${market}`);
-        } else {
-          console.warn(`[WORKER] Market ${market} not supported on ${exchange_name}`);
-        }
-      } catch (err) {
-        console.error(`[WORKER] Failed to fetch trades:`, err);
-        throw err;
-      }
-    } else {
-      console.warn(`[WORKER] fetchMyTrades not supported on ${exchange_name}`);
+    // ★ workerでmarketsをロードするのは必須
+    await ex.loadMarkets();
+
+    const since = Date.now() - 90 * 24 * 60 * 60 * 1000;
+
+    // ★ fetchMyTradesがサポートされているか、marketが存在するかを確認
+    if (!ex.has['fetchMyTrades'] || !ex.markets[symbol]) {
+        console.warn(`[WORKER] Market ${symbol} not available or fetchMyTrades not supported on ${exchangeName}. Skipping.`);
+        return new Response(JSON.stringify([]), { // 何もせず、空の配列を返す
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
     }
 
-    const result = trades.map((t) => ({
-      user_id,
-      exchange: exchange_name,
-      trade_id: String(t.id || t.txid),
-      symbol: t.symbol,
-      side: t.side,
-      price: t.price ?? 0,
-      amount: t.amount,
-      fee: t.fee?.cost ?? null,
-      fee_asset: t.fee?.currency ?? null,
-      ts: new Date(t.timestamp).toISOString(),
-      raw_data: t,
-    }));
+    const trades = await ex.fetchMyTrades(symbol, since);
+    console.log(`[WORKER] Fetched ${trades.length} trades for ${symbol}`);
 
-    return new Response(JSON.stringify({ records: result }), {
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    // ★★★ 最重要 ★★★
+    // workerは取得した「生」のデータを、そのまま返すだけに徹する。
+    // 変換処理(transform)やDB保存は、後続の「save」関数が担当する。
+    return new Response(JSON.stringify(trades), { 
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      status: 200,
     });
+
   } catch (err) {
-    console.error(`[CRASH]`, err);
-    return new Response(JSON.stringify({ error: err.message }), {
+    console.error(`[WORKER CRASH - ${exchangeName} ${symbol}]`, err);
+    // エラーが発生した場合も、クライアントが処理を継続できるよう、エラーメッセージを返す
+    return new Response(JSON.stringify({ error: err.message, stack: err.stack }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 });
