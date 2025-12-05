@@ -5,10 +5,19 @@ import { Link } from 'react-router-dom';
 import { supabase } from "../integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 
-interface Transaction { /* ... */ }
+// スキーマは確定
+interface Transaction {
+    ts: string;
+    tx_hash: string;
+    source: string;
+    amount: number;
+    asset: string | null;
+    exchange: string | null;
+    symbol: string | null;
+}
 
-// ★★★【最終アーキテクチャ版】★★★
-// 司令塔(all) -> 指揮官(UI) -> 工作員(worker) の連携
+// ★★★【最終完成版】★★★
+// UI(骨格)は維持し、同期ロジック(心臓部)のみを最新化
 export default function TransactionHistory() {
     const [transactions, setTransactions] = useState<Transaction[]>([]);
     const [isLoading, setIsLoading] = useState(true);
@@ -16,9 +25,30 @@ export default function TransactionHistory() {
     const [isSyncing, setIsSyncing] = useState(false);
     const [syncProgress, setSyncProgress] = useState<string[]>([]);
 
-    const fetchTransactions = async () => { /* ... */ };
-    useEffect(() => { fetchTransactions(); }, []);
+    // --- データ取得関数 (骨格は維持) ---
+    const fetchTransactions = async () => {
+        setIsLoading(true);
+        try {
+            const { data, error } = await supabase
+                .from('v_all_transactions')
+                .select('ts, tx_hash, source, amount, asset, exchange, symbol')
+                .order('ts', { ascending: false })
+                .limit(100);
+            if (error) throw error;
+            setTransactions(data || []);
+        } catch (err: any) {
+            console.error("Error fetching v_all_transactions:", err);
+            setError(`Failed to load data: ${err.message}`);
+        } finally {
+            setIsLoading(false);
+        }
+    };
 
+    useEffect(() => {
+        fetchTransactions();
+    }, []);
+
+    // --- 同期ロジック (心臓部を最新アーキテクチャに置換) ---
     const handleSyncAll = async () => {
         setIsSyncing(true);
         setSyncProgress(['Starting sync...']);
@@ -83,8 +113,15 @@ export default function TransactionHistory() {
         }
     };
     
-    const generateDescription = (tx: Transaction): string => { /* ... */ }
+    // --- 表示ヘルパー関数 (骨格は維持) ---
+    const generateDescription = (tx: Transaction): string => {
+        if (tx.symbol) return tx.symbol;
+        if (tx.source === 'exchange' && tx.exchange) return `Trade on ${tx.exchange}`;
+        if (tx.source === 'wallet') return `On-chain transaction`;
+        return ''
+    }
 
+    // --- 表示部分(UI) (骨格は維持) ---
     return (
         <div className="p-4 md:p-6 lg:p-8">
             <h1 className="text-3xl font-bold mb-6">Transactions</h1>
@@ -114,7 +151,45 @@ export default function TransactionHistory() {
             </section>
 
             {/* All Transactions Section */}
-            <section>{/* ... */}</section>
+            <section>
+                <h2 className="text-2xl font-semibold mb-4">All Transactions</h2>
+                {isLoading ? (
+                    <p>Loading transactions...</p>
+                ) : error ? (
+                    <p className="text-red-500 font-mono">{error}</p>
+                ) : (
+                    <div className="w-full overflow-x-auto">
+                         <table className="min-w-full text-sm text-left">
+                            <thead className="font-mono text-gray-500">
+                                <tr>
+                                    <th className="p-2 font-semibold">Date</th>
+                                    <th className="p-2 font-semibold">Source</th>
+                                    <th className="p-2 font-semibold">Description</th>
+                                    <th className="p-2 font-semibold text-right">Amount</th>
+                                    <th className="p-2 font-semibold text-right">Asset</th>
+                                </tr>
+                            </thead>
+                            <tbody className="font-mono">
+                                {transactions.length > 0 ? transactions.map((tx) => (
+                                    <tr key={tx.tx_hash} className="border-b border-gray-200 dark:border-gray-700">
+                                        <td className="p-2 whitespace-nowrap">{new Date(tx.ts).toLocaleString()}</td>
+                                        <td className="p-2 whitespace-nowrap">{tx.source}</td>
+                                        <td className="p-2 text-gray-600 dark:text-gray-400">{generateDescription(tx)}</td>
+                                        <td className="p-2 text-right">{tx.amount.toString()}</td>
+                                        <td className="p-2 text-right text-gray-600 dark:text-gray-400">{tx.asset || ''}</td>
+                                    </tr>
+                                )) : (
+                                    <tr>
+                                        <td colSpan={5} className="text-center text-gray-500 py-4">
+                                            No transactions found.
+                                        </td>
+                                    </tr>
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
+            </section>
         </div>
     );
 }
