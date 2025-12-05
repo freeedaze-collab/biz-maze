@@ -74,9 +74,13 @@ Deno.serve(async (req) => {
       }
     }
 
+    const functionBaseUrl = Deno.env.get('SUPABASE_FUNCTION_ENDPOINT');
+    if (!functionBaseUrl) throw new Error("SUPABASE_FUNCTION_ENDPOINT is not set.");
+    const workerUrl = `${functionBaseUrl}/exchange-sync-worker`;
+
     let totalSaved = 0;
     for (const market of marketsToFetch) {
-      const workerRes = await fetch(`${Deno.env.get('SUPABASE_FUNCTION_ENDPOINT')}/exchange-sync-worker`, {
+      const res = await fetch(workerUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -88,9 +92,13 @@ Deno.serve(async (req) => {
           markets: [market]
         })
       });
-      if (workerRes.ok) {
-        const { totalSaved: saved } = await workerRes.json();
+
+      if (res.ok) {
+        const { totalSaved: saved } = await res.json();
         totalSaved += saved ?? 0;
+      } else {
+        const err = await res.text();
+        console.warn(`[WARN] Worker failed for market ${market}:`, err);
       }
     }
 
