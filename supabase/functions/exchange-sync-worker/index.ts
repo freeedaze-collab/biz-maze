@@ -2,6 +2,7 @@ import 'jsr:@supabase/functions-js/edge-runtime.d.ts';
 import ccxt from 'https://esm.sh/ccxt@4.3.40';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { decode } from "https://deno.land/std@0.177.0/encoding/base64.ts";
+import { decodeJwt } from "https://deno.land/x/djwt@v2.9/mod.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -50,17 +51,28 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const supabaseAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
-    const { data: { user }, error } = await supabaseAdmin.auth.getUser(req.headers.get('Authorization')!.replace('Bearer ', ''));
-    if (error || !user) throw new Error("User not found.");
+    const supabaseAdmin = createClient(
+      Deno.env.get('SUPABASE_URL')!,
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+    );
+
+    // Decode JWT to get user_id
+    const authHeader = req.headers.get('Authorization');
+    if (!authHeader) throw new Error("Missing Authorization header");
+    const jwt = authHeader.replace("Bearer ", "");
+
+    let userId: string;
+    try {
+      const { payload } = decodeJwt(jwt);
+      userId = payload.sub as string;
+      if (!userId) throw new Error("JWT missing sub (user id)");
+    } catch (e) {
+      throw new Error("Failed to decode JWT: " + e.message);
+    }
 
     const body = await req.json();
     const { exchange: exchangeName, encrypted_blob, markets } = body;
     if (!encrypted_blob || !exchangeName || !markets?.length) throw new Error("Missing input.");
-
-    console.log("[DEBUG] Received body:", body);
-    console.log("[DEBUG] Decrypted user id:", user.id);
-    console.log("[DEBUG] Markets:", markets);
 
     const creds = await decryptBlob(encrypted_blob);
     const exchange = new ccxt[exchangeName]({
@@ -80,8 +92,9 @@ Deno.serve(async (req) => {
       )).flat();
 
       if (trades.length > 0) {
-        const records = trades.map(r => transformRecord(r, user.id, exchangeName)).filter(Boolean);
-        const { error: upsertError } = await supabaseAdmin.from('exchange_trades')
+        const records = trades.map(r => transformRecord(r, userId, exchangeName)).filter(Boolean);
+        const { error: upsertError } = await supabaseAdmin
+          .from('exchange_trades')
           .upsert(records, { onConflict: 'user_id,exchange,trade_id' });
         if (upsertError) console.error("[DB UPSERT ERROR]", upsertError);
         totalSaved += records.length;
