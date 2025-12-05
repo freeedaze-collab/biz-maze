@@ -1,8 +1,8 @@
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts';
 import ccxt from 'https://esm.sh/ccxt@4.3.40';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { decode } from "https://deno.land/std@0.177.0/encoding/base64.ts";
-import { decodeJwt } from "https://deno.land/x/djwt@v2.9/mod.ts";
+import { decode as decodeJwt } from "https://deno.land/x/djwt@v2.9/mod.ts";
+import { decode as base64Decode } from "https://deno.land/std@0.177.0/encoding/base64.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -21,7 +21,7 @@ async function getKey() {
 }
 
 async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> {
-  const parts = blob.split(":"), iv = decode(parts[1]), ct = decode(parts[2]);
+  const parts = blob.split(":"), iv = base64Decode(parts[1]), ct = base64Decode(parts[2]);
   const key = await getKey();
   const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
   return JSON.parse(new TextDecoder().decode(decrypted));
@@ -51,24 +51,12 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const supabaseAdmin = createClient(
-      Deno.env.get('SUPABASE_URL')!,
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
-    );
-
-    // Decode JWT to get user_id
     const authHeader = req.headers.get('Authorization');
     if (!authHeader) throw new Error("Missing Authorization header");
-    const jwt = authHeader.replace("Bearer ", "");
-
-    let userId: string;
-    try {
-      const { payload } = decodeJwt(jwt);
-      userId = payload.sub as string;
-      if (!userId) throw new Error("JWT missing sub (user id)");
-    } catch (e) {
-      throw new Error("Failed to decode JWT: " + e.message);
-    }
+    const jwt = authHeader.replace('Bearer ', '');
+    const { payload } = decodeJwt(jwt);
+    const userId = payload.sub as string;
+    if (!userId) throw new Error("Failed to extract user id from JWT");
 
     const body = await req.json();
     const { exchange: exchangeName, encrypted_blob, markets } = body;
@@ -83,6 +71,7 @@ Deno.serve(async (req) => {
     });
 
     await exchange.loadMarkets();
+    const supabase = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
     let totalSaved = 0;
 
     for (let i = 0; i < markets.length; i += TRADE_FETCH_BATCH_SIZE) {
@@ -93,8 +82,7 @@ Deno.serve(async (req) => {
 
       if (trades.length > 0) {
         const records = trades.map(r => transformRecord(r, userId, exchangeName)).filter(Boolean);
-        const { error: upsertError } = await supabaseAdmin
-          .from('exchange_trades')
+        const { error: upsertError } = await supabase.from('exchange_trades')
           .upsert(records, { onConflict: 'user_id,exchange,trade_id' });
         if (upsertError) console.error("[DB UPSERT ERROR]", upsertError);
         totalSaved += records.length;
