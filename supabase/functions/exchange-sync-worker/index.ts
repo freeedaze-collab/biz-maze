@@ -1,3 +1,4 @@
+// File: exchange-sync-worker/index.ts
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts';
 import ccxt from 'https://esm.sh/ccxt@4.3.40';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
@@ -51,9 +52,12 @@ Deno.serve(async (req) => {
 
   try {
     const supabaseAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+    const { data: { user }, error } = await supabaseAdmin.auth.getUser(req.headers.get('Authorization')!.replace('Bearer ', ''));
+    if (error || !user) throw new Error("User not found.");
+
     const body = await req.json();
-    const { exchange: exchangeName, encrypted_blob, markets, user_id } = body;
-    if (!encrypted_blob || !exchangeName || !markets?.length || !user_id) throw new Error("Missing input.");
+    const { exchange: exchangeName, encrypted_blob, markets } = body;
+    if (!encrypted_blob || !exchangeName || !markets?.length) throw new Error("Missing input.");
 
     const creds = await decryptBlob(encrypted_blob);
     const exchange = new ccxt[exchangeName]({
@@ -73,7 +77,7 @@ Deno.serve(async (req) => {
       )).flat();
 
       if (trades.length > 0) {
-        const records = trades.map(r => transformRecord(r, user_id, exchangeName)).filter(Boolean);
+        const records = trades.map(r => transformRecord(r, user.id, exchangeName)).filter(Boolean);
         const { error: upsertError } = await supabaseAdmin.from('exchange_trades')
           .upsert(records, { onConflict: 'user_id,exchange,trade_id' });
         if (upsertError) console.error("[DB UPSERT ERROR]", upsertError);
