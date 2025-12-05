@@ -2,7 +2,6 @@ import 'jsr:@supabase/functions-js/edge-runtime.d.ts';
 import ccxt from 'https://esm.sh/ccxt@4.3.40';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { decode } from "https://deno.land/std@0.177.0/encoding/base64.ts";
-import { decodeJwt } from 'https://deno.land/x/djwt@v2.9/mod.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -52,28 +51,18 @@ Deno.serve(async (req) => {
 
   try {
     const supabaseAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
-
-    const authHeader = req.headers.get("Authorization");
-    if (!authHeader?.startsWith("Bearer ")) {
-      throw new Error("Missing or malformed Authorization header.");
-    }
-    const token = authHeader.replace("Bearer ", "");
-    const jwt = decodeJwt(token);
-    if (!jwt?.sub) {
-      throw new Error("JWT does not contain sub (user ID). Token may be malformed.");
-    }
-    const userId = jwt.sub as string;
-
     const body = await req.json();
-    const { exchange: exchangeName, encrypted_blob, markets } = body;
-    if (!encrypted_blob || !exchangeName || !markets?.length) throw new Error("Missing input.");
+    const { user_id, exchange: exchangeName, encrypted_blob, markets } = body;
+    if (!user_id || !encrypted_blob || !exchangeName || !markets?.length) {
+      throw new Error("Missing required input.");
+    }
 
     const creds = await decryptBlob(encrypted_blob);
-    const exchange = new ccxt[exchangeName]({
+    const exchange = new ccxt[exchangeName]( {
       apiKey: creds.apiKey,
       secret: creds.apiSecret,
       password: creds.apiPassphrase,
-      options: { 'defaultType': 'spot' }
+      options: { defaultType: 'spot' }
     });
 
     await exchange.loadMarkets();
@@ -86,7 +75,7 @@ Deno.serve(async (req) => {
       )).flat();
 
       if (trades.length > 0) {
-        const records = trades.map(r => transformRecord(r, userId, exchangeName)).filter(Boolean);
+        const records = trades.map(r => transformRecord(r, user_id, exchangeName)).filter(Boolean);
         const { error: upsertError } = await supabaseAdmin.from('exchange_trades')
           .upsert(records, { onConflict: 'user_id,exchange,trade_id' });
         if (upsertError) console.error("[DB UPSERT ERROR]", upsertError);
