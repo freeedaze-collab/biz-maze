@@ -1,3 +1,4 @@
+// File: exchange-sync-all/index.ts
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts';
 import ccxt from 'https://esm.sh/ccxt@4.3.40';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
@@ -88,8 +89,7 @@ Deno.serve(async (req) => {
         body: JSON.stringify({
           exchange,
           encrypted_blob: conn.encrypted_blob,
-          markets: [market],
-          user_id: user.id  // ← 修正ポイント
+          markets: [market]
         })
       });
 
