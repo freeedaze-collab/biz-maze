@@ -5,40 +5,32 @@ import { Link } from 'react-router-dom';
 import { supabase } from "../integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 
-// 【最終FIX】データベースのスキーマ（真実）に合わせてinterfaceを修正
-interface Transaction {
-    id: string;
-    date: string; // created_at ではなく date
-    source: string;
-    description: string | null;
-    amount: number;
-    asset: string | null;
-}
+// interfaceは、一旦、空っぽの、何でも受け取れる、状態に、しておきます
+interface Transaction { [key: string]: any; }
 
+// ★★★【データベース尋問モード】★★★
+// データベースに、v_all_transactionsの、中身を、直接、吐き出させる
 export default function TransactionHistory() {
-    // --- STATE ---
     const [transactions, setTransactions] = useState<Transaction[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
-    // --- DATA FETCHING ---
     useEffect(() => {
         const fetchData = async () => {
             setIsLoading(true);
             try {
-                // 【最終FIX】SELECT文をDBスキーマ（真実）に完全に一致させる
+                // [最重要] 'select('*')'で、存在する、全ての、カラムを、取得
                 const { data, error } = await supabase
                     .from('v_all_transactions')
-                    .select('id, date, source, description, amount, asset')
-                    .order('date', { ascending: false })
-                    .limit(100);
+                    .select('*') 
+                    .limit(5); // 負荷を、下げるため、5件だけ、取得
 
                 if (error) throw error;
                 setTransactions(data || []);
 
             } catch (err: any) {
-                console.error("Error fetching v_all_transactions:", err);
-                setError(`Failed to load data from v_all_transactions: ${err.message}`);
+                console.error("Error fetching v_all_transactions with *:", err);
+                setError(`Failed to load raw data from v_all_transactions: ${err.message}`);
             } finally {
                 setIsLoading(false);
             }
@@ -46,14 +38,15 @@ export default function TransactionHistory() {
         fetchData();
     }, []);
 
-    // --- RENDER ---
+    // --- RENDER --- 
     return (
         <div className="p-4 md:p-6 lg:p-8">
             <h1 className="text-3xl font-bold mb-6">Transactions</h1>
 
-            {/* Data Sync Section: 変更なし */}
+            {/* Data Sync Section:変更なし */}
             <section className="mb-8">
                 <h2 className="text-2xl font-semibold mb-2">Data Sync</h2>
+                {/* ... UI部分は、デバッグ中は、変更しない ... */}
                 <p className="text-gray-600 dark:text-gray-400 mb-4">
                     Manually sync the latest transaction history from your connected sources.
                 </p>
@@ -74,39 +67,21 @@ export default function TransactionHistory() {
                 </div>
             </section>
 
-            {/* All Transactions Section */}
+            {/* All Transactions Section: 生のJSONデータを、そのまま、表示 */}
             <section>
-                <h2 className="text-2xl font-semibold mb-4">All Transactions</h2>
+                <h2 className="text-2xl font-semibold mb-4">All Transactions (Raw Data)</h2>
                 
                 {isLoading ? (
-                    <p>Loading transactions...</p>
+                    <p>Fetching schema from database...</p>
                 ) : error ? (
-                    <p className="text-red-500">{error}</p>
+                    <p className="text-red-500 font-mono">{error}</p>
                 ) : (
-                    <div className="font-mono text-sm space-y-2">
-                        {/* Header Row */}
-                        <div className="flex space-x-4 text-gray-500">
-                            <div className="w-48">Date</div>
-                            <div className="w-24">Source</div>
-                            <div className="flex-1">Description</div>
-                            <div className="w-40 text-right">Amount</div>
-                            <div className="w-20 text-right">Asset</div>
-                        </div>
-                        {/* Data Rows */}
-                        {transactions.length > 0 ? transactions.map(tx => (
-                            <div key={tx.id} className="flex space-x-4 items-baseline">
-                                {/* 【最終FIX】created_at を date に修正 */}
-                                <div className="w-48">{new Date(tx.date).toLocaleString()}</div>
-                                {/* 【最終FIX】source を表示するように戻す */}
-                                <div className="w-24">{tx.source}</div>
-                                <div className="flex-1 text-gray-600">{tx.description || ''}</div>
-                                <div className="w-40 text-right">{tx.amount.toString()}</div>
-                                <div className="w-20 text-right text-gray-600">{tx.asset || ''}</div>
-                            </div>
-                        )) : (
-                            <p className="text-gray-500">No transactions found.</p>
-                        )}
-                    </div>
+                    <pre className="bg-gray-100 dark:bg-gray-800 p-4 rounded-lg text-sm font-mono overflow-x-auto">
+                        <code>
+                            {/* 取得した、生の、JSONデータを、整形して、表示 */}
+                            {JSON.stringify(transactions, null, 2)}
+                        </code>
+                    </pre>
                 )}
             </section>
         </div>
