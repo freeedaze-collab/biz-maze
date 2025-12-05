@@ -1,4 +1,3 @@
-// File: exchange-sync-all/index.ts
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts';
 import ccxt from 'https://esm.sh/ccxt@4.3.40';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
@@ -13,15 +12,18 @@ const corsHeaders = {
 const NINETY_DAYS_AGO = Date.now() - 89 * 24 * 60 * 60 * 1000;
 const quoteCurrencies = ['USDT', 'BTC', 'BUSD', 'USDC', 'JPY', 'ETH', 'BNB'];
 
-async function decrypt(blob: string): Promise<string> {
-  const parts = blob.split(":");
-  if (parts.length !== 3 || parts[0] !== "v1") throw new Error("Invalid encrypted blob format.");
-  const iv = decode(parts[1]);
-  const ct = decode(parts[2]);
-  const keyRaw = Uint8Array.from(atob(Deno.env.get("EDGE_KMS_KEY")!), c => c.charCodeAt(0));
-  const key = await crypto.subtle.importKey("raw", keyRaw, "AES-GCM", false, ["decrypt"]);
+async function getKey() {
+  const b64 = Deno.env.get("EDGE_KMS_KEY");
+  if (!b64) throw new Error("EDGE_KMS_KEY secret is not set.");
+  const raw = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+  return await crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["decrypt"]);
+}
+
+async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> {
+  const parts = blob.split(":"), iv = decode(parts[1]), ct = decode(parts[2]);
+  const key = await getKey();
   const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
-  return new TextDecoder().decode(decrypted);
+  return JSON.parse(new TextDecoder().decode(decrypted));
 }
 
 Deno.serve(async (req) => {
@@ -42,8 +44,7 @@ Deno.serve(async (req) => {
 
     if (connError || !conn?.encrypted_blob) throw new Error("Exchange connection not found.");
 
-    const decryptedStr = await decrypt(conn.encrypted_blob);
-    const credentials = JSON.parse(decryptedStr);
+    const credentials = await decryptBlob(conn.encrypted_blob);
     const ccxtExchange = new ccxt[exchange]({
       apiKey: credentials.apiKey,
       secret: credentials.apiSecret,
@@ -87,7 +88,8 @@ Deno.serve(async (req) => {
         body: JSON.stringify({
           exchange,
           encrypted_blob: conn.encrypted_blob,
-          markets: [market]
+          markets: [market],
+          user_id: user.id  // ← 修正ポイント
         })
       });
 
