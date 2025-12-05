@@ -9,9 +9,6 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type'
 };
 
-const NINETY_DAYS_AGO = Date.now() - 89 * 24 * 60 * 60 * 1000;
-const TRADE_FETCH_BATCH_SIZE = 5;
-
 async function getKey() {
   const b64 = Deno.env.get("EDGE_KMS_KEY");
   if (!b64) throw new Error("EDGE_KMS_KEY secret is not set.");
@@ -19,71 +16,89 @@ async function getKey() {
   return await crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["decrypt"]);
 }
 
-async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> {
-  const parts = blob.split(":"), iv = decode(parts[1]), ct = decode(parts[2]);
+async function decryptBlob(blob: string) {
+  const [v, ivB64, ctB64] = blob.split(":");
+  const iv = decode(ivB64);
+  const ct = decode(ctB64);
   const key = await getKey();
   const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
   return JSON.parse(new TextDecoder().decode(decrypted));
 }
 
-function transformRecord(record: any, userId: string, exchange: string) {
-  const id = record.id || record.txid;
-  if (!id || !record.amount || !record.timestamp) return null;
-  return {
-    user_id: userId,
-    exchange,
-    trade_id: String(id),
-    symbol: record.symbol || record.currency,
-    side: record.side || record.type,
-    price: record.price ?? 0,
-    amount: record.amount,
-    fee: record.fee?.cost,
-    fee_asset: record.fee?.currency,
-    ts: new Date(record.timestamp).toISOString(),
-    raw_data: record
-  };
-}
-
 Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders });
-  }
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
   try {
-    const supabaseAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
-    const body = await req.json();
-    const { user_id, exchange: exchangeName, encrypted_blob, markets } = body;
-    if (!user_id || !encrypted_blob || !exchangeName || !markets?.length) {
-      throw new Error("Missing required input.");
+    const { exchange, encrypted_blob, markets } = await req.json();
+    if (!exchange || !encrypted_blob || !Array.isArray(markets)) {
+      return new Response(JSON.stringify({ error: "Missing required fields" }), {
+        headers: corsHeaders,
+        status: 400,
+      });
     }
 
-    const creds = await decryptBlob(encrypted_blob);
-    const exchange = new ccxt[exchangeName]( {
-      apiKey: creds.apiKey,
-      secret: creds.apiSecret,
-      password: creds.apiPassphrase,
+    const credentials = await decryptBlob(encrypted_blob);
+    const ccxtExchange = new ccxt[exchange]({
+      apiKey: credentials.apiKey,
+      secret: credentials.apiSecret,
+      password: credentials.apiPassphrase,
       options: { defaultType: 'spot' }
     });
 
-    await exchange.loadMarkets();
+    await ccxtExchange.loadMarkets();
+
+    const supabase = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+
     let totalSaved = 0;
+    for (const symbol of markets) {
+      const trades = await ccxtExchange.fetchMyTrades(symbol);
+      if (!trades || trades.length === 0) continue;
 
-    for (let i = 0; i < markets.length; i += TRADE_FETCH_BATCH_SIZE) {
-      const batch = markets.slice(i, i + TRADE_FETCH_BATCH_SIZE);
-      const trades = (await Promise.all(
-        batch.map(sym => exchange.fetchMyTrades(sym, NINETY_DAYS_AGO).catch(() => []))
-      )).flat();
+      const userRes = await supabase
+        .from('exchange_connections')
+        .select('user_id')
+        .eq('exchange', exchange)
+        .eq('encrypted_blob', encrypted_blob)
+        .maybeSingle();
 
-      if (trades.length > 0) {
-        const records = trades.map(r => transformRecord(r, user_id, exchangeName)).filter(Boolean);
-        const { error: upsertError } = await supabaseAdmin.from('exchange_trades')
-          .upsert(records, { onConflict: 'user_id,exchange,trade_id' });
-        if (upsertError) console.error("[DB UPSERT ERROR]", upsertError);
-        totalSaved += records.length;
+      const userId = userRes.data?.user_id;
+      if (!userId) throw new Error("User not found");
+
+      const existing = await supabase
+        .from('exchange_trades')
+        .select('external_id')
+        .eq('user_id', userId)
+        .eq('exchange', exchange)
+        .in('external_id', trades.map(t => t.id));
+
+      const existingIds = new Set(existing.data?.map((t) => t.external_id) ?? []);
+
+      const newTrades = trades.filter((t) => !existingIds.has(t.id)).map((t) => ({
+        user_id: userId,
+        exchange,
+        symbol: t.symbol,
+        side: t.side,
+        amount: t.amount,
+        price: t.price,
+        fee: t.fee?.cost ?? null,
+        fee_currency: t.fee?.currency ?? null,
+        external_id: t.id,
+        raw_data: t,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        trade_id: t.order ?? null,
+        fee_asset: t.fee?.currency ?? null,
+        ts: new Date(t.timestamp).toISOString()
+      }));
+
+      if (newTrades.length > 0) {
+        const { error } = await supabase.from('exchange_trades').insert(newTrades);
+        if (error) throw error;
+        totalSaved += newTrades.length;
       }
     }
 
-    return new Response(JSON.stringify({ message: `Worker sync done`, totalSaved }), {
+    return new Response(JSON.stringify({ message: 'Sync complete', totalSaved }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
 
