@@ -1,116 +1,101 @@
-// File: exchange-sync-all/index.ts
-import 'jsr:@supabase/functions-js/edge-runtime.d.ts';
-import ccxt from 'https://esm.sh/ccxt@4.3.40';
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { decode } from "https://deno.land/std@0.177.0/encoding/base64.ts";
+import { serve } from "https://deno.land/std@0.192.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.3";
+import ccxt from "npm:ccxt";
+import dayjs from "https://esm.sh/dayjs";
+import { decrypt } from "../../utils/kms.ts";
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type'
-};
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
+const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
+const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const FUNCTION_ENDPOINT = Deno.env.get("SUPABASE_FUNCTION_ENDPOINT")!;
 
-const NINETY_DAYS_AGO = Date.now() - 89 * 24 * 60 * 60 * 1000;
-const quoteCurrencies = ['USDT', 'BTC', 'BUSD', 'USDC', 'JPY', 'ETH', 'BNB'];
-
-async function getKey() {
-  const b64 = Deno.env.get("EDGE_KMS_KEY");
-  if (!b64) throw new Error("EDGE_KMS_KEY secret is not set.");
-  const raw = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
-  return await crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["decrypt"]);
-}
-
-async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> {
-  const parts = blob.split(":"), iv = decode(parts[1]), ct = decode(parts[2]);
-  const key = await getKey();
-  const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
-  return JSON.parse(new TextDecoder().decode(decrypted));
-}
-
-Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
-
+serve(async (req) => {
   try {
-    const supabase = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
-    const { data: { user }, error } = await supabase.auth.getUser(req.headers.get('Authorization')!.replace('Bearer ', ''));
-    if (error || !user) throw new Error("User not found.");
+    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+    const authHeader = req.headers.get("Authorization");
+    if (!authHeader) return new Response("Unauthorized", { status: 401 });
 
-    const { exchange } = await req.json();
-    const { data: conn, error: connError } = await supabase
-      .from('exchange_connections')
-      .select('id, exchange, encrypted_blob')
-      .eq('user_id', user.id)
-      .eq('exchange', exchange)
-      .single();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser(authHeader);
+    if (!user) return new Response("Unauthorized", { status: 401 });
 
-    if (connError || !conn?.encrypted_blob) throw new Error("Exchange connection not found.");
+    const { data: accounts } = await supabase
+      .from("exchange_accounts")
+      .select("*")
+      .eq("user_id", user.id);
 
-    const credentials = await decryptBlob(conn.encrypted_blob);
-    const ccxtExchange = new ccxt[exchange]({
-      apiKey: credentials.apiKey,
-      secret: credentials.apiSecret,
-      password: credentials.apiPassphrase,
-      options: { defaultType: 'spot' }
-    });
-
-    await ccxtExchange.loadMarkets();
-    const balance = await ccxtExchange.fetchBalance();
-    const deposits = ccxtExchange.has['fetchDeposits'] ? await ccxtExchange.fetchDeposits(undefined, NINETY_DAYS_AGO) : [];
-    const withdrawals = ccxtExchange.has['fetchWithdrawals'] ? await ccxtExchange.fetchWithdrawals(undefined, NINETY_DAYS_AGO) : [];
-
-    const relevantAssets = new Set<string>();
-    Object.keys(balance.total).filter(a => balance.total[a] > 0).forEach(a => relevantAssets.add(a));
-    deposits.forEach(d => relevantAssets.add(d.currency));
-    withdrawals.forEach(w => relevantAssets.add(w.currency));
-
-    const marketsToFetch = new Set<string>();
-    for (const asset of relevantAssets) {
-      for (const quote of quoteCurrencies) {
-        if (asset === quote) continue;
-        const s1 = `${asset}/${quote}`;
-        const s2 = `${quote}/${asset}`;
-        if (ccxtExchange.markets[s1]?.spot) marketsToFetch.add(s1);
-        if (ccxtExchange.markets[s2]?.spot) marketsToFetch.add(s2);
-      }
-    }
-
-    const functionBaseUrl = Deno.env.get('FUNCTION_ENDPOINT');
-    if (!functionBaseUrl) throw new Error("FUNCTION_ENDPOINT is not set.");
-    const workerUrl = `${functionBaseUrl}/exchange-sync-worker`;
+    if (!accounts || accounts.length === 0)
+      return new Response("No accounts found", { status: 404 });
 
     let totalSaved = 0;
-    for (const market of marketsToFetch) {
-      const res = await fetch(workerUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}`
-        },
-        body: JSON.stringify({
-          exchange,
-          encrypted_blob: conn.encrypted_blob,
-          markets: [market]
-        })
+
+    for (const acc of accounts) {
+      if (!acc.api_key_encrypted || !acc.api_secret_encrypted)
+        continue;
+
+      const apiKey = await decrypt(acc.api_key_encrypted);
+      const apiSecret = await decrypt(acc.api_secret_encrypted);
+      const ccxtClass = (ccxt as any)[acc.exchange];
+      if (!ccxtClass) continue;
+
+      const exchange = new ccxtClass({
+        apiKey,
+        secret: apiSecret,
+        enableRateLimit: true,
       });
 
-      if (res.ok) {
+      await exchange.loadMarkets();
+
+      const balances = await exchange.fetchBalance();
+      const currencies = new Set(Object.keys(balances.total).filter((c) => balances.total[c]));
+
+      const deposits = await exchange.fetchDeposits(undefined, Date.now() - 90 * 86400 * 1000);
+      const withdrawals = await exchange.fetchWithdrawals(undefined, Date.now() - 90 * 86400 * 1000);
+
+      deposits.forEach((d: any) => currencies.add(d.currency));
+      withdrawals.forEach((w: any) => currencies.add(w.currency));
+
+      const quoteCurrencies = ["USDT", "USD", "BTC", "JPY", "ETH"];
+      const marketsToFetch = Object.keys(exchange.markets).filter((symbol) => {
+        const market = exchange.markets[symbol];
+        return (
+          market.spot &&
+          currencies.has(market.base) &&
+          quoteCurrencies.includes(market.quote)
+        );
+      });
+
+      console.log(`[ALL] ${marketsToFetch.length} markets to fetch for ${acc.exchange}`);
+
+      for (const market of marketsToFetch) {
+        const res = await fetch(`${FUNCTION_ENDPOINT}/exchange-sync-worker`, {
+          method: "POST",
+          headers: { Authorization: authHeader, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            exchange: acc.exchange,
+            market,
+            api_key_encrypted: acc.api_key_encrypted,
+            api_secret_encrypted: acc.api_secret_encrypted,
+            user_id: user.id,
+          }),
+        });
+
+        if (!res.ok) {
+          console.warn(`[ALL] Worker failed for ${market}: ${await res.text()}`);
+          continue;
+        }
+
         const { totalSaved: saved } = await res.json();
-        totalSaved += saved ?? 0;
-      } else {
-        const err = await res.text();
-        console.warn(`[WARN] Worker failed for market ${market}:`, err);
+        totalSaved += saved;
       }
     }
 
-    return new Response(JSON.stringify({ message: `sync-all completed`, totalSaved }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    return new Response(JSON.stringify({ message: "Sync complete", totalSaved }), {
+      headers: { "Content-Type": "application/json" },
     });
-
-  } catch (err) {
-    console.error("[SYNC-ALL ERROR]", err);
-    return new Response(JSON.stringify({ error: err.message }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      status: 500
-    });
+  } catch (e) {
+    console.error("[SYNC-ALL ERROR]", e);
+    return new Response(`Internal Error: ${e.message}`, { status: 500 });
   }
 });
