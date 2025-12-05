@@ -74,8 +74,8 @@ Deno.serve(async (req) => {
       }
     }
 
-    const functionBaseUrl = Deno.env.get('SUPABASE_FUNCTION_ENDPOINT');
-    if (!functionBaseUrl) throw new Error("SUPABASE_FUNCTION_ENDPOINT is not set.");
+    const functionBaseUrl = Deno.env.get('FUNCTION_ENDPOINT');
+    if (!functionBaseUrl) throw new Error("FUNCTION_ENDPOINT is not set.");
     const workerUrl = `${functionBaseUrl}/exchange-sync-worker`;
 
     let totalSaved = 0;
