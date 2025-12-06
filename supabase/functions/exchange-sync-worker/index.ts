@@ -10,9 +10,9 @@ const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-
 async function getKey() { return (await crypto.subtle.importKey("raw", Uint8Array.from(atob(Deno.env.get("EDGE_KMS_KEY")!), c => c.charCodeAt(0)), "AES-GCM", false, ["decrypt"])) }
 async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> { const p = blob.split(":"); const k = await getKey(); const d = await crypto.subtle.decrypt({ name: "AES-GCM", iv: decode(p[1]) }, k, decode(p[2])); return JSON.parse(new TextDecoder().decode(d)) }
 
-// ★★★【最終作戦：原点回帰・工作員】★★★
-// 司令部から渡された単一のタスクを実行することに特化。
-// 過去の正常コードで実績のあるシンプルな `since` 戦略を採用。
+// ★★★【最終・絶対修正：市場の誤認を正す】★★★
+// ccxtインスタンス生成時に `options: { 'defaultType': 'spot' }` を明示的に指定。
+// これにより、全てのAPIリクエストが先物(dapi)ではなく、現物(spot)市場に向かうように強制する。
 Deno.serve(async (req) => {
     if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
@@ -30,16 +30,20 @@ Deno.serve(async (req) => {
         
         const credentials = await decryptBlob(conn.encrypted_blob!);
         // @ts-ignore
-        const exchangeInstance = new ccxt[exchangeName]({ apiKey: credentials.apiKey, secret: credentials.apiSecret, password: credentials.apiPassphrase });
+        const exchangeInstance = new ccxt[exchangeName]({
+            apiKey: credentials.apiKey, 
+            secret: credentials.apiSecret, 
+            password: credentials.apiPassphrase,
+            options: { 'defaultType': 'spot' } //【最重要修正】現物市場へのアクセスを強制
+        });
 
         let records: any[] = [];
         const since = Date.now() - 90 * 24 * 60 * 60 * 1000; // 過去90日分
 
-        // 司令官から与えられた単一任務を遂行
         if (task_type === 'trade') {
             if (!symbol) throw new Error('Symbol is required for trade task.');
-            await exchangeInstance.loadMarkets(); // マーケット情報は都度読み込む
-            records = await exchangeInstance.fetchMyTrades(symbol, since, 1000); // 1回のAPIで最大1000件取得
+            await exchangeInstance.loadMarkets();
+            records = await exchangeInstance.fetchMyTrades(symbol, since, 1000); 
         } else if (task_type === 'deposits') {
             records = await exchangeInstance.fetchDeposits(undefined, since);
         } else if (task_type === 'withdrawals') {
@@ -56,7 +60,6 @@ Deno.serve(async (req) => {
 
         console.log(`[WORKER] Found ${records.length} records for task: ${task_type} ${symbol || ''}`);
 
-        // 過去コードの優れたデータ変換ロジックを流用
         const recordsToSave = records.map(r => {
             const recordId = r.id || r.txid;
             const side = r.side || r.type;
@@ -76,7 +79,7 @@ Deno.serve(async (req) => {
                 ts: new Date(r.timestamp).toISOString(),
                 raw_data: r,
             };
-        }).filter(r => r.trade_id && r.symbol); // IDとシンボルがないものは除外
+        }).filter(r => r.trade_id && r.symbol);
 
         if (recordsToSave.length === 0) {
             console.log(`[WORKER] All found records were invalid. Task complete.`);
