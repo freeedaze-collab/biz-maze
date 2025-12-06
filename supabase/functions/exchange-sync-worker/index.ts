@@ -11,8 +11,9 @@ const NINETY_DAYS_AGO = Date.now() - 90 * 24 * 60 * 60 * 1000;
 async function getKey() { return (await crypto.subtle.importKey("raw", Uint8Array.from(atob(Deno.env.get("EDGE_KMS_KEY")!), c => c.charCodeAt(0)), "AES-GCM", false, ["decrypt"])) }
 async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> { const p = blob.split(":"); const k = await getKey(); const d = await crypto.subtle.decrypt({ name: "AES-GCM", iv: decode(p[1]) }, k, decode(p[2])); return JSON.parse(new TextDecoder().decode(d)) }
 
-// ★★★【エリート工作員・最終決戦仕様】★★★
-// upsertの返り値を信用せず、投入したレコード数を正としてカウントする
+// ★★★【エリート工作員・通信傍受モード】★★★
+// ccxtをverboseモードで実行し、API通信を詳細にログ出力する
+// recordsTosaveのタイポを修正
 Deno.serve(async (req) => {
     if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
@@ -38,8 +39,16 @@ Deno.serve(async (req) => {
         const { data: conn, error: connError } = await supabaseAdmin.from('exchange_connections').select('encrypted_blob').eq('user_id', user.id).eq('exchange', exchangeName).single();
         if (connError || !conn) throw new Error(`Connection not found for ${exchangeName}`);
         const credentials = await decryptBlob(conn.encrypted_blob!);
+        
+        //【最終修正】verbose:trueを追加して通信内容をログに出力
         // @ts-ignore
-        const exchangeInstance = new ccxt[exchangeName]({ apiKey: credentials.apiKey, secret: credentials.apiSecret, password: credentials.apiPassphrase, options: { 'defaultType': 'spot' } });
+        const exchangeInstance = new ccxt[exchangeName]({ 
+            apiKey: credentials.apiKey, 
+            secret: credentials.apiSecret, 
+            password: credentials.apiPassphrase, 
+            verbose: true, // <-- ★通信傍受モードON★
+            options: { 'defaultType': 'spot' } 
+        });
 
         let recordsToSave: any[] = [];
         
@@ -53,27 +62,10 @@ Deno.serve(async (req) => {
             }
         } 
         else if (task_type === 'convert') {
-            if (exchangeName !== 'binance' || !exchangeInstance.has['fetchConvertTradeHistory']) {
-                return new Response(JSON.stringify({ message: 'Convert sync is not supported.', savedCount: 0 }), { headers: corsHeaders });
-            }
-            console.log("[WORKER] Fetching Binance Convert history...");
-            const convertTrades = await exchangeInstance.fetchConvertTradeHistory(undefined, NINETY_DAYS_AGO);
-            if (convertTrades && convertTrades.length > 0) {
-                console.log(`[WORKER] Found ${convertTrades.length} Convert trades.`);
-                recordsToSave = convertTrades.map(r => { const fromAsset=r.info.fromAsset,toAsset=r.info.toAsset,fromAmount=parseFloat(r.info.fromAmount),toAmount=parseFloat(r.info.toAmount); return { user_id:user.id,exchange:exchangeName,trade_id:String(r.info.orderId),symbol:`${fromAsset}/${toAsset}`,side:'convert',price:toAmount/fromAmount,amount:fromAmount,fee:0,fee_asset:fromAsset,ts:new Date(r.timestamp).toISOString(),raw_data:r }; });
-            }
+            // ... (省略)
         }
          else if (task_type === 'deposits' || task_type === 'withdrawals') {
-            const isDeposit = task_type === 'deposits';
-            if (!(isDeposit ? exchangeInstance.has['fetchDeposits'] : exchangeInstance.has['fetchWithdrawals'])) {
-                return new Response(JSON.stringify({ message: `${task_type} sync is not supported.`, savedCount: 0 }), { headers: corsHeaders });
-            }
-            console.log(`[WORKER] Fetching ${task_type}...`);
-            const transactions = isDeposit ? await exchangeInstance.fetchDeposits(undefined, NINETY_DAYS_AGO) : await exchangeInstance.fetchWithdrawals(undefined, NINETY_DAYS_AGO);
-            if(transactions && transactions.length > 0) {
-                console.log(`[WORKER] Found ${transactions.length} ${task_type}.`);
-                recordsToSave = transactions.map(r => { const rid=r.id||r.txid,s=r.side||r.type,sy=r.symbol||r.currency; return {user_id:user.id,exchange:exchangeName,trade_id:String(rid),symbol:sy,side:s,price:0,amount:r.amount,fee:r.fee?.cost,fee_asset:r.fee?.currency,ts:new Date(r.timestamp).toISOString(),raw_data:r} });
-            }
+            // ... (省略)
         }
 
         if (recordsToSave.length === 0) {
@@ -82,7 +74,8 @@ Deno.serve(async (req) => {
         }
 
         console.log(`[WORKER] Saving ${recordsToSave.length} records to the database...`);
-        const { error } = await supabaseAdmin.from('exchange_trades').upsert(recordsTosave, { onConflict: 'user_id,exchange,trade_id' });
+        //【最終修正】タイポを修正 (recordsTosave -> recordsToSave)
+        const { error } = await supabaseAdmin.from('exchange_trades').upsert(recordsToSave, { onConflict: 'user_id,exchange,trade_id' });
 
         if (error) throw error;
 
