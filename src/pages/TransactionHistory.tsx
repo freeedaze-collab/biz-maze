@@ -1,4 +1,3 @@
-
 // src/pages/TransactionHistory.tsx
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
@@ -139,6 +138,9 @@ export default function TransactionHistory() {
                             {isSyncing ? 'Syncing...' : 'Sync All'}
                         </Button>
                     </div>
+                     <Link to="/vce" className="text-sm font-medium text-blue-600 hover:underline">
+                        Manage API Keys
+                    </Link>
                 </div>
                 {syncProgress.length > 0 && (
                     <div className="mt-4 p-4 bg-gray-100 dark:bg-gray-800 rounded-lg text-sm font-mono">
