@@ -14,12 +14,15 @@ Deno.serve(async (req) => {
         const { data: { user } } = await supabaseAdmin.auth.getUser(req.headers.get('Authorization')!.replace('Bearer ', ''))
         if (!user) throw new Error('User not found')
 
-        const { data: wallets, error: walletError } = await supabaseAdmin.from('wallets').select('address, chain_id').eq('user_id', user.id)
+        // ★★★【墜落回避】★★★ walletsテーブルに存在しない`chain_id`をselectしないよう修正
+        const { data: wallets, error: walletError } = await supabaseAdmin.from('wallets').select('address').eq('user_id', user.id)
         if (walletError) throw walletError
         if (!wallets) return new Response(JSON.stringify({ message: "No wallets found for this user." }), { headers: corsHeaders });
 
         for (const wallet of wallets) {
-            const { address: walletAddress, chain_id: numericChainId } = wallet
+            const { address: walletAddress } = wallet
+            // ★★★【墜落回避】★★★ chain_idをハードコード（「まずはETH Mainnetを前提」という仕様に合わせる）
+            const numericChainId = 1;
 
             const url = `https://api.covalenthq.com/v1/${numericChainId}/address/${walletAddress}/transactions_v3/?key=${COVALENT_API_KEY}`
             const response = await fetch(url)
@@ -43,24 +46,20 @@ Deno.serve(async (req) => {
                     value_wei: amount,
                     asset_symbol: symbol,
                     raw: txItem,
-                    // ★★★【USD換算修正】★★★ Covalentからの値がない場合はnullを設定
                     value_usd: valueQuote ?? null
                 });
 
                 const records = [];
-                // ネイティブ通貨のトランザクション
                 if (item.value !== "0") {
                     records.push(processTx(item, item.value, item.gas_metadata?.contract_ticker_symbol, item.value_quote, item.from_address, item.to_address));
                 }
 
-                // ★★★【墜落回避】★★★ log_eventsがnullの場合を考慮し、オプショナルチェーン(?.)を追加
                 item.log_events?.forEach(log => {
                     if (log.decoded?.name === "Transfer" && log.decoded?.params) {
                         const from = log.decoded.params.find(p => p.name === 'from')?.value;
                         const to = log.decoded.params.find(p => p.name === 'to')?.value;
                         const value = log.decoded.params.find(p => p.name === 'value')?.value;
                         if(from && to && value) {
-                            // `log.value_quote` を `value_usd` のために渡す
                             records.push(processTx(item, value, log.sender_contract_ticker_symbol, log.value_quote, from, to));
                         }
                     }
@@ -68,9 +67,6 @@ Deno.serve(async (req) => {
                 return records;
             });
             
-            // 注意: 現在の実装では、1つのオンチェーントランザクション(tx_hash)に複数のトークン転送が含まれる場合、
-            // onConflict: 'tx_hash' のため、最後の1レコードのみが保存されます。これはデータ損失につながる可能性があります。
-            // wallet_transactionsテーブルの主キーをtx_hash以外（例：自動採番ID）にすることを強く推奨します。
             if(transactionsToUpsert.length > 0) {
                 const { error } = await supabaseAdmin.from('wallet_transactions').upsert(transactionsToUpsert, { onConflict: 'tx_hash' })
                 if (error) {
@@ -83,6 +79,7 @@ Deno.serve(async (req) => {
         return new Response(JSON.stringify({ message: `Wallet sync complete.` }), { headers: corsHeaders });
 
     } catch (err) {
+        // エラーログをより詳細に出力
         console.error("Unhandled error in sync-wallet-transactions:", err);
         return new Response(JSON.stringify({ error: err.message, stack: err.stack }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 });
     }
