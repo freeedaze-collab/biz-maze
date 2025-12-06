@@ -63,45 +63,75 @@ export default function TransactionHistory() {
         }
     }
 
+    // ★★★【最終修正】★★★ 司令官から提供された「正常動作時のコード」に基づき、
+    // フロントエンドが司令塔となって plan -> worker の2段階連携を行う方式に修正する。
     const handleSyncAllExchanges = async () => {
         setIsSyncing(true);
         setSyncProgress(['Starting exchange sync...']);
-        
-        try {
-            const { data: connections, error: connError } = await supabase
-                .from('exchange_connections')
-                .select('exchange');
-                
-            if (connError || !connections) {
-                throw new Error('Could not fetch exchange connections.');
-            }
+        let totalSaved = 0;
 
+        try {
+            const { data: connections, error: connError } = await supabase.from('exchange_connections').select('exchange');
+            if (connError || !connections) throw new Error('Could not fetch exchange connections.');
+            
             const exchanges = connections.map(c => c.exchange);
             setSyncProgress(prev => [...prev, `Found exchanges: ${exchanges.join(', ')}`]);
 
             for (const exchange of exchanges) {
-                setSyncProgress(prev => [...prev, `---`, `Syncing ${exchange}...`]);
+                setSyncProgress(prev => [...prev, `---`, `Processing ${exchange}...`]);
                 
-                // ★★★【最終修正】★★★ 司令官の命令通り、`exchange-sync-all`を呼び出すように修正
-                const { data, error } = await supabase.functions.invoke('exchange-sync-all', {
+                // 1. exchange-sync-all を呼び出し、同期計画を取得する
+                const { data: plan, error: planError } = await supabase.functions.invoke('exchange-sync-all', {
                     body: { exchange },
                 });
 
-                if (error) {
-                    throw new Error(`[${exchange}] Sync failed: ${error.message}`);
+                if (planError) throw new Error(`[${exchange}] Failed to create sync plan: ${planError.message}`);
+                // @ts-ignore
+                if (plan.error) throw new Error(`Plan error for ${exchange}: ${plan.error}`);
+                
+                // @ts-ignore
+                const nonTradeSaved = plan.nonTradeCount || 0;
+                if (nonTradeSaved > 0) {
+                    totalSaved += nonTradeSaved;
+                    setSyncProgress(prev => [...prev, `[${exchange}] Saved ${nonTradeSaved} non-trade records.`]);
                 }
 
+                // 2. 計画から同期すべきシンボルのリストを取得
                 // @ts-ignore
-                const message = data.message || `[${exchange}] Sync process initiated.`;
-                 // @ts-ignore
-                const symbolsToSync = data.symbols || [];
-                setSyncProgress(prev => [...prev, message, `Found ${symbolsToSync.length} markets to sync.`]);
+                const symbolsToSync = plan.symbols;
+                if (!symbolsToSync || symbolsToSync.length === 0) {
+                    setSyncProgress(prev => [...prev, `[${exchange}] No new market trades to sync.`]);
+                    continue;
+                }
+                setSyncProgress(prev => [...prev, `[${exchange}] Found ${symbolsToSync.length} markets with new trades.`]);
 
-                // フロントエンドでのワーカー呼び出しは、以前のバージョンで問題があったため、
-                // まずは`exchange-sync-all`が正常に呼び出され、計画が返ってくることを確認する。
+                // 3. シンボルごとに worker を呼び出し、各個撃破で同期を実行
+                for (const symbol of symbolsToSync) {
+                    setSyncProgress(prev => [...prev, `  -> Syncing ${symbol}...`]);
+                    
+                    const { data: workerResult, error: workerError } = await supabase.functions.invoke('exchange-sync-worker', {
+                        body: { exchange, symbol, task_type: 'trade' }, 
+                    });
+
+                    if (workerError || (workerResult && workerResult.error)) {
+                        // @ts-ignore
+                        const message = workerError?.message || workerResult?.error;
+                        setSyncProgress(prev => [...prev, `    ERROR for ${symbol}: ${message}`]);
+                        continue;
+                    }
+
+                    // @ts-ignore
+                    const saved = workerResult.savedCount || 0;
+                    totalSaved += saved;
+                    if (saved > 0) {
+                        setSyncProgress(prev => [...prev, `    OK. Saved ${saved} trades.`]);
+                    } else {
+                        setSyncProgress(prev => [...prev, `    OK. No new trades for ${symbol}.`]);
+                    }
+                }
             }
 
-            setSyncProgress(prev => [...prev, '---', 'All exchange syncs complete. Refreshing list...']);
+            setSyncProgress(prev => [...prev, '---', `All syncs complete. Total new records: ${totalSaved}. Refreshing list...`]);
             await fetchTransactions();
 
         } catch (error: any) {
