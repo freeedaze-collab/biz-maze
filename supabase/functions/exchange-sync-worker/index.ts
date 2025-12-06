@@ -10,8 +10,8 @@ const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-
 async function getKey() { return (await crypto.subtle.importKey("raw", Uint8Array.from(atob(Deno.env.get("EDGE_KMS_KEY")!), c => c.charCodeAt(0)), "AES-GCM", false, ["decrypt"])) }
 async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> { const p = blob.split(":"); const k = await getKey(); const d = await crypto.subtle.decrypt({ name: "AES-GCM", iv: decode(p[1]) }, k, decode(p[2])); return JSON.parse(new TextDecoder().decode(d)) }
 
-// ★★★【最終作戦：fromId戦略】★★★
-// タイムスタンプ(since)方式を完全に放棄し、取引ID(fromId)を基点とした取得方法に切り替える
+// ★★★【最終・完全修復バージョン】★★★
+// fromId戦略を維持しつつ、削除してしまった他タスクのロジックを完全復元
 Deno.serve(async (req) => {
     if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
@@ -35,27 +35,45 @@ Deno.serve(async (req) => {
             apiKey: credentials.apiKey, 
             secret: credentials.apiSecret, 
             password: credentials.apiPassphrase, 
-            verbose: true, // デバッグ用に通信傍受モードは維持
+            verbose: true,
             options: { 'defaultType': 'spot' } 
         });
 
         let recordsToSave: any[] = [];
-        
+        const NINETY_DAYS_AGO = Date.now() - 90 * 24 * 60 * 60 * 1000;
+
+        //【完全修復】if/else if構造を復元し、全てのタスクに対応
         if (task_type === 'trade') {
             if (!symbol) throw new Error('symbol is required for trade sync.');
-            
-            //【最終修正】since(タイムスタンプ)を捨て、fromId=0で最初から全て取得する
             console.log(`[WORKER] Fetching ALL trades for ${symbol} using fromId strategy...`);
             const trades = await exchangeInstance.fetchMyTrades(symbol, undefined, 500, { 'fromId': 0 });
-
             if (trades && trades.length > 0) {
                  console.log(`[WORKER] Found ${trades.length} spot trades for ${symbol}.`);
                  recordsToSave = trades.map(r => { const rid=r.id||r.txid,s=r.side||r.type,sy=r.symbol||r.currency; return {user_id:user.id,exchange:exchangeName,trade_id:String(rid),symbol:sy,side:s,price:r.price??0,amount:r.amount,fee:r.fee?.cost,fee_asset:r.fee?.currency,ts:new Date(r.timestamp).toISOString(),raw_data:r} });
             }
         } 
-        // ... その他のタスクタイプ (deposits, withdrawals, convert) は変更なし ...
-        else {
-             console.log(`[WORKER] Task type ${task_type} is not a trade task, skipping fromId logic.`);
+        else if (task_type === 'convert') {
+            if (exchangeName !== 'binance' || !exchangeInstance.has['fetchConvertTradeHistory']) {
+                 return new Response(JSON.stringify({ message: 'Convert sync is not supported.', savedCount: 0 }), { headers: corsHeaders });
+            }
+            console.log("[WORKER] Fetching Binance Convert history...");
+            const convertTrades = await exchangeInstance.fetchConvertTradeHistory(undefined, NINETY_DAYS_AGO);
+            if (convertTrades && convertTrades.length > 0) {
+                console.log(`[WORKER] Found ${convertTrades.length} Convert trades.`);
+                recordsToSave = convertTrades.map(r => { const fromAsset=r.info.fromAsset,toAsset=r.info.toAsset,fromAmount=parseFloat(r.info.fromAmount),toAmount=parseFloat(r.info.toAmount); return { user_id:user.id,exchange:exchangeName,trade_id:String(r.info.orderId),symbol:`${fromAsset}/${toAsset}`,side:'convert',price:toAmount/fromAmount,amount:fromAmount,fee:0,fee_asset:fromAsset,ts:new Date(r.timestamp).toISOString(),raw_data:r }; });
+            }
+        }
+         else if (task_type === 'deposits' || task_type === 'withdrawals') {
+            const isDeposit = task_type === 'deposits';
+            if (!(isDeposit ? exchangeInstance.has['fetchDeposits'] : exchangeInstance.has['fetchWithdrawals'])) {
+                return new Response(JSON.stringify({ message: `${task_type} sync is not supported.`, savedCount: 0 }), { headers: corsHeaders });
+            }
+            console.log(`[WORKER] Fetching ${task_type}...`);
+            const transactions = isDeposit ? await exchangeInstance.fetchDeposits(undefined, NINETY_DAYS_AGO) : await exchangeInstance.fetchWithdrawals(undefined, NINETY_DAYS_AGO);
+            if(transactions && transactions.length > 0) {
+                console.log(`[WORKER] Found ${transactions.length} ${task_type}.`);
+                recordsToSave = transactions.map(r => { const rid=r.id||r.txid,s=r.side||r.type,sy=r.symbol||r.currency; return {user_id:user.id,exchange:exchangeName,trade_id:String(rid),symbol:sy,side:s,price:0,amount:r.amount,fee:r.fee?.cost,fee_asset:r.fee?.currency,ts:new Date(r.timestamp).toISOString(),raw_data:r} });
+            }
         }
 
         if (recordsToSave.length === 0) {
