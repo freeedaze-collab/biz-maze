@@ -46,8 +46,6 @@ export default function TransactionHistory() {
         fetchTransactions();
     }, []);
 
-    // ★★★【CORSエラー修正】★★★
-    // 存在しない `sync-wallet-beta` ではなく、正しい `sync-wallet-transactions` を呼び出す
     const handleSyncWallet = async () => {
         setIsWalletSyncing(true);
         setSyncProgress(['Starting wallet sync...']);
@@ -102,9 +100,9 @@ export default function TransactionHistory() {
 
                 for (const symbol of symbolsToSync) {
                     setSyncProgress(prev => [...prev, `  -> Syncing ${symbol}...`]);
+                    // ★★★【指令系統の修復】★★★ バックエンドのパラメータ名を`task`から`task_type`に変更したため、フロントエンドもそれに合わせる
                     const { data: workerResult, error: workerError } = await supabase.functions.invoke('exchange-sync-worker', {
-                        // @ts-ignore
-                        body: { exchange, symbol, task: 'trade' },
+                        body: { exchange, symbol, task_type: 'trade' }, 
                     });
 
                     if (workerError || workerResult.error) {
