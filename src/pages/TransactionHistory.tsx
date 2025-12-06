@@ -5,8 +5,6 @@ import { Link } from 'react-router-dom';
 import { supabase } from "../integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 
-// ★★★【改修１】★★★
-// value_usd を追加し、amount は null 許容のままにする
 interface Transaction {
     ts: string;
     tx_hash: string;
@@ -15,7 +13,7 @@ interface Transaction {
     asset: string | null;
     exchange: string | null;
     symbol: string | null;
-    value_usd: number | null; // USD換算額
+    value_usd: number | null;
 }
 
 export default function TransactionHistory() {
@@ -26,11 +24,9 @@ export default function TransactionHistory() {
     const [isWalletSyncing, setIsWalletSyncing] = useState(false);
     const [syncProgress, setSyncProgress] = useState<string[]>([]);
 
-    // --- データ取得関数 ---
     const fetchTransactions = async () => {
         setIsLoading(true);
         try {
-            // ★★★【改修２】★★★ value_usd をセレクト句に追加
             const { data, error } = await supabase
                 .from('v_all_transactions')
                 .select('ts, tx_hash, source, amount, asset, exchange, symbol, value_usd')
@@ -50,13 +46,15 @@ export default function TransactionHistory() {
         fetchTransactions();
     }, []);
 
-    // --- 同期ロジック：ウォレット ---
+    // ★★★【CORSエラー修正】★★★
+    // 存在しない `sync-wallet-beta` ではなく、正しい `sync-wallet-transactions` を呼び出す
     const handleSyncWallet = async () => {
         setIsWalletSyncing(true);
         setSyncProgress(['Starting wallet sync...']);
         try {
-            const { data, error } = await supabase.functions.invoke('sync-wallet-beta');
+            const { data, error } = await supabase.functions.invoke('sync-wallet-transactions');
             if (error) throw error;
+            // @ts-ignore
             setSyncProgress(prev => [...prev, data.message, 'Refreshing list...']);
             await fetchTransactions();
         } catch(err: any) {
@@ -66,7 +64,6 @@ export default function TransactionHistory() {
         }
     }
 
-    // --- 同期ロジック：取引所 ---
     const handleSyncAllExchanges = async () => {
         setIsSyncing(true);
         setSyncProgress(['Starting exchange sync...']);
@@ -85,14 +82,17 @@ export default function TransactionHistory() {
                     body: { exchange },
                 });
                 if (planError) throw planError;
+                // @ts-ignore
                 if (plan.error) throw new Error(`Plan error for ${exchange}: ${plan.error}`);
                 
+                // @ts-ignore
                 const nonTradeSaved = plan.nonTradeCount || 0;
                 if (nonTradeSaved > 0) {
                     totalSaved += nonTradeSaved;
                     setSyncProgress(prev => [...prev, `[${exchange}] Saved ${nonTradeSaved} non-trade records.`]);
                 }
 
+                // @ts-ignore
                 const symbolsToSync = plan.symbols;
                 if (!symbolsToSync || symbolsToSync.length === 0) {
                     setSyncProgress(prev => [...prev, `[${exchange}] No market trades to sync.`]);
@@ -103,14 +103,17 @@ export default function TransactionHistory() {
                 for (const symbol of symbolsToSync) {
                     setSyncProgress(prev => [...prev, `  -> Syncing ${symbol}...`]);
                     const { data: workerResult, error: workerError } = await supabase.functions.invoke('exchange-sync-worker', {
-                        body: { exchange, symbol, task: 'trade' }, // 明示的にtradeを指定
+                        // @ts-ignore
+                        body: { exchange, symbol, task: 'trade' },
                     });
 
                     if (workerError || workerResult.error) {
+                        // @ts-ignore
                         setSyncProgress(prev => [...prev, `    ERROR for ${symbol}: ${workerError?.message || workerResult?.error}`]);
                         continue; 
                     }
 
+                    // @ts-ignore
                     const saved = workerResult.savedCount || 0;
                     totalSaved += saved;
                     if (saved > 0) {
@@ -151,7 +154,6 @@ export default function TransactionHistory() {
                 <p className="text-gray-600 dark:text-gray-400 mb-4">
                     Manually sync the latest transaction history from your connected sources.
                 </p>
-                {/* ★★★【改修３】★★★ ボタンをグループ化し、「Sync Wallet」を復活 */}
                 <div className="flex items-center space-x-4">
                     <Button variant="outline" size="sm" onClick={handleSyncAllExchanges} disabled={isSyncing || isWalletSyncing}>
                         {isSyncing ? 'Syncing Exchanges...' : 'Sync Exchanges'}
@@ -188,7 +190,6 @@ export default function TransactionHistory() {
                                     <th className="p-2 font-semibold">Source</th>
                                     <th className="p-2 font-semibold">Description</th>
                                     <th className="p-2 font-semibold text-right">Amount</th>
-                                    {/* ★★★【改修４】★★★ 「Value (USD)」列を追加 */}
                                     <th className="p-2 font-semibold text-right">Value (USD)</th>
                                     <th className="p-2 font-semibold text-right">Asset</th>
                                 </tr>
@@ -200,7 +201,6 @@ export default function TransactionHistory() {
                                         <td className="p-2 whitespace-nowrap">{tx.source}</td>
                                         <td className="p-2 text-gray-600 dark:text-gray-400">{generateDescription(tx)}</td>
                                         <td className="p-2 text-right">{tx.amount?.toFixed(8) ?? ''}</td>
-                                        {/* ★★★【改修５】★★★ value_usd をフォーマットして表示 */}
                                         <td className="p-2 text-right">{formatCurrency(tx.value_usd)}</td>
                                         <td className="p-2 text-right text-gray-600 dark:text-gray-400">{tx.asset || ''}</td>
                                     </tr>
