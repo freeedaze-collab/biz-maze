@@ -10,10 +10,9 @@ const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-
 async function getKey() { return (await crypto.subtle.importKey("raw", Uint8Array.from(atob(Deno.env.get("EDGE_KMS_KEY")!), c => c.charCodeAt(0)), "AES-GCM", false, ["decrypt"])) }
 async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> { const p = blob.split(":"); const k = await getKey(); const d = await crypto.subtle.decrypt({ name: "AES-GCM", iv: decode(p[1]) }, k, decode(p[2])); return JSON.parse(new TextDecoder().decode(d)) }
 
-// ★★★【最終決戦：真の防御的プログラミング】★★★
-// `r.ts`の存在チェックだけでは不十分だったため、実際にDateオブジェクトに
-// 変換できるか否かを検証する `!isNaN(new Date(r.ts).getTime())` という
-// 確実な方法で、無効な時刻値を持つレコードを完全に排除する。
+// ★★★【勝利への最後の一手】★★★
+// 文字列型のタイムスタンプ("1764175144000")を parseInt() で数値に変換してから
+// Dateオブジェクトを生成することで、有効な日付が不正にフィルタリングされる問題を解決する。
 Deno.serve(async (req) => {
     if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
@@ -126,16 +125,17 @@ Deno.serve(async (req) => {
             };
         });
 
-        //【最重要修正】実際にDateに変換できるか(`!isNaN`)をチェックし、無効なレコードを完全に排除
+        //【最重要修正】文字列のタイムスタンプを parseInt で数値に変換してからDateの有効性をチェック
         const recordsToSave = intermediateRecords.filter(r => {
-            const isValidDate = r.ts && !isNaN(new Date(r.ts).getTime());
+            const isValidDate = r.ts && !isNaN(new Date(parseInt(String(r.ts), 10)).getTime());
             const isValid = r.trade_id && r.symbol && isValidDate;
             if (!isValid) {
                 console.warn(`[WORKER] Filtering out invalid record due to missing id/symbol or invalid timestamp. Data:`, r.raw_data);
             }
             return isValid;
         }).map(r => {
-            return { ...r, ts: new Date(r.ts).toISOString() };
+            //【最重要修正】ここでも同様に parseInt を使ってからISO文字列に変換
+            return { ...r, ts: new Date(parseInt(String(r.ts), 10)).toISOString() };
         });
 
         if (recordsToSave.length === 0) {
