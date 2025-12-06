@@ -22,7 +22,6 @@ Deno.serve(async (req) => {
         if (userError || !user) throw new Error('User not found.');
 
         const bodyAsText = await req.text();
-        console.log(`[WORKER-DEBUG] Received body: ${bodyAsText}`);
         let body;
         try { body = JSON.parse(bodyAsText); } catch (e) { throw new Error(`Invalid JSON: ${e.message}`); }
         
@@ -30,7 +29,6 @@ Deno.serve(async (req) => {
         if (!task_type) {
             if (symbol) {
                 task_type = 'trade';
-                console.log("[WORKER-DEBUG] Inferred task_type as 'trade'.");
             }
         }
 
@@ -84,11 +82,10 @@ Deno.serve(async (req) => {
         }
 
         console.log(`[WORKER] Saving ${recordsToSave.length} records to the database...`);
-        const { error } = await supabaseAdmin.from('exchange_trades').upsert(recordsToSave, { onConflict: 'user_id,exchange,trade_id' });
+        const { error } = await supabaseAdmin.from('exchange_trades').upsert(recordsTosave, { onConflict: 'user_id,exchange,trade_id' });
 
         if (error) throw error;
 
-        //【最終修正】返り値のdataは信用せず、投入したrecordsToSaveのlengthを正とする
         const savedCount = recordsToSave.length;
         console.log(`[WORKER] Successfully saved ${savedCount} records for task ${task_type}.`);
         return new Response(JSON.stringify({ message: `Sync complete. Saved ${savedCount} records.`, savedCount }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
