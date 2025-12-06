@@ -3,16 +3,12 @@
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
 import ccxt from 'https://esm.sh/ccxt@4.3.40'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
-import { decode } from "https://deno.land/std@0.177.0/encoding/base64.ts";
 
 const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 
-async function getKey() { return (await crypto.subtle.importKey("raw", Uint8Array.from(atob(Deno.env.get("EDGE_KMS_KEY")!), c => c.charCodeAt(0)), "AES-GCM", false, ["decrypt"])) }
-async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> { const p = blob.split(":"); const k = await getKey(); const d = await crypto.subtle.decrypt({ name: "AES-GCM", iv: decode(p[1]) }, k, decode(p[2])); return JSON.parse(new TextDecoder().decode(d)) }
-
-// ★★★【最終作戦：原点回帰・司令部】★★★
-// 過去の正常コードのロジックを「作戦計画の立案」に特化させて再実装。
-// タイムアウトを避けるため、APIの実行は全てワーカーに任せる。
+// ★★★【最終・絶対修正：司令官の越権行為の禁止】★★★
+// 司令官は、作戦計画の立案に専念し、一切、プライベートAPI（fetchBalanceなど）を呼び出さない。
+// 関連市場の特定は、我々のDB内の既存データ（exchange_trades）のみを元に行う。
 Deno.serve(async (req) => {
     if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
@@ -28,38 +24,58 @@ Deno.serve(async (req) => {
         if (!exchangeName) throw new Error('Exchange name is required.');
         console.log(`[ALL-COMMANDER] Received plan request for: ${exchangeName}`);
 
-        const { data: conn, error: connError } = await supabaseAdmin.from('exchange_connections').select('encrypted_blob').eq('user_id', user.id).eq('exchange', exchangeName).single();
-        if (connError || !conn) throw new Error(`Connection not found for ${exchangeName}`);
-
-        const credentials = await decryptBlob(conn.encrypted_blob!);
-        // @ts-ignore
-        const exchangeInstance = new ccxt[exchangeName]({ apiKey: credentials.apiKey, secret: credentials.apiSecret, password: credentials.apiPassphrase });
-
         const tasksToDispatch: any[] = [];
 
-        // 1.【特殊任務の計画】過去コードにはなかった「Convert」も網羅
-        if (exchangeInstance.has['fetchDeposits']) tasksToDispatch.push({ task_type: 'deposits' });
-        if (exchangeInstance.has['fetchWithdrawals']) tasksToDispatch.push({ task_type: 'withdrawals' });
-        if (exchangeName === 'binance' && exchangeInstance.has['fetchConvertTradeHistory']) tasksToDispatch.push({ task_type: 'convert' });
+        // 1.【特殊任務の計画】APIアクセス不要
+        // ccxtのインスタンスは、has[]のチェックのためだけに、認証情報なしで作成
+        const publicExchangeInstance = new ccxt[exchangeName](); 
+        if (publicExchangeInstance.has['fetchDeposits']) tasksToDispatch.push({ task_type: 'deposits' });
+        if (publicExchangeInstance.has['fetchWithdrawals']) tasksToDispatch.push({ task_type: 'withdrawals' });
+        if (exchangeName === 'binance' && publicExchangeInstance.has['fetchConvertTradeHistory']) tasksToDispatch.push({ task_type: 'convert' });
         console.log(`[ALL-COMMANDER] Planned special tasks: ${tasksToDispatch.map(t=>t.task_type).join(', ')}`);
 
-        // 2.【市場取引の計画】過去コードの優れたロジックを完全に再現
-        await exchangeInstance.loadMarkets();
-        const balance = await exchangeInstance.fetchBalance();
-        const heldAssets = Object.keys(balance.total).filter(asset => balance.total[asset] > 0);
-        const symbolsToFetch = new Set<string>();
-        const majorCurrencies = ['USDT', 'BTC', 'ETH', 'JPY', 'BUSD']; // JPYやBUSDも考慮
+        // 2.【市場取引の計画】DB内のデータのみを元に、APIアクセスなしで計画
+        console.log(`[ALL-COMMANDER] Finding relevant assets from internal database...`);
+        const { data: pastTrades, error: dbError } = await supabaseAdmin.from('exchange_trades').select('symbol').eq('user_id', user.id).eq('exchange', exchangeName);
+        if (dbError) throw new Error(`Failed to fetch past trades from DB: ${dbError.message}`);
 
-        for (const asset of heldAssets) {
+        const relevantAssets = new Set<string>();
+        if(pastTrades) {
+            pastTrades.forEach(trade => {
+                const assets = trade.symbol.split('/');
+                if(assets.length === 2) {
+                    relevantAssets.add(assets[0]);
+                    relevantAssets.add(assets[1]);
+                }
+            });
+        }
+
+        // もしDBに履歴が全くない場合、主要通貨だけでもスキャン対象に加える
+        if (relevantAssets.size === 0) {
+            console.log(`[ALL-COMMANDER] No past trades found. Adding default major assets to scan.`);
+            ['BTC', 'ETH', 'USDT', 'JPY'].forEach(a => relevantAssets.add(a));
+        }
+
+        console.log(`[ALL-COMMANDER] Found ${relevantAssets.size} relevant assets. Planning market scan...`);
+
+        await publicExchangeInstance.loadMarkets();
+        const symbolsToFetch = new Set<string>();
+        const majorCurrencies = ['USDT', 'BTC', 'ETH', 'JPY', 'BUSD'];
+
+        for (const asset of relevantAssets) {
             for (const currency of majorCurrencies) {
-                if (exchangeInstance.markets[`${asset}/${currency}`]) symbolsToFetch.add(`${asset}/${currency}`);
-                if (exchangeInstance.markets[`${currency}/${asset}`]) symbolsToFetch.add(`${currency}/${asset}`);
+                if (publicExchangeInstance.markets[`${asset}/${currency}`]) symbolsToFetch.add(`${asset}/${currency}`);
+                if (publicExchangeInstance.markets[`${currency}/${asset}`]) symbolsToFetch.add(`${currency}/${asset}`);
             }
         }
-        console.log(`[ALL-COMMANDER] Found ${heldAssets.length} assets, planning to scan ${symbolsToFetch.size} relevant markets.`);
         tasksToDispatch.push(...Array.from(symbolsToFetch).map(symbol => ({ task_type: 'trade', symbol: symbol })));
 
         // 3.【司令部から工作員へ】全計画をワーカーに指令として渡す
+        if (tasksToDispatch.length === 0) {
+            console.log(`[ALL-COMMANDER] No tasks to dispatch.`);
+            return new Response(JSON.stringify({ message: `No tasks to dispatch.` }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+        }
+        
         console.log(`[ALL-COMMANDER] Dispatching a total of ${tasksToDispatch.length} tasks to workers...`);
         const allInvocations = tasksToDispatch.map(task => 
             supabaseAdmin.functions.invoke('exchange-sync-worker', {
@@ -68,7 +84,7 @@ Deno.serve(async (req) => {
             })
         );
 
-        await Promise.allSettled(allInvocations); // 司令官は指令を出したら完了
+        await Promise.allSettled(allInvocations);
 
         console.log(`[ALL-COMMANDER] All ${tasksToDispatch.length} tasks have been dispatched.`);
         return new Response(JSON.stringify({ message: `Successfully dispatched ${tasksToDispatch.length} tasks.` }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
