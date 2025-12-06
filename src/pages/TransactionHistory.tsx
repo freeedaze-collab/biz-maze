@@ -63,9 +63,6 @@ export default function TransactionHistory() {
         }
     }
 
-    // ★★★【最終修正】★★★
-    // 複雑なオーケストレーションロジックを廃止。
-    // exchange-sync-combined を呼び出すだけの単純な処理に変更し、責務をバックエンドに完全に委譲する。
     const handleSyncAllExchanges = async () => {
         setIsSyncing(true);
         setSyncProgress(['Starting exchange sync...']);
@@ -85,8 +82,8 @@ export default function TransactionHistory() {
             for (const exchange of exchanges) {
                 setSyncProgress(prev => [...prev, `---`, `Syncing ${exchange}...`]);
                 
-                // バックエンドの統合関数を呼び出すだけ
-                const { data, error } = await supabase.functions.invoke('exchange-sync-combined', {
+                // ★★★【最終修正】★★★ 司令官の命令通り、`exchange-sync-all`を呼び出すように修正
+                const { data, error } = await supabase.functions.invoke('exchange-sync-all', {
                     body: { exchange },
                 });
 
@@ -96,9 +93,12 @@ export default function TransactionHistory() {
 
                 // @ts-ignore
                 const message = data.message || `[${exchange}] Sync process initiated.`;
-                // @ts-ignore
-                const savedCount = data.savedCount || 0;
-                setSyncProgress(prev => [...prev, message, `Saved ${savedCount} new records for ${exchange}.`]);
+                 // @ts-ignore
+                const symbolsToSync = data.symbols || [];
+                setSyncProgress(prev => [...prev, message, `Found ${symbolsToSync.length} markets to sync.`]);
+
+                // フロントエンドでのワーカー呼び出しは、以前のバージョンで問題があったため、
+                // まずは`exchange-sync-all`が正常に呼び出され、計画が返ってくることを確認する。
             }
 
             setSyncProgress(prev => [...prev, '---', 'All exchange syncs complete. Refreshing list...']);
@@ -115,7 +115,7 @@ export default function TransactionHistory() {
     const generateDescription = (tx: Transaction): string => {
         if (tx.symbol) return tx.symbol;
         if (tx.source === 'exchange' && tx.exchange) return `Trade on ${tx.exchange}`;
-        if (tx.source === 'wallet') return `On-chain transaction`;
+        if (tx.source === 'wallet') return 'On-chain transaction';
         return ''
     }
 
