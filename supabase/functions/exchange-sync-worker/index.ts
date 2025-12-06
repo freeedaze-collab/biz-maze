@@ -10,9 +10,9 @@ const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-
 async function getKey() { return (await crypto.subtle.importKey("raw", Uint8Array.from(atob(Deno.env.get("EDGE_KMS_KEY")!), c => c.charCodeAt(0)), "AES-GCM", false, ["decrypt"])) }
 async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> { const p = blob.split(":"); const k = await getKey(); const d = await crypto.subtle.decrypt({ name: "AES-GCM", iv: decode(p[1]) }, k, decode(p[2])); return JSON.parse(new TextDecoder().decode(d)) }
 
-// ★★★【最終・絶対修正：市場の誤認を正す】★★★
-// ccxtインスタンス生成時に `options: { 'defaultType': 'spot' }` を明示的に指定。
-// これにより、全てのAPIリクエストが先物(dapi)ではなく、現物(spot)市場に向かうように強制する。
+// ★★★【最終・論理的修正：分割取得（Pagination）】★★★
+// APIが大量データ要求に空データを返す事実に基づき、
+// whileループで90日間を7日単位に分割し、繰り返し取得する。
 Deno.serve(async (req) => {
     if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
@@ -29,68 +29,91 @@ Deno.serve(async (req) => {
         if (connError || !conn) throw new Error(`Connection not found for ${exchangeName}`);
         
         const credentials = await decryptBlob(conn.encrypted_blob!);
-        // @ts-ignore
         const exchangeInstance = new ccxt[exchangeName]({
             apiKey: credentials.apiKey, 
             secret: credentials.apiSecret, 
             password: credentials.apiPassphrase,
-            options: { 'defaultType': 'spot' } //【最重要修正】現物市場へのアクセスを強制
+            options: { 'defaultType': 'spot' }
         });
 
-        let records: any[] = [];
-        const since = Date.now() - 90 * 24 * 60 * 60 * 1000; // 過去90日分
+        let allRecords: any[] = [];
+        const ninetyDaysAgo = Date.now() - 90 * 24 * 60 * 60 * 1000;
 
+        //【最重要修正】90日分を一括取得するのではなく、7日間隔のループで分割取得する
         if (task_type === 'trade') {
             if (!symbol) throw new Error('Symbol is required for trade task.');
+            
+            console.log(`[WORKER] Starting paginated fetch for ${symbol} over 90 days.`);
+            let startTime = ninetyDaysAgo;
+            const endTime = Date.now();
+            const BATCH_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // 7日間隔
+
             await exchangeInstance.loadMarkets();
-            records = await exchangeInstance.fetchMyTrades(symbol, since, 1000); 
-        } else if (task_type === 'deposits') {
-            records = await exchangeInstance.fetchDeposits(undefined, since);
-        } else if (task_type === 'withdrawals') {
-            records = await exchangeInstance.fetchWithdrawals(undefined, since);
-        } else if (task_type === 'convert') {
+
+            while (startTime < endTime) {
+                const currentEndTime = Math.min(startTime + BATCH_WINDOW_MS, endTime);
+                console.log(`[WORKER] Fetching chunk for ${symbol} from ${new Date(startTime).toISOString()} to ${new Date(currentEndTime).toISOString()}`);
+
+                try {
+                    // sinceではなく、startTimeとendTimeをparamsで明確に指定
+                    const trades = await exchangeInstance.fetchMyTrades(symbol, undefined, 1000, {
+                         'startTime': startTime, 
+                         'endTime': currentEndTime 
+                    });
+                    if (trades && trades.length > 0) {
+                        console.log(`[WORKER] Found ${trades.length} trades in this chunk.`);
+                        allRecords.push(...trades);
+                    }
+                } catch (e) {
+                    console.error(`[WORKER] Error fetching chunk for ${symbol}: ${e.message}`);
+                }
+                
+                startTime = currentEndTime + 1;
+                await new Promise(resolve => setTimeout(resolve, 500)); // API負荷を考慮した待機
+            }
+            console.log(`[WORKER] Total trades found for ${symbol} across all chunks: ${allRecords.length}`);
+
+        } else {
+            // Trade以外のタスクは従来のままで実行
+            const since = ninetyDaysAgo;
+            if (task_type === 'deposits') allRecords = await exchangeInstance.fetchDeposits(undefined, since);
+            else if (task_type === 'withdrawals') allRecords = await exchangeInstance.fetchWithdrawals(undefined, since);
             // @ts-ignore
-            records = await exchangeInstance.fetchConvertTradeHistory(undefined, since);
+            else if (task_type === 'convert') allRecords = await exchangeInstance.fetchConvertTradeHistory(undefined, since);
         }
 
-        if (!records || records.length === 0) {
+        if (!allRecords || allRecords.length === 0) {
             console.log(`[WORKER] No records found for task: ${task_type} ${symbol || ''}`);
             return new Response(JSON.stringify({ message: "No new records.", savedCount: 0 }), { headers: corsHeaders });
         }
 
-        console.log(`[WORKER] Found ${records.length} records for task: ${task_type} ${symbol || ''}`);
+        console.log(`[WORKER] Found total ${allRecords.length} records for task: ${task_type} ${symbol || ''}`);
 
-        const recordsToSave = records.map(r => {
-            const recordId = r.id || r.txid;
-            const side = r.side || r.type;
+        const recordsToSave = allRecords.map(r => {
+            const recordId = r.id || r.txid; const side = r.side || r.type;
             let recordSymbol = r.symbol || r.currency;
             if (task_type === 'convert') recordSymbol = `${r.info.fromAsset}/${r.info.toAsset}`;
-
             return {
-                user_id: user.id,
-                exchange: exchangeName,
-                trade_id: String(recordId), 
-                symbol: recordSymbol,
-                side: side,
+                user_id: user.id, exchange: exchangeName, trade_id: String(recordId), 
+                symbol: recordSymbol, side: side,
                 price: r.price ?? (task_type === 'convert' ? parseFloat(r.info.toAmount)/parseFloat(r.info.fromAmount) : 0),
-                amount: r.amount,
-                fee: r.fee?.cost,
-                fee_asset: r.fee?.currency,
-                ts: new Date(r.timestamp).toISOString(),
-                raw_data: r,
+                amount: r.amount, fee: r.fee?.cost, fee_asset: r.fee?.currency,
+                ts: new Date(r.timestamp).toISOString(), raw_data: r,
             };
         }).filter(r => r.trade_id && r.symbol);
 
         if (recordsToSave.length === 0) {
-            console.log(`[WORKER] All found records were invalid. Task complete.`);
             return new Response(JSON.stringify({ message: "No valid records to save.", savedCount: 0 }), { headers: corsHeaders });
         }
 
-        const { error: dbError } = await supabaseAdmin.from('exchange_trades').upsert(recordsToSave, { onConflict: 'user_id,exchange,trade_id' });
+        // 念の為、重複を排除
+        const uniqueRecords = Array.from(new Map(recordsToSave.map(r => [`${r.exchange}-${r.trade_id}`, r])).values());
+
+        const { error: dbError } = await supabaseAdmin.from('exchange_trades').upsert(uniqueRecords, { onConflict: 'user_id,exchange,trade_id' });
         if (dbError) throw dbError;
 
-        console.log(`[WORKER] VICTORY! Successfully saved ${recordsToSave.length} records for ${task_type} ${symbol || ''}.`);
-        return new Response(JSON.stringify({ message: `Saved ${recordsToSave.length} records.` }), { headers: corsHeaders });
+        console.log(`[WORKER] VICTORY! Successfully saved ${uniqueRecords.length} records.`);
+        return new Response(JSON.stringify({ message: `Saved ${uniqueRecords.length} records.` }), { headers: corsHeaders });
 
     } catch (err) {
         console.error(`[WORKER-CRASH] Task failed for ${req.method} ${req.url}:`, err);
