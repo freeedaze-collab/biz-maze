@@ -10,8 +10,8 @@ const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-
 async function getKey() { return (await crypto.subtle.importKey("raw", Uint8Array.from(atob(Deno.env.get("EDGE_KMS_KEY")!), c => c.charCodeAt(0)), "AES-GCM", false, ["decrypt"])) }
 async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> { const p = blob.split(":"); const k = await getKey(); const d = await crypto.subtle.decrypt({ name: "AES-GCM", iv: decode(p[1]) }, k, decode(p[2])); return JSON.parse(new TextDecoder().decode(d)) }
 
-// ★★★【司令部・最終決戦仕様】★★★
-// 工作員を呼び出す際に、task_typeを明示的に指定する
+// ★★★【司令官の復権】★★★
+// フロントに計画を返すのではなく、司令部が直接ワーカーを起動(invoke)する方式に完全に戻す
 Deno.serve(async (req) => {
     if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
@@ -31,10 +31,10 @@ Deno.serve(async (req) => {
         // @ts-ignore
         const exchangeInstance = new ccxt[exchangeName]({ apiKey: credentials.apiKey, secret: credentials.apiSecret, password: credentials.apiPassphrase });
 
-        let tasksToDispatch = [];
+        let tasksToDispatch: any[] = [];
 
         // 1.【特殊任務の特定】
-        const specialTasks = [];
+        const specialTasks: string[] = [];
         if(exchangeInstance.has['fetchDeposits']) specialTasks.push('deposits');
         if(exchangeInstance.has['fetchWithdrawals']) specialTasks.push('withdrawals');
         if(exchangeName === 'binance' && exchangeInstance.has['fetchConvertTradeHistory']) specialTasks.push('convert');
@@ -70,11 +70,34 @@ Deno.serve(async (req) => {
         console.log(`[ALL-COMMANDER] Created a plan with ${spotMarketSymbols.size} spot market symbols.`);
         tasksToDispatch.push(...Array.from(spotMarketSymbols).map(symbol => ({ task_type: 'trade', symbol: symbol })));
 
-        // 3.【タスクプランの返却】
-        return new Response(JSON.stringify({ tasks: tasksToDispatch }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+        // 3.【最終修正】司令部が直接、全ワーカーの出撃命令を出す
+        console.log(`[ALL-COMMANDER] Dispatching ${tasksToDispatch.length} tasks to workers...`);
+
+        const allInvocations = tasksToDispatch.map(task => 
+            supabaseAdmin.functions.invoke('exchange-sync-worker', {
+                body: { 
+                    exchange: exchangeName, 
+                    task_type: task.task_type,
+                    symbol: task.symbol
+                }
+            })
+        );
+
+        const results = await Promise.allSettled(allInvocations);
+        const successfulInvocations = results.filter(r => r.status === 'fulfilled').length;
+        console.log(`[ALL-COMMANDER] Successfully dispatched ${successfulInvocations} out of ${tasksToDispatch.length} tasks.`);
+
+        results.forEach((result, index) => {
+            if (result.status === 'rejected') {
+                console.error(`[ALL-COMMANDER] Failed to dispatch task #${index} (${tasksToDispatch[index].task_type} ${tasksToDispatch[index].symbol || ''}):`, result.reason);
+            }
+        });
+
+        return new Response(JSON.stringify({ message: `Dispatched ${successfulInvocations} tasks.` }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
     } catch (err) {
         console.error("[ALL-COMMANDER-CRASH] Plan building failed:", err);
         return new Response(JSON.stringify({ error: err.message }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 });
     }
 });
+
