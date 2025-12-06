@@ -10,9 +10,9 @@ const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-
 async function getKey() { return (await crypto.subtle.importKey("raw", Uint8Array.from(atob(Deno.env.get("EDGE_KMS_KEY")!), c => c.charCodeAt(0)), "AES-GCM", false, ["decrypt"])) }
 async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> { const p = blob.split(":"); const k = await getKey(); const d = await crypto.subtle.decrypt({ name: "AES-GCM", iv: decode(p[1]) }, k, decode(p[2])); return JSON.parse(new TextDecoder().decode(d)) }
 
-// ★★★【最終改修：API仕様への完全準拠】★★★
-// ユーザー指摘の `rows` パラメータエラーを解決する。
-// `limit` の値を、Binance APIの最大許容値である `500` に修正する。
+// ★★★【最終改修：正しい購入APIへの変更】★★★
+// ユーザー指摘に基づき、「購入」履歴取得のAPIを `sapi/v1/fiat/orders` から、
+// 正しい `sapi/v1/fiat/payments` に変更し、データ構造もそれに合わせて修正する。
 Deno.serve(async (req) => {
     if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
@@ -40,18 +40,17 @@ Deno.serve(async (req) => {
 
         let records: any[] = [];
         const since = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).getTime();
-        const limit = 500; //【最重要修正】Binance APIの最大値である500に設定
+        const limit = 500;
 
         try {
             if (task_type === 'trade') {
                 if (!symbol) throw new Error('Symbol is required for trade task.');
                 records = await exchangeInstance.fetchMyTrades(symbol, since, limit);
             } else if (task_type === 'fiat') {
+                //【最重要修正】クレジットカード購入などを取得する正しいエンドポイントに変更
                 // @ts-ignore
-                const buys = await exchangeInstance.sapiGetFiatOrders({ transactionType: '0', beginTime: since, rows: limit }).then(r => r.data || []);
-                // @ts-ignore
-                const sells = await exchangeInstance.sapiGetFiatOrders({ transactionType: '1', beginTime: since, rows: limit }).then(r => r.data || []);
-                records = [...buys, ...sells];
+                const payments = await exchangeInstance.sapiGetFiatPayments({ beginTime: since }).then(r => r.data || []);
+                records = payments;
             } else if (task_type === 'deposits') {
                 records = await exchangeInstance.fetchDeposits(undefined, since, limit);
             } else if (task_type === 'withdrawals') {
@@ -75,10 +74,21 @@ Deno.serve(async (req) => {
         console.log(`[WORKER] Found ${records.length} records for task: ${task_type}`);
 
         const recordsToSave = records.map(r => {
-            const isFiat = r.orderId && r.fiatCurrency;
+            //【最重要修正】新しいfiat/paymentsのレスポンス構造に対応する
+            const isFiatPayment = r.orderNo && r.obtainAmount; 
+
             let rec = {} as any;
-            if (isFiat) {
-                rec = { id: r.orderId, symbol: `${r.cryptoCurrency}/${r.fiatCurrency}`, side: r.transactionType === '0' ? 'buy' : 'sell', price: parseFloat(r.fiatAmount) / parseFloat(r.cryptoAmount), amount: parseFloat(r.cryptoAmount), ts: r.createTime, fee: 0, fee_asset: '' };
+            if (isFiatPayment) {
+                rec = {
+                    id: r.orderNo,
+                    symbol: `${r.cryptoCurrency}/${r.fiatCurrency}`,
+                    side: 'buy', // fiat/paymentsは購入のみと想定
+                    price: parseFloat(r.price),
+                    amount: parseFloat(r.obtainAmount),
+                    fee: parseFloat(r.totalFee),
+                    fee_asset: r.fiatCurrency, // 手数料は通常法定通貨建て
+                    ts: r.createTime
+                };
             } else { 
                 rec = { id: r.id || r.txid, symbol: r.symbol || r.currency, side: r.side || r.type, price: r.price, amount: r.amount, fee: r.fee?.cost, fee_asset: r.fee?.currency, ts: r.timestamp };
             }
