@@ -8,10 +8,11 @@ import { decode } from "https://deno.land/std@0.177.0/encoding/base64.ts";
 const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 
 async function getKey() { return (await crypto.subtle.importKey("raw", Uint8Array.from(atob(Deno.env.get("EDGE_KMS_KEY")!), c => c.charCodeAt(0)), "AES-GCM", false, ["decrypt"])) }
-async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret:string; apiPassphrase?: string }> { const p = blob.split(":"); const k = await getKey(); const d = await crypto.subtle.decrypt({ name: "AES-GCM", iv: decode(p[1]) }, k, decode(p[2])); return JSON.parse(new TextDecoder().decode(d)) }
+async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> { const p = blob.split(":"); const k = await getKey(); const d = await crypto.subtle.decrypt({ name: "AES-GCM", iv: decode(p[1]) }, k, decode(p[2])); return JSON.parse(new TextDecoder().decode(d)) }
 
-// ★★★【最終改修：構文エラーの修正】★★★
-// 前回提出コードにあった致命的な構文エラー（カンマ抜け）を修正する。
+// ★★★【最終改修：対墜落・防御的プログラミング】★★★
+// 不正な時刻値によるクラッシュを防ぐため、データ処理を多段化し、
+// 保存前に必須データの検証とフィルタリングを行う堅牢なロジックに変更する。
 Deno.serve(async (req) => {
     if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
@@ -82,11 +83,13 @@ Deno.serve(async (req) => {
 
         console.log(`[WORKER] Found ${records.length} records for task: ${task_type}`);
 
-        const recordsToSave = records.map(r => {
-            const isFiatPayment = r.orderNo && r.transactionType;
-            const isSimpleEarn = r.purchaseId || r.redeemId;
+        //【最重要修正】クラッシュを避けるため、検証・変換処理を多段化する
+        // Step 1: まず、各レコードを共通の中間形式に変換する（この時点では ts は変換しない）
+        const intermediateRecords = records.map(r => {
+            const isFiatPayment = task_type === 'fiat'; // タスクタイプで直接判断
+            const isSimpleEarn = task_type === 'simple-earn';
 
-            let rec = {} as any;
+            let rec: any = {};
             if (isFiatPayment) {
                 const isBuy = r.transactionType === '0';
                 rec = {
@@ -115,13 +118,25 @@ Deno.serve(async (req) => {
                 rec = { id: r.id || r.txid, symbol: r.symbol || r.currency, side: r.side || r.type, price: r.price, amount: r.amount, fee: r.fee?.cost, fee_asset: r.fee?.currency, ts: r.timestamp };
             }
             return {
-                user_id: user.id, exchange: exchangeName, trade_id: String(rec.id),
+                user_id: user.id, exchange: exchangeName, trade_id: rec.id ? String(rec.id) : null,
                 symbol: rec.symbol, side: rec.side, 
                 price: rec.price ?? 0, amount: rec.amount ?? 0, fee: rec.fee ?? 0, 
                 fee_asset: rec.fee_asset,
-                ts: new Date(rec.ts).toISOString(), raw_data: r,
+                ts: rec.ts, // 生のタイムスタンプを保持
+                raw_data: r,
             };
-        }).filter(r => r.trade_id && r.symbol);
+        });
+
+        // Step 2 & 3: 必須項目(id, symbol, ts)が有効なレコードのみをフィルタし、安全に最終形式へ変換する
+        const recordsToSave = intermediateRecords.filter(r => {
+            const isValid = r.trade_id && r.symbol && r.ts;
+            if (!isValid) {
+                console.warn(`[WORKER] Filtering out invalid record due to missing id, symbol, or timestamp. Data:`, r.raw_data);
+            }
+            return isValid;
+        }).map(r => {
+            return { ...r, ts: new Date(r.ts).toISOString() }; // 安全なデータのみをISO文字列に変換
+        });
 
         if (recordsToSave.length === 0) {
             return new Response(JSON.stringify({ message: "Fetched records were not in a savable format.", savedCount: 0 }), { headers: corsHeaders });
