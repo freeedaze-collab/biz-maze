@@ -53,74 +53,55 @@ export default function TransactionHistory() {
             const { data, error } = await supabase.functions.invoke('sync-wallet-transactions');
             if (error) throw error;
             // @ts-ignore
-            setSyncProgress(prev => [...prev, data.message, 'Refreshing list...']);
+            setSyncProgress(prev => [...prev, data.message || 'Wallet sync complete.', 'Refreshing list...']);
             await fetchTransactions();
         } catch(err: any) {
+            console.error("Wallet sync failed:", err);
             setSyncProgress(prev => [...prev, `A critical error occurred: ${err.message}`]);
         } finally {
             setIsWalletSyncing(false);
         }
     }
 
+    // ★★★【最終修正】★★★
+    // 複雑なオーケストレーションロジックを廃止。
+    // exchange-sync-combined を呼び出すだけの単純な処理に変更し、責務をバックエンドに完全に委譲する。
     const handleSyncAllExchanges = async () => {
         setIsSyncing(true);
         setSyncProgress(['Starting exchange sync...']);
-        let totalSaved = 0;
-
+        
         try {
-            const { data: connections, error: connError } = await supabase.from('exchange_connections').select('exchange');
-            if (connError || !connections) throw new Error('Could not fetch exchange connections.');
+            const { data: connections, error: connError } = await supabase
+                .from('exchange_connections')
+                .select('exchange');
+                
+            if (connError || !connections) {
+                throw new Error('Could not fetch exchange connections.');
+            }
+
             const exchanges = connections.map(c => c.exchange);
             setSyncProgress(prev => [...prev, `Found exchanges: ${exchanges.join(', ')}`]);
 
             for (const exchange of exchanges) {
-                setSyncProgress(prev => [...prev, `---`, `Processing ${exchange}...`]);
+                setSyncProgress(prev => [...prev, `---`, `Syncing ${exchange}...`]);
                 
-                const { data: plan, error: planError } = await supabase.functions.invoke('exchange-sync-all', {
+                // バックエンドの統合関数を呼び出すだけ
+                const { data, error } = await supabase.functions.invoke('exchange-sync-combined', {
                     body: { exchange },
                 });
-                if (planError) throw planError;
-                // @ts-ignore
-                if (plan.error) throw new Error(`Plan error for ${exchange}: ${plan.error}`);
-                
-                // @ts-ignore
-                const nonTradeSaved = plan.nonTradeCount || 0;
-                if (nonTradeSaved > 0) {
-                    totalSaved += nonTradeSaved;
-                    setSyncProgress(prev => [...prev, `[${exchange}] Saved ${nonTradeSaved} non-trade records.`]);
+
+                if (error) {
+                    throw new Error(`[${exchange}] Sync failed: ${error.message}`);
                 }
 
                 // @ts-ignore
-                const symbolsToSync = plan.symbols;
-                if (!symbolsToSync || symbolsToSync.length === 0) {
-                    setSyncProgress(prev => [...prev, `[${exchange}] No market trades to sync.`]);
-                    continue;
-                }
-                setSyncProgress(prev => [...prev, `[${exchange}] Found ${symbolsToSync.length} markets with trades.`]);
-
-                for (const symbol of symbolsToSync) {
-                    setSyncProgress(prev => [...prev, `  -> Syncing ${symbol}...`]);
-                    // ★★★【指令系統の修復】★★★ バックエンドのパラメータ名を`task`から`task_type`に変更したため、フロントエンドもそれに合わせる
-                    const { data: workerResult, error: workerError } = await supabase.functions.invoke('exchange-sync-worker', {
-                        body: { exchange, symbol, task_type: 'trade' }, 
-                    });
-
-                    if (workerError || workerResult.error) {
-                        // @ts-ignore
-                        setSyncProgress(prev => [...prev, `    ERROR for ${symbol}: ${workerError?.message || workerResult?.error}`]);
-                        continue; 
-                    }
-
-                    // @ts-ignore
-                    const saved = workerResult.savedCount || 0;
-                    totalSaved += saved;
-                    if (saved > 0) {
-                        setSyncProgress(prev => [...prev, `    OK. Saved ${saved} trades.`]);
-                    }
-                }
+                const message = data.message || `[${exchange}] Sync process initiated.`;
+                // @ts-ignore
+                const savedCount = data.savedCount || 0;
+                setSyncProgress(prev => [...prev, message, `Saved ${savedCount} new records for ${exchange}.`]);
             }
 
-            setSyncProgress(prev => [...prev, '---', `All syncs complete. Total new records: ${totalSaved}. Refreshing list...`]);
+            setSyncProgress(prev => [...prev, '---', 'All exchange syncs complete. Refreshing list...']);
             await fetchTransactions();
 
         } catch (error: any) {
