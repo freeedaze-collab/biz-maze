@@ -10,14 +10,18 @@ const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-
 async function getKey() { return (await crypto.subtle.importKey("raw", Uint8Array.from(atob(Deno.env.get("EDGE_KMS_KEY")!), c => c.charCodeAt(0)), "AES-GCM", false, ["decrypt"])) }
 async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> { const p = blob.split(":"); const k = await getKey(); const d = await crypto.subtle.decrypt({ name: "AES-GCM", iv: decode(p[1]) }, k, decode(p[2])); return JSON.parse(new TextDecoder().decode(d)) }
 
-// ★★★【司令官の復権】★★★
-// フロントに計画を返すのではなく、司令部が直接ワーカーを起動(invoke)する方式に完全に戻す
+// ★★★【最終・完全修正】★★★
+// ワーカーを呼び出す際に、オリジナルのAuthorizationヘッダーをそのまま渡す
 Deno.serve(async (req) => {
     if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
     try {
+        //【最重要修正】最初にAuthorizationヘッダーを取得する
+        const authorization = req.headers.get('Authorization');
+        if (!authorization) throw new Error('Authorization header is missing.');
+
         const supabaseAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
-        const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(req.headers.get('Authorization')!.replace('Bearer ', ''));
+        const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(authorization.replace('Bearer ', ''));
         if (userError || !user) throw new Error('User not found.');
 
         const { exchange: exchangeName } = await req.json();
@@ -38,7 +42,7 @@ Deno.serve(async (req) => {
         if(exchangeInstance.has['fetchDeposits']) specialTasks.push('deposits');
         if(exchangeInstance.has['fetchWithdrawals']) specialTasks.push('withdrawals');
         if(exchangeName === 'binance' && exchangeInstance.has['fetchConvertTradeHistory']) specialTasks.push('convert');
-        console.log(`[ALL-COMMANDER] Identified special tasks: [${specialTasks.join(', ')}]`);
+        console.log(`[ALL-COMMANDER] Identified special tasks: [${specialTasks.join(', ')}`);
         tasksToDispatch.push(...specialTasks.map(task => ({ task_type: task })));
 
         // 2.【市場取引の調査対象を特定】
@@ -70,11 +74,14 @@ Deno.serve(async (req) => {
         console.log(`[ALL-COMMANDER] Created a plan with ${spotMarketSymbols.size} spot market symbols.`);
         tasksToDispatch.push(...Array.from(spotMarketSymbols).map(symbol => ({ task_type: 'trade', symbol: symbol })));
 
-        // 3.【最終修正】司令部が直接、全ワーカーの出撃命令を出す
+        // 3.【司令部がワーカーに身分証明書を渡して出撃させる】
         console.log(`[ALL-COMMANDER] Dispatching ${tasksToDispatch.length} tasks to workers...`);
 
         const allInvocations = tasksToDispatch.map(task => 
             supabaseAdmin.functions.invoke('exchange-sync-worker', {
+                headers: { //【最重要修正】Authorizationヘッダーをワーカーに引き継ぐ
+                    'Authorization': authorization 
+                },
                 body: { 
                     exchange: exchangeName, 
                     task_type: task.task_type,
@@ -100,4 +107,3 @@ Deno.serve(async (req) => {
         return new Response(JSON.stringify({ error: err.message }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 });
     }
 });
-
