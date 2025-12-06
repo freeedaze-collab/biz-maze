@@ -10,9 +10,10 @@ const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-
 async function getKey() { return (await crypto.subtle.importKey("raw", Uint8Array.from(atob(Deno.env.get("EDGE_KMS_KEY")!), c => c.charCodeAt(0)), "AES-GCM", false, ["decrypt"])) }
 async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> { const p = blob.split(":"); const k = await getKey(); const d = await crypto.subtle.decrypt({ name: "AES-GCM", iv: decode(p[1]) }, k, decode(p[2])); return JSON.parse(new TextDecoder().decode(d)) }
 
-// ★★★【最終改修：対墜落・防御的プログラミング】★★★
-// 不正な時刻値によるクラッシュを防ぐため、データ処理を多段化し、
-// 保存前に必須データの検証とフィルタリングを行う堅牢なロジックに変更する。
+// ★★★【最終決戦：真の防御的プログラミング】★★★
+// `r.ts`の存在チェックだけでは不十分だったため、実際にDateオブジェクトに
+// 変換できるか否かを検証する `!isNaN(new Date(r.ts).getTime())` という
+// 確実な方法で、無効な時刻値を持つレコードを完全に排除する。
 Deno.serve(async (req) => {
     if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
@@ -83,10 +84,8 @@ Deno.serve(async (req) => {
 
         console.log(`[WORKER] Found ${records.length} records for task: ${task_type}`);
 
-        //【最重要修正】クラッシュを避けるため、検証・変換処理を多段化する
-        // Step 1: まず、各レコードを共通の中間形式に変換する（この時点では ts は変換しない）
         const intermediateRecords = records.map(r => {
-            const isFiatPayment = task_type === 'fiat'; // タスクタイプで直接判断
+            const isFiatPayment = task_type === 'fiat'; 
             const isSimpleEarn = task_type === 'simple-earn';
 
             let rec: any = {};
@@ -122,20 +121,21 @@ Deno.serve(async (req) => {
                 symbol: rec.symbol, side: rec.side, 
                 price: rec.price ?? 0, amount: rec.amount ?? 0, fee: rec.fee ?? 0, 
                 fee_asset: rec.fee_asset,
-                ts: rec.ts, // 生のタイムスタンプを保持
+                ts: rec.ts, 
                 raw_data: r,
             };
         });
 
-        // Step 2 & 3: 必須項目(id, symbol, ts)が有効なレコードのみをフィルタし、安全に最終形式へ変換する
+        //【最重要修正】実際にDateに変換できるか(`!isNaN`)をチェックし、無効なレコードを完全に排除
         const recordsToSave = intermediateRecords.filter(r => {
-            const isValid = r.trade_id && r.symbol && r.ts;
+            const isValidDate = r.ts && !isNaN(new Date(r.ts).getTime());
+            const isValid = r.trade_id && r.symbol && isValidDate;
             if (!isValid) {
-                console.warn(`[WORKER] Filtering out invalid record due to missing id, symbol, or timestamp. Data:`, r.raw_data);
+                console.warn(`[WORKER] Filtering out invalid record due to missing id/symbol or invalid timestamp. Data:`, r.raw_data);
             }
             return isValid;
         }).map(r => {
-            return { ...r, ts: new Date(r.ts).toISOString() }; // 安全なデータのみをISO文字列に変換
+            return { ...r, ts: new Date(r.ts).toISOString() };
         });
 
         if (recordsToSave.length === 0) {
