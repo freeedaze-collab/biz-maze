@@ -6,13 +6,12 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { decode } from "https://deno.land/std@0.177.0/encoding/base64.ts";
 
 const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
-const NINETY_DAYS_AGO = Date.now() - 90 * 24 * 60 * 60 * 1000;
 
-async function getKey() { /* ... */ return (await crypto.subtle.importKey("raw", Uint8Array.from(atob(Deno.env.get("EDGE_KMS_KEY")!), c => c.charCodeAt(0)), "AES-GCM", false, ["decrypt"])) }
-async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> { /* ... */ const p = blob.split(":"); const k = await getKey(); const d = await crypto.subtle.decrypt({ name: "AES-GCM", iv: decode(p[1]) }, k, decode(p[2])); return JSON.parse(new TextDecoder().decode(d)) }
+async function getKey() { return (await crypto.subtle.importKey("raw", Uint8Array.from(atob(Deno.env.get("EDGE_KMS_KEY")!), c => c.charCodeAt(0)), "AES-GCM", false, ["decrypt"])) }
+async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> { const p = blob.split(":"); const k = await getKey(); const d = await crypto.subtle.decrypt({ name: "AES-GCM", iv: decode(p[1]) }, k, decode(p[2])); return JSON.parse(new TextDecoder().decode(d)) }
 
-// ★★★【最終形態】★★★
-// Binance Convert（両替）履歴の取得機能を追加！
+// ★★★【司令塔・最終形態】★★★
+// データ取得は一切行わず、「作戦計画書」の立案にのみ専念する
 Deno.serve(async (req) => {
     if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
@@ -24,7 +23,7 @@ Deno.serve(async (req) => {
         const { exchange: exchangeName } = await req.json();
         if (!exchangeName) throw new Error("Exchange is required.");
 
-        console.log(`[ALL - Commander V3] Received request for ${exchangeName}.`);
+        console.log(`[ALL-COMMANDER] Received request to build a plan for ${exchangeName}.`);
 
         const { data: conn, error: connError } = await supabaseAdmin.from('exchange_connections').select('encrypted_blob').eq('user_id', user.id).eq('exchange', exchangeName).single();
         if (connError || !conn) throw new Error(`Connection not found for ${exchangeName}`);
@@ -34,71 +33,40 @@ Deno.serve(async (req) => {
         // @ts-ignore
         const exchangeInstance = new ccxt[exchangeName]({ apiKey: credentials.apiKey, secret: credentials.apiSecret, password: credentials.apiPassphrase, options: { 'defaultType': 'spot' } });
 
+        // === 作戦計画立案フェーズ ===
+
+        // 1.【特別任務の特定】取引所がサポートする機能（入出金・両替）を特定
+        const special_tasks: string[] = [];
+        if (exchangeInstance.has['fetchDeposits']) {
+            special_tasks.push('deposits');
+        }
+        if (exchangeInstance.has['fetchWithdrawals']) {
+            special_tasks.push('withdrawals');
+        }
+        // 'convert' は binance のみ
+        if (exchangeName === 'binance' && exchangeInstance.has['fetchConvertTradeHistory']) {
+            special_tasks.push('convert');
+        }
+        console.log(`[ALL-COMMANDER] Identified special tasks: [${special_tasks.join(', ')}]`);
+
+
+        // 2.【市場取引の調査対象を特定】
+        // 資産を持つ通貨ペアを洗い出す（この処理は軽量なので司令塔が担当してOK）
         await exchangeInstance.loadMarkets();
-
-        const relevantAssets = new Set<string>();
-        const allNonTradeRecords: any[] = [];
-
-        // 1. 残高を取得し、関連アセットを特定
         const balance = await exchangeInstance.fetchBalance().catch(() => ({ total: {} }));
+        const relevantAssets = new Set<string>();
         Object.keys(balance.total).filter(asset => balance.total[asset] > 0).forEach(asset => relevantAssets.add(asset));
         
-        // 2. 入金履歴を取得
-        if (exchangeInstance.has['fetchDeposits']) {
-            const deposits = await exchangeInstance.fetchDeposits(undefined, NINETY_DAYS_AGO).catch(() => []);
-            deposits.forEach(d => relevantAssets.add(d.currency));
-            allNonTradeRecords.push(...deposits);
-        }
-        
-        // 3. 出金履歴を取得
-        if (exchangeInstance.has['fetchWithdrawals']) {
-            const withdrawals = await exchangeInstance.fetchWithdrawals(undefined, NINETY_DAYS_AGO).catch(() => []);
-            withdrawals.forEach(w => relevantAssets.add(w.currency));
-            allNonTradeRecords.push(...withdrawals);
+        // 保有資産がなくても、過去のDB記録から関連アセットを追加する
+        const { data: recentTradeAssets } = await supabaseAdmin.from('exchange_trades').select('symbol').eq('user_id', user.id).eq('exchange', exchangeName);
+        if(recentTradeAssets) {
+             recentTradeAssets.forEach(trade => {
+                 const assets = trade.symbol.split('/');
+                 assets.forEach(a => relevantAssets.add(a));
+             });
         }
 
-        // 4. ★★★【新機能】Binance Convert（両替）履歴を取得 ★★★
-        if (exchangeInstance.id === 'binance' && exchangeInstance.has['fetchConvertTradeHistory']) {
-             console.log("[ALL - Commander V3] Fetching Binance Convert history...");
-            // ccxtは `fetchConvertTradeHistory` のsinceをサポートしていないため、全件取得して後でフィルタリングする
-            const convertTrades = await exchangeInstance.fetchConvertTradeHistory().catch(() => []);
-            const recentConvertTrades = convertTrades.filter((t: any) => t.timestamp >= NINETY_DAYS_AGO);
-            console.log(`[ALL - Commander V3] Found ${recentConvertTrades.length} recent Convert trades.`);
-            allNonTradeRecords.push(...recentConvertTrades);
-        }
-
-        // 5. 取得した全ての非取引レコード（入出金・両替）をDBに保存
-        let nonTradeCount = 0;
-        if (allNonTradeRecords.length > 0) {
-             // `transformRecord` をこの場で定義
-            function transform(r: any, uid: string, ex: string) {
-                // Convertのデータ構造は特殊なので、ここでアダプターを入れる
-                if (r.info && r.info.orderId) { // Binance Convertの判定
-                    const fromAsset = r.info.fromAsset;
-                    const toAsset = r.info.toAsset;
-                    const fromAmount = parseFloat(r.info.fromAmount);
-                    const toAmount = parseFloat(r.info.toAmount);
-                    const price = toAmount / fromAmount; 
-                    return {
-                        user_id:uid, exchange:ex, trade_id: String(r.info.orderId),
-                        symbol: `${fromAsset}/${toAsset}`, side: 'convert', price: price,
-                        amount: fromAmount, fee: 0, fee_asset: fromAsset,
-                        ts: new Date(r.timestamp).toISOString(), raw_data: r
-                    };
-                }
-                // 通常の入出金の処理
-                const rid=r.id||r.txid; if(!rid)return null; const s=r.side||r.type; const sy=r.symbol||r.currency; if(!sy||!s||!r.amount||!r.timestamp)return null; return {user_id:uid,exchange:ex,trade_id:String(rid),symbol:sy,side:s,price:r.price??0,amount:r.amount,fee:r.fee?.cost,fee_asset:r.fee?.currency,ts:new Date(r.timestamp).toISOString(),raw_data:r}
-            }
-            const transformed = allNonTradeRecords.map(r => transform(r, user.id, exchangeName)).filter(r => r !== null);
-            const { data, error } = await supabaseAdmin.from('exchange_trades').upsert(transformed, { onConflict: 'user_id,exchange,trade_id' });
-            if(error) {  console.error("[ALL-CRASH] Upserting non-trades failed:", error); } else {
-                nonTradeCount = data?.length ?? 0;
-                console.log(`[ALL - Commander V3] Saved ${nonTradeCount} non-trade records (deposits, withdrawals, converts).`);
-            }
-        }
-
-        // 6. 市場取引（Trade）のための調査計画を作成
-        console.log(`[ALL - Commander V3] Found ${relevantAssets.size} relevant assets for market trade search.`);
+        console.log(`[ALL-COMMANDER] Found ${relevantAssets.size} relevant assets for market trade search.`);
         const symbolsToFetch = new Set<string>();
         const quoteCurrencies = ['JPY', 'USDT', 'BTC', 'ETH', 'BUSD', 'USDC', 'BNB'];
         relevantAssets.forEach(asset => {
@@ -112,12 +80,18 @@ Deno.serve(async (req) => {
         });
         
         const symbolList = Array.from(symbolsToFetch);
-        console.log(`[ALL - Commander V3] Created a plan with ${symbolList.length} spot market symbols for ${exchangeName}.`);
+        console.log(`[ALL-COMMANDER] Created a plan with ${symbolList.length} spot market symbols.`);
 
-        return new Response(JSON.stringify({ symbols: symbolList, nonTradeCount: nonTradeCount }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+        // 3.【作戦計画書の返却】
+        return new Response(JSON.stringify({ 
+            special_tasks: special_tasks,
+            symbols: symbolList
+        }), { 
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+        });
 
     } catch (err) {
-        console.error(`[ALL - Commander V3 CRASH]`, err);
+        console.error(`[ALL-COMMANDER-CRASH]`, err);
         return new Response(JSON.stringify({ error: err.message, stack: err.stack }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 });
     }
 });
