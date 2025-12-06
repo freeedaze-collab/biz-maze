@@ -1,21 +1,22 @@
+
 // src/pages/TransactionHistory.tsx
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { supabase } from "../integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 
-// スキーマは確定
+// ★★★【最終修正】★★★
+// amount が null になる可能性を受け入れ、フロントエンドのクラッシュを完全に防ぐ
 interface Transaction {
     ts: string;
     tx_hash: string;
     source: string;
-    amount: number;
+    amount: number | null; // null許容に変更
     asset: string | null;
     exchange: string | null;
     symbol: string | null;
 }
 
-// UIをデバッグ前の状態に戻す
 export default function TransactionHistory() {
     const [transactions, setTransactions] = useState<Transaction[]>([]);
     const [isLoading, setIsLoading] = useState(true);
@@ -61,7 +62,6 @@ export default function TransactionHistory() {
             for (const exchange of exchanges) {
                 setSyncProgress(prev => [...prev, `---`, `Processing ${exchange}...`]);
                 
-                // 司令塔を呼び出す
                 setSyncProgress(prev => [...prev, `[${exchange}] Asking commander for a plan...`]);
                 const { data: plan, error: planError } = await supabase.functions.invoke('exchange-sync-all', {
                     body: { exchange },
@@ -69,7 +69,6 @@ export default function TransactionHistory() {
                 if (planError) throw planError;
                 if (plan.error) throw new Error(`Plan error for ${exchange}: ${plan.error}`);
                 
-                // 司令塔からの戻り値（入出金・両替の件数）を先に表示
                 const nonTradeSaved = plan.nonTradeCount || 0;
                 if (nonTradeSaved > 0) {
                     totalSaved += nonTradeSaved;
@@ -83,7 +82,6 @@ export default function TransactionHistory() {
                 }
                 setSyncProgress(prev => [...prev, `[${exchange}] Plan received. ${symbolsToSync.length} markets to sync for trades.`]);
 
-                // 指揮官が市場リストに基づき、工作員を一人ずつ派遣
                 for (const symbol of symbolsToSync) {
                     setSyncProgress(prev => [...prev, `  -> Syncing ${symbol}...`]);
                     const { data: workerResult, error: workerError } = await supabase.functions.invoke('exchange-sync-worker', {
@@ -129,7 +127,6 @@ export default function TransactionHistory() {
         <div className="p-4 md:p-6 lg:p-8">
             <h1 className="text-3xl font-bold mb-6">Transactions</h1>
 
-            {/* Data Sync Section */}
             <section className="mb-8">
                 <h2 className="text-2xl font-semibold mb-2">Data Sync</h2>
                 <p className="text-gray-600 dark:text-gray-400 mb-4">
@@ -153,7 +150,6 @@ export default function TransactionHistory() {
                 )}
             </section>
 
-            {/* All Transactions Section */}
             <section>
                 <h2 className="text-2xl font-semibold mb-4">All Transactions</h2>
                 {isLoading ? (
@@ -178,7 +174,8 @@ export default function TransactionHistory() {
                                         <td className="p-2 whitespace-nowrap">{new Date(tx.ts).toLocaleString()}</td>
                                         <td className="p-2 whitespace-nowrap">{tx.source}</td>
                                         <td className="p-2 text-gray-600 dark:text-gray-400">{generateDescription(tx)}</td>
-                                        <td className="p-2 text-right">{tx.amount.toString()}</td>
+                                        {/* ★★★【最終修正】★★★ amountがnullの場合でもtoString()でクラッシュしないよう修正 */}
+                                        <td className="p-2 text-right">{tx.amount?.toString() ?? ''}</td>
                                         <td className="p-2 text-right text-gray-600 dark:text-gray-400">{tx.asset || ''}</td>
                                     </tr>
                                 )) : (
