@@ -106,9 +106,8 @@ Deno.serve(async (req) => {
                 rec = { id: r.id || r.txid, symbol: r.symbol || r.currency, side: r.side || r.type, price: r.price, amount: r.amount, fee: r.fee?.cost, fee_asset: r.fee?.currency, ts: r.timestamp };
             }
 
-            // ★★★【USD換算修正】★★★ price/amountが0の場合も計算対象とするため、厳密なnullチェックに変更
             let value_usd: number | null = null;
-            if (rec.symbol && rec.price != null && rec.amount != null) { // `!= null` は `!== null && !== undefined` と等価
+            if (rec.symbol && rec.price != null && rec.amount != null) {
                 const quoteCurrency = rec.symbol.split('/')[1];
                 if (quoteCurrency === 'USD' || quoteCurrency === 'USDT') {
                     value_usd = rec.price * rec.amount;
@@ -126,7 +125,7 @@ Deno.serve(async (req) => {
                 fee: rec.fee ?? 0, 
                 fee_asset: rec.fee_asset ?? '', 
                 ts: rec.ts, 
-                value_usd: value_usd, // 計算結果をセット
+                value_usd: value_usd,
                 raw_data: r,
             };
         });
