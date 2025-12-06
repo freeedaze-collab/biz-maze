@@ -10,9 +10,6 @@ const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-
 async function getKey() { return (await crypto.subtle.importKey("raw", Uint8Array.from(atob(Deno.env.get("EDGE_KMS_KEY")!), c => c.charCodeAt(0)), "AES-GCM", false, ["decrypt"])) }
 async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> { const p = blob.split(":"); const k = await getKey(); const d = await crypto.subtle.decrypt({ name: "AES-GCM", iv: decode(p[1]) }, k, decode(p[2])); return JSON.parse(new TextDecoder().decode(d)) }
 
-// ★★★【勝利への最後の一手】★★★
-// 文字列型のタイムスタンプ("1764175144000")を parseInt() で数値に変換してから
-// Dateオブジェクトを生成することで、有効な日付が不正にフィルタリングされる問題を解決する。
 Deno.serve(async (req) => {
     if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
@@ -47,18 +44,14 @@ Deno.serve(async (req) => {
                 if (!symbol) throw new Error('Symbol is required for trade task.');
                 records = await exchangeInstance.fetchMyTrades(symbol, since, limit);
             } else if (task_type === 'fiat') {
-                // @ts-ignore
                 const buys = await exchangeInstance.sapiGetFiatPayments({ transactionType: '0', beginTime: since }).then(r => r.data || []);
-                // @ts-ignore
                 const sells = await exchangeInstance.sapiGetFiatPayments({ transactionType: '1', beginTime: since }).then(r => r.data || []);
                 records = [
                     ...buys.map(b => ({...b, transactionType: '0'})),
                     ...sells.map(s => ({...s, transactionType: '1'}))
                 ];
             } else if (task_type === 'simple-earn') {
-                // @ts-ignore
                 const subscriptions = await exchangeInstance.sapiGetSimpleEarnFlexibleHistorySubscriptionRecord({ beginTime: since }).then(r => r.rows || []);
-                // @ts-ignore
                 const redemptions = await exchangeInstance.sapiGetSimpleEarnFlexibleHistoryRedemptionRecord({ beginTime: since }).then(r => r.rows || []);
                 records = [...subscriptions, ...redemptions];
             } else if (task_type === 'deposits') {
@@ -66,10 +59,8 @@ Deno.serve(async (req) => {
             } else if (task_type === 'withdrawals') {
                 records = await exchangeInstance.fetchWithdrawals(undefined, since, limit);
             } else if (task_type === 'convert') {
-                // @ts-ignore
                 records = await exchangeInstance.fetchConvertTradeHistory(undefined, since, limit);
             } else if (task_type === 'transfer') {
-                // @ts-ignore
                 records = await exchangeInstance.fetchTransfers(undefined, since, limit);
             }
         } catch(e) {
@@ -77,7 +68,6 @@ Deno.serve(async (req) => {
         }
 
         if (!records || records.length === 0) {
-            console.log(`[WORKER] API call for task '${task_type}' was successful but returned 0 records.`);
             return new Response(JSON.stringify({ message: "No new records for this category.", savedCount: 0 }), { headers: corsHeaders });
         }
 
@@ -115,17 +105,32 @@ Deno.serve(async (req) => {
             } else { 
                 rec = { id: r.id || r.txid, symbol: r.symbol || r.currency, side: r.side || r.type, price: r.price, amount: r.amount, fee: r.fee?.cost, fee_asset: r.fee?.currency, ts: r.timestamp };
             }
+
+            // ★★★【最終改修】★★★ USD換算額 (value_usd) の計算ロジックを追加
+            let value_usd: number | null = null;
+            if (rec.symbol && rec.price && rec.amount) {
+                const quoteCurrency = rec.symbol.split('/')[1];
+                if (quoteCurrency === 'USD' || quoteCurrency === 'USDT') {
+                    value_usd = rec.price * rec.amount;
+                }
+            }
+
             return {
-                user_id: user.id, exchange: exchangeName, trade_id: rec.id ? String(rec.id) : null,
-                symbol: rec.symbol, side: rec.side, 
-                price: rec.price ?? 0, amount: rec.amount ?? 0, fee: rec.fee ?? 0, 
-                fee_asset: rec.fee_asset,
+                user_id: user.id, 
+                exchange: exchangeName, 
+                trade_id: rec.id ? String(rec.id) : null,
+                symbol: rec.symbol, 
+                side: rec.side, 
+                price: rec.price ?? 0, 
+                amount: rec.amount ?? 0, 
+                fee: rec.fee ?? 0, 
+                fee_asset: rec.fee_asset ?? '', 
                 ts: rec.ts, 
+                value_usd: value_usd, // 計算結果をセット
                 raw_data: r,
             };
         });
 
-        //【最重要修正】文字列のタイムスタンプを parseInt で数値に変換してからDateの有効性をチェック
         const recordsToSave = intermediateRecords.filter(r => {
             const isValidDate = r.ts && !isNaN(new Date(parseInt(String(r.ts), 10)).getTime());
             const isValid = r.trade_id && r.symbol && isValidDate;
@@ -134,7 +139,6 @@ Deno.serve(async (req) => {
             }
             return isValid;
         }).map(r => {
-            //【最重要修正】ここでも同様に parseInt を使ってからISO文字列に変換
             return { ...r, ts: new Date(parseInt(String(r.ts), 10)).toISOString() };
         });
 
