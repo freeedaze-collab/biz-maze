@@ -10,9 +10,9 @@ const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-
 async function getKey() { return (await crypto.subtle.importKey("raw", Uint8Array.from(atob(Deno.env.get("EDGE_KMS_KEY")!), c => c.charCodeAt(0)), "AES-GCM", false, ["decrypt"])) }
 async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> { const p = blob.split(":"); const k = await getKey(); const d = await crypto.subtle.decrypt({ name: "AES-GCM", iv: decode(p[1]) }, k, decode(p[2])); return JSON.parse(new TextDecoder().decode(d)) }
 
-// ★★★【最終改修：必須パラメータの追加とロジック修正】★★★
-// ユーザー指摘に基づき、fiat/payments API呼び出しに必須パラメータ `transactionType` を追加。
-// `0`(購入)と`1`(売却)の両方を取得し、それぞれのデータ構造を正しく処理する。
+// ★★★【最終改修：ユーザー指摘の完全反映】★★★
+// 新タスク `simple-earn` の処理ロジックを追加し、bn-flexのような
+// 収益プロダクトの申込(Subscription)と償還(Redemption)の履歴を取得・保存する。
 Deno.serve(async (req) => {
     if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
@@ -47,16 +47,21 @@ Deno.serve(async (req) => {
                 if (!symbol) throw new Error('Symbol is required for trade task.');
                 records = await exchangeInstance.fetchMyTrades(symbol, since, limit);
             } else if (task_type === 'fiat') {
-                //【最重要修正】必須パラメータ `transactionType` を指定してAPIを呼び出す
                 // @ts-ignore
                 const buys = await exchangeInstance.sapiGetFiatPayments({ transactionType: '0', beginTime: since }).then(r => r.data || []);
                 // @ts-ignore
                 const sells = await exchangeInstance.sapiGetFiatPayments({ transactionType: '1', beginTime: since }).then(r => r.data || []);
-                // 後続の処理で区別できるよう、手動で `transactionType` を付与する
                 records = [
                     ...buys.map(b => ({...b, transactionType: '0'})),
                     ...sells.map(s => ({...s, transactionType: '1'}))
                 ];
+            } else if (task_type === 'simple-earn') {
+                //【最重要修正】シンプルアーンの申込と償還の履歴を取得
+                // @ts-ignore
+                const subscriptions = await exchangeInstance.sapiGetSimpleEarnFlexibleHistorySubscriptionRecord({ beginTime: since }).then(r => r.rows || []);
+                // @ts-ignore
+                const redemptions = await exchangeInstance.sapiGetSimpleEarnFlexibleHistoryRedemptionRecord({ beginTime: since }).then(r => r.rows || []);
+                records = [...subscriptions, ...redemptions];
             } else if (task_type === 'deposits') {
                 records = await exchangeInstance.fetchDeposits(undefined, since, limit);
             } else if (task_type === 'withdrawals') {
@@ -80,8 +85,9 @@ Deno.serve(async (req) => {
         console.log(`[WORKER] Found ${records.length} records for task: ${task_type}`);
 
         const recordsToSave = records.map(r => {
-            //【最重要修正】fiat/paymentsの購入(0)と売却(1)の両方に対応する
             const isFiatPayment = r.orderNo && r.transactionType;
+            //【最重要修正】シンプルアーンのデータ(申込/償還)を識別
+            const isSimpleEarn = r.purchaseId || r.redeemId;
 
             let rec = {} as any;
             if (isFiatPayment) {
@@ -91,10 +97,22 @@ Deno.serve(async (req) => {
                     symbol: `${r.cryptoCurrency}/${r.fiatCurrency}`,
                     side: isBuy ? 'buy' : 'sell',
                     price: parseFloat(r.price),
-                    amount: parseFloat(isBuy ? r.obtainAmount : r.sourceAmount), // 購入時は取得量、売却時は支払量
+                    amount: parseFloat(isBuy ? r.obtainAmount : r.sourceAmount),
                     fee: parseFloat(r.totalFee),
                     fee_asset: r.fiatCurrency,
                     ts: r.createTime
+                };
+            } else if (isSimpleEarn) {
+                const isSubscription = !!r.purchaseId; // 申込(bn-flexなど)かどうか
+                rec = {
+                    id: r.purchaseId || r.redeemId,
+                    symbol: r.asset,
+                    side: isSubscription ? 'earn_subscribe' : 'earn_redeem',
+                    price: 1, // 価値は変わらない
+                    amount: parseFloat(r.amount),
+                    fee: 0, // 手数料はかからない
+                    fee_asset: ''
+                    ts: r.time
                 };
             } else { 
                 rec = { id: r.id || r.txid, symbol: r.symbol || r.currency, side: r.side || r.type, price: r.price, amount: r.amount, fee: r.fee?.cost, fee_asset: r.fee?.currency, ts: r.timestamp };
