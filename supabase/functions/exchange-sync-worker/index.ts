@@ -10,9 +10,9 @@ const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-
 async function getKey() { return (await crypto.subtle.importKey("raw", Uint8Array.from(atob(Deno.env.get("EDGE_KMS_KEY")!), c => c.charCodeAt(0)), "AES-GCM", false, ["decrypt"])) }
 async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> { const p = blob.split(":"); const k = await getKey(); const d = await crypto.subtle.decrypt({ name: "AES-GCM", iv: decode(p[1]) }, k, decode(p[2])); return JSON.parse(new TextDecoder().decode(d)) }
 
-// ★★★【最終改修：`limit`の開放】★★★
-// ユーザー指摘の「最新1件しか取れていない」問題を解決する。
-// 全ての履歴取得API呼び出しに `limit: 1000` を明示的に設定し、過去90日間の全件取得を保証する。
+// ★★★【最終改修：API仕様への完全準拠】★★★
+// ユーザー指摘の `rows` パラメータエラーを解決する。
+// `limit` の値を、Binance APIの最大許容値である `500` に修正する。
 Deno.serve(async (req) => {
     if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
@@ -40,7 +40,7 @@ Deno.serve(async (req) => {
 
         let records: any[] = [];
         const since = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).getTime();
-        const limit = 1000; //【最重要修正】取得件数の上限を明示的に指定
+        const limit = 500; //【最重要修正】Binance APIの最大値である500に設定
 
         try {
             if (task_type === 'trade') {
