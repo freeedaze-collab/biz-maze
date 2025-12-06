@@ -106,9 +106,9 @@ Deno.serve(async (req) => {
                 rec = { id: r.id || r.txid, symbol: r.symbol || r.currency, side: r.side || r.type, price: r.price, amount: r.amount, fee: r.fee?.cost, fee_asset: r.fee?.currency, ts: r.timestamp };
             }
 
-            // ★★★【最終改修】★★★ USD換算額 (value_usd) の計算ロジックを追加
+            // ★★★【USD換算修正】★★★ price/amountが0の場合も計算対象とするため、厳密なnullチェックに変更
             let value_usd: number | null = null;
-            if (rec.symbol && rec.price && rec.amount) {
+            if (rec.symbol && rec.price != null && rec.amount != null) { // `!= null` は `!== null && !== undefined` と等価
                 const quoteCurrency = rec.symbol.split('/')[1];
                 if (quoteCurrency === 'USD' || quoteCurrency === 'USDT') {
                     value_usd = rec.price * rec.amount;
@@ -150,10 +150,10 @@ Deno.serve(async (req) => {
         if (dbError) throw dbError;
 
         console.log(`[WORKER] VICTORY! Successfully saved ${savedData.length} records for task ${task_type}.`);
-        return new Response(JSON.stringify({ message: `Saved ${savedData.length} records.` }), { headers: corsHeaders });
+        return new Response(JSON.stringify({ message: `Saved ${savedData.length} records.`, savedCount: savedData.length }), { headers: corsHeaders });
 
     } catch (err) {
-        console.error(`[WORKER-CRASH] Unhandled exception for ${req.method} ${req.url}:`, err);
+        console.error(`[WORK-CRASH] Unhandled exception for ${req.method} ${req.url}:`, err);
         return new Response(JSON.stringify({ error: err.message, stack: err.stack }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 });
     }
 });
