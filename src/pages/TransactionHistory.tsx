@@ -27,11 +27,7 @@ export default function TransactionHistory() {
     const fetchTransactions = async () => {
         setIsLoading(true);
         try {
-            const { data, error } = await supabase
-                .from('v_all_transactions')
-                .select('ts, tx_hash, source, amount, asset, exchange, symbol, value_usd')
-                .order('ts', { ascending: false })
-                .limit(100);
+            const { data, error } = await supabase.from('v_all_transactions').select('ts, tx_hash, source, amount, asset, exchange, symbol, value_usd').order('ts', { ascending: false }).limit(100);
             if (error) throw error;
             setTransactions(data || []);
         } catch (err: any) {
@@ -42,9 +38,7 @@ export default function TransactionHistory() {
         }
     };
 
-    useEffect(() => {
-        fetchTransactions();
-    }, []);
+    useEffect(() => { fetchTransactions(); }, []);
 
     const handleSyncWallet = async () => {
         setIsWalletSyncing(true);
@@ -63,82 +57,36 @@ export default function TransactionHistory() {
         }
     }
 
-    // ★★★【最終修正】★★★ 司令官から提供された「正常動作時のコード」に基づき、
-    // フロントエンドが司令塔となって plan -> worker の2段階連携を行う方式に修正する。
+    // ★★★【診断用コード】★★★
+    // 原因を特定するため、処理を極限まで単純化。
+    // 'binance' という一つの取引所に対してだけ `exchange-sync-all` を呼び出し、結果を画面に表示する。
     const handleSyncAllExchanges = async () => {
         setIsSyncing(true);
-        setSyncProgress(['Starting exchange sync...']);
-        let totalSaved = 0;
-
+        setSyncProgress(['[DIAGNOSTIC MODE] Starting sync...']);
+        console.log('[DIAGNOSTIC] Attempting to invoke exchange-sync-all');
+        
         try {
-            const { data: connections, error: connError } = await supabase.from('exchange_connections').select('exchange');
-            if (connError || !connections) throw new Error('Could not fetch exchange connections.');
-            
-            const exchanges = connections.map(c => c.exchange);
-            setSyncProgress(prev => [...prev, `Found exchanges: ${exchanges.join(', ')}`]);
+            const testExchange = 'binance';
+            setSyncProgress(prev => [...prev, `[DIAGNOSTIC] Invoking function for a single exchange: ${testExchange}`]);
 
-            for (const exchange of exchanges) {
-                setSyncProgress(prev => [...prev, `---`, `Processing ${exchange}...`]);
-                
-                // 1. exchange-sync-all を呼び出し、同期計画を取得する
-                const { data: plan, error: planError } = await supabase.functions.invoke('exchange-sync-all', {
-                    body: { exchange },
-                });
+            const { data, error } = await supabase.functions.invoke('exchange-sync-all', {
+                body: { exchange: testExchange },
+            });
 
-                if (planError) throw new Error(`[${exchange}] Failed to create sync plan: ${planError.message}`);
-                // @ts-ignore
-                if (plan.error) throw new Error(`Plan error for ${exchange}: ${plan.error}`);
-                
-                // @ts-ignore
-                const nonTradeSaved = plan.nonTradeCount || 0;
-                if (nonTradeSaved > 0) {
-                    totalSaved += nonTradeSaved;
-                    setSyncProgress(prev => [...prev, `[${exchange}] Saved ${nonTradeSaved} non-trade records.`]);
-                }
-
-                // 2. 計画から同期すべきシンボルのリストを取得
-                // @ts-ignore
-                const symbolsToSync = plan.symbols;
-                if (!symbolsToSync || symbolsToSync.length === 0) {
-                    setSyncProgress(prev => [...prev, `[${exchange}] No new market trades to sync.`]);
-                    continue;
-                }
-                setSyncProgress(prev => [...prev, `[${exchange}] Found ${symbolsToSync.length} markets with new trades.`]);
-
-                // 3. シンボルごとに worker を呼び出し、各個撃破で同期を実行
-                for (const symbol of symbolsToSync) {
-                    setSyncProgress(prev => [...prev, `  -> Syncing ${symbol}...`]);
-                    
-                    const { data: workerResult, error: workerError } = await supabase.functions.invoke('exchange-sync-worker', {
-                        body: { exchange, symbol, task_type: 'trade' }, 
-                    });
-
-                    if (workerError || (workerResult && workerResult.error)) {
-                        // @ts-ignore
-                        const message = workerError?.message || workerResult?.error;
-                        setSyncProgress(prev => [...prev, `    ERROR for ${symbol}: ${message}`]);
-                        continue;
-                    }
-
-                    // @ts-ignore
-                    const saved = workerResult.savedCount || 0;
-                    totalSaved += saved;
-                    if (saved > 0) {
-                        setSyncProgress(prev => [...prev, `    OK. Saved ${saved} trades.`]);
-                    } else {
-                        setSyncProgress(prev => [...prev, `    OK. No new trades for ${symbol}.`]);
-                    }
-                }
+            if (error) {
+                console.error('[DIAGNOSTIC] Invocation returned an error:', error);
+                setSyncProgress(prev => [...prev, `[DIAGNOSTIC] FAILED. The function returned an error: ${error.message}`]);
+            } else {
+                console.log('[DIAGNOSTIC] Invocation returned data:', data);
+                setSyncProgress(prev => [...prev, `[DIAGNOSTIC] SUCCESS! The function returned a response.`, `Response: ${JSON.stringify(data)}`]);
             }
 
-            setSyncProgress(prev => [...prev, '---', `All syncs complete. Total new records: ${totalSaved}. Refreshing list...`]);
-            await fetchTransactions();
-
-        } catch (error: any) {
-            console.error("Sync failed:", error);
-            setSyncProgress(prev => [...prev, `A critical error occurred: ${error.message}`]);
+        } catch (catchedError: any) {
+            console.error("[DIAGNOSTIC] The entire operation failed in a catch block:", catchedError);
+            setSyncProgress(prev => [...prev, `[DIAGNOSTIC] CRITICAL FAILURE. Could not execute the invoke command: ${catchedError.message}`]);
         } finally {
             setIsSyncing(false);
+            setSyncProgress(prev => [...prev, "[DIAGNOSTIC MODE] Finished."]);
         }
     };
     
@@ -157,40 +105,24 @@ export default function TransactionHistory() {
     return (
         <div className="p-4 md:p-6 lg:p-8">
             <h1 className="text-3xl font-bold mb-6">Transactions</h1>
-
             <section className="mb-8">
                 <h2 className="text-2xl font-semibold mb-2">Data Sync</h2>
-                <p className="text-gray-600 dark:text-gray-400 mb-4">
-                    Manually sync the latest transaction history from your connected sources.
-                </p>
+                <p className="text-gray-600 dark:text-gray-400 mb-4">Manually sync the latest transaction history from your connected sources.</p>
                 <div className="flex items-center space-x-4">
-                    <Button variant="outline" size="sm" onClick={handleSyncAllExchanges} disabled={isSyncing || isWalletSyncing}>
-                        {isSyncing ? 'Syncing Exchanges...' : 'Sync Exchanges'}
-                    </Button>
-                    <Button variant="outline" size="sm" onClick={handleSyncWallet} disabled={isWalletSyncing || isSyncing}>
-                        {isWalletSyncing ? 'Syncing Wallet...' : 'Sync Wallet'}
-                    </Button>
-                     <Link to="/vce" className="text-sm font-medium text-blue-600 hover:underline">
-                        Manage API Keys
-                    </Link>
+                    <Button variant="outline" size="sm" onClick={handleSyncAllExchanges} disabled={isSyncing || isWalletSyncing}>{isSyncing ? 'Syncing Exchanges...' : 'Sync Exchanges'}</Button>
+                    <Button variant="outline" size="sm" onClick={handleSyncWallet} disabled={isWalletSyncing || isSyncing}>{isWalletSyncing ? 'Syncing Wallet...' : 'Sync Wallet'}</Button>
+                     <Link to="/vce" className="text-sm font-medium text-blue-600 hover:underline">Manage API Keys</Link>
                 </div>
                 {syncProgress.length > 0 && (
                     <div className="mt-4 p-4 bg-gray-100 dark:bg-gray-800 rounded-lg text-sm font-mono">
                         <h3 className="font-semibold mb-2">Sync Progress</h3>
-                        <div className="whitespace-pre-wrap max-h-60 overflow-y-auto">
-                            {syncProgress.join('\n')}
-                        </div>
+                        <div className="whitespace-pre-wrap max-h-60 overflow-y-auto">{syncProgress.join('\n')}</div>
                     </div>
                 )}
             </section>
-
             <section>
                 <h2 className="text-2xl font-semibold mb-4">All Transactions</h2>
-                {isLoading ? (
-                    <p>Loading transactions...</p>
-                ) : error ? (
-                    <p className="text-red-500 font-mono">{error}</p>
-                ) : (
+                {isLoading ? <p>Loading transactions...</p> : error ? <p className="text-red-500 font-mono">{error}</p> : (
                     <div className="w-full overflow-x-auto">
                          <table className="min-w-full text-sm text-left">
                             <thead className="font-mono text-gray-500">
@@ -215,9 +147,7 @@ export default function TransactionHistory() {
                                     </tr>
                                 )) : (
                                     <tr>
-                                        <td colSpan={6} className="text-center text-gray-500 py-4">
-                                            No transactions found.
-                                        </td>
+                                        <td colSpan={6} className="text-center text-gray-500 py-4">No transactions found.</td>
                                     </tr>
                                 )}
                             </tbody>
