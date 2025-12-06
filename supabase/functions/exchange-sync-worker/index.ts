@@ -8,11 +8,10 @@ import { decode } from "https://deno.land/std@0.177.0/encoding/base64.ts";
 const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 
 async function getKey() { return (await crypto.subtle.importKey("raw", Uint8Array.from(atob(Deno.env.get("EDGE_KMS_KEY")!), c => c.charCodeAt(0)), "AES-GCM", false, ["decrypt"])) }
-async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> { const p = blob.split(":"); const k = await getKey(); const d = await crypto.subtle.decrypt({ name: "AES-GCM", iv: decode(p[1]) }, k, decode(p[2])); return JSON.parse(new TextDecoder().decode(d)) }
+async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret:string; apiPassphrase?: string }> { const p = blob.split(":"); const k = await getKey(); const d = await crypto.subtle.decrypt({ name: "AES-GCM", iv: decode(p[1]) }, k, decode(p[2])); return JSON.parse(new TextDecoder().decode(d)) }
 
-// ★★★【最終改修：ユーザー指摘の完全反映】★★★
-// 新タスク `simple-earn` の処理ロジックを追加し、bn-flexのような
-// 収益プロダクトの申込(Subscription)と償還(Redemption)の履歴を取得・保存する。
+// ★★★【最終改修：構文エラーの修正】★★★
+// 前回提出コードにあった致命的な構文エラー（カンマ抜け）を修正する。
 Deno.serve(async (req) => {
     if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
@@ -56,7 +55,6 @@ Deno.serve(async (req) => {
                     ...sells.map(s => ({...s, transactionType: '1'}))
                 ];
             } else if (task_type === 'simple-earn') {
-                //【最重要修正】シンプルアーンの申込と償還の履歴を取得
                 // @ts-ignore
                 const subscriptions = await exchangeInstance.sapiGetSimpleEarnFlexibleHistorySubscriptionRecord({ beginTime: since }).then(r => r.rows || []);
                 // @ts-ignore
@@ -86,7 +84,6 @@ Deno.serve(async (req) => {
 
         const recordsToSave = records.map(r => {
             const isFiatPayment = r.orderNo && r.transactionType;
-            //【最重要修正】シンプルアーンのデータ(申込/償還)を識別
             const isSimpleEarn = r.purchaseId || r.redeemId;
 
             let rec = {} as any;
@@ -103,15 +100,15 @@ Deno.serve(async (req) => {
                     ts: r.createTime
                 };
             } else if (isSimpleEarn) {
-                const isSubscription = !!r.purchaseId; // 申込(bn-flexなど)かどうか
+                const isSubscription = !!r.purchaseId;
                 rec = {
                     id: r.purchaseId || r.redeemId,
                     symbol: r.asset,
                     side: isSubscription ? 'earn_subscribe' : 'earn_redeem',
-                    price: 1, // 価値は変わらない
+                    price: 1, 
                     amount: parseFloat(r.amount),
-                    fee: 0, // 手数料はかからない
-                    fee_asset: ''
+                    fee: 0, 
+                    fee_asset: '',
                     ts: r.time
                 };
             } else { 
