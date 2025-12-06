@@ -11,8 +11,8 @@ const NINETY_DAYS_AGO = Date.now() - 90 * 24 * 60 * 60 * 1000;
 async function getKey() { return (await crypto.subtle.importKey("raw", Uint8Array.from(atob(Deno.env.get("EDGE_KMS_KEY")!), c => c.charCodeAt(0)), "AES-GCM", false, ["decrypt"])) }
 async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> { const p = blob.split(":"); const k = await getKey(); const d = await crypto.subtle.decrypt({ name: "AES-GCM", iv: decode(p[1]) }, k, decode(p[2])); return JSON.parse(new TextDecoder().decode(d)) }
 
-// ★★★【エリート工作員・完全最終形態】★★★
-// 全てのロジックを復元し、全取得処理に90日間の期間制限を適用
+// ★★★【エリート工作員・最終決戦仕様】★★★
+// upsertの返り値を信用せず、投入したレコード数を正としてカウントする
 Deno.serve(async (req) => {
     if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
@@ -45,7 +45,6 @@ Deno.serve(async (req) => {
 
         let recordsToSave: any[] = [];
         
-        // ========== 【復元】ここから各種処理 ========== 
         if (task_type === 'trade') {
             if (!symbol) throw new Error('symbol is required for trade sync.');
             console.log(`[WORKER] Fetching SPOT trades for ${symbol} since 90 days ago...`);
@@ -78,7 +77,6 @@ Deno.serve(async (req) => {
                 recordsToSave = transactions.map(r => { const rid=r.id||r.txid,s=r.side||r.type,sy=r.symbol||r.currency; return {user_id:user.id,exchange:exchangeName,trade_id:String(rid),symbol:sy,side:s,price:0,amount:r.amount,fee:r.fee?.cost,fee_asset:r.fee?.currency,ts:new Date(r.timestamp).toISOString(),raw_data:r} });
             }
         }
-        // ================================================
 
         if (recordsToSave.length === 0) {
             console.log(`[WORKER] No new records found for task ${task_type}.`);
@@ -86,11 +84,12 @@ Deno.serve(async (req) => {
         }
 
         console.log(`[WORKER] Saving ${recordsToSave.length} records to the database...`);
-        const { data, error } = await supabaseAdmin.from('exchange_trades').upsert(recordsToSave, { onConflict: 'user_id,exchange,trade_id' });
+        const { error } = await supabaseAdmin.from('exchange_trades').upsert(recordsToSave, { onConflict: 'user_id,exchange,trade_id' });
 
         if (error) throw error;
 
-        const savedCount = (data as any[])?.length ?? 0;
+        //【最終修正】返り値のdataは信用せず、投入したrecordsToSaveのlengthを正とする
+        const savedCount = recordsToSave.length;
         console.log(`[WORKER] Successfully saved ${savedCount} records for task ${task_type}.`);
         return new Response(JSON.stringify({ message: `Sync complete. Saved ${savedCount} records.`, savedCount }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
