@@ -10,9 +10,9 @@ const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-
 async function getKey() { return (await crypto.subtle.importKey("raw", Uint8Array.from(atob(Deno.env.get("EDGE_KMS_KEY")!), c => c.charCodeAt(0)), "AES-GCM", false, ["decrypt"])) }
 async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> { const p = blob.split(":"); const k = await getKey(); const d = await crypto.subtle.decrypt({ name: "AES-GCM", iv: decode(p[1]) }, k, decode(p[2])); return JSON.parse(new TextDecoder().decode(d)) }
 
-// ★★★【最終改修：全方位での履歴取得とデバッグ】★★★
-// 盲点だった「振替」履歴を取得するため `fetchTransfers` を追加。
-// さらに `verbose: true` でccxtの通信ログを全て出力し、根本原因を特定する。
+// ★★★【最終改修：全取引カテゴリの統合】★★★
+// ユーザーの「取引」認識に合わせ、「現物取引」「フィアット購入」「コンバート」を全て取得し統合する。
+// ccxtに無いFiat購入履歴は、BinanceのプライベートAPI `sapiGetFiatOrders` を直接呼び出して取得する。
 Deno.serve(async (req) => {
     if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
@@ -36,75 +36,82 @@ Deno.serve(async (req) => {
             password: credentials.apiPassphrase,
             options: { 'defaultType': 'spot' },
             adjustForTimeDifference: true,
-            verbose: true, // 【最重要デバッグ】ccxtの全通信ログを有効化
         });
 
-        let records: any[] = [];
-        const since = exchangeInstance.parse8601(new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString());
+        let allRecords: any[] = [];
+        const since = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).getTime();
 
-        try {
-            if (task_type === 'trade') {
-                if (!symbol) throw new Error('Symbol is required for trade task.');
-                records = await exchangeInstance.fetchMyTrades(symbol, since, 1000); 
-            } else if (task_type === 'deposits') {
-                records = await exchangeInstance.fetchDeposits(undefined, since);
-            } else if (task_type === 'withdrawals') {
-                records = await exchangeInstance.fetchWithdrawals(undefined, since);
-            } else if (task_type === 'convert') {
-                // @ts-ignore
-                records = await exchangeInstance.fetchConvertTradeHistory(undefined, since);
-            } else if (task_type === 'transfer') { // 【新規追加】振替履歴の取得
-                // @ts-ignore
-                records = await exchangeInstance.fetchTransfers(undefined, since);
-            }
-        } catch (e) {
-            if (e instanceof AuthenticationError) {
-                const errorMessage = `[WORKER] ROOT_CAUSE_ANALYSIS: AUTHENTICATION_ERROR. The API keys for ${exchangeName} are likely invalid or lack permissions. Please generate a new key on the exchange website and ensure 'Enable Reading' is checked.`;
-                console.error(errorMessage);
-                console.error(`Original Error: ${e.message}`);
-                return new Response(JSON.stringify({ error: `Authentication Failed. Please check your API Keys for ${exchangeName}.` }), { status: 401, headers: corsHeaders });
-            } else if (e instanceof ExchangeError) {
-                const errorMessage = `[WORKER] EXCHANGE_ERROR: The exchange reported an issue, possibly an invalid symbol or temporary problem. Task: ${task_type}, Symbol: ${symbol}, Error: ${e.message}`;
-                console.warn(errorMessage);
-            } else {
-                throw e;
-            }
+        //【最重要修正】「取引」タスク実行時に、考えられる全ての取引系APIを並列で叩く
+        if (task_type === 'trade') {
+            if (!symbol) throw new Error('Symbol is required for trade task.');
+
+            const promises = [];
+            // 1. 現物取引履歴 (Spot Trades)
+            promises.push(exchangeInstance.fetchMyTrades(symbol, since, 1000).catch(e => { console.warn(`[WORKER] Could not fetch spot trades for ${symbol}:`, e.message); return []; }));
+            
+            // 2. フィアット購入履歴 (Fiat Buy/Sell) - ccxtに無いため直接呼び出し
+            // @ts-ignore
+            promises.push(exchangeInstance.sapiGetFiatOrders({ transactionType: '0', beginTime: since }).then(r => r.data).catch(e => { console.warn(`[WORKER] Could not fetch fiat buys:`, e.message); return []; }));
+            // @ts-ignore
+            promises.push(exchangeInstance.sapiGetFiatOrders({ transactionType: '1', beginTime: since }).then(r => r.data).catch(e => { console.warn(`[WORKER] Could not fetch fiat sells:`, e.message); return []; }));
+
+            const results = await Promise.all(promises);
+            allRecords = results.flat();
+
+        } else if (task_type === 'deposits') {
+            allRecords = await exchangeInstance.fetchDeposits(undefined, since);
+        } else if (task_type === 'withdrawals') {
+            allRecords = await exchangeInstance.fetchWithdrawals(undefined, since);
+        } else if (task_type === 'convert') {
+            // @ts-ignore
+            allRecords = await exchangeInstance.fetchConvertTradeHistory(undefined, since);
+        } else if (task_type === 'transfer') {
+            // @ts-ignore
+            allRecords = await exchangeInstance.fetchTransfers(undefined, since);
         }
 
-        if (!records || records.length === 0) {
-            //【改修】API呼び出しが成功し、0件だった場合のログを明確化
-            const successMessage = `[WORKER] API call for task '${task_type}' ${symbol ? `on symbol '${symbol}'` : ''} was successful but returned 0 records. This indicates no relevant history was found for this specific category within the last 90 days. Check other categories like 'transfer' or 'convert'.`;
+        if (!allRecords || allRecords.length === 0) {
+            const successMessage = `[WORKER] API call for task '${task_type}' was successful but returned 0 records. No relevant history found for this category.`;
             console.log(successMessage);
-            return new Response(JSON.stringify({ message: "API call successful, but no new records found for this category.", savedCount: 0 }), { headers: corsHeaders });
+            return new Response(JSON.stringify({ message: "No new records for this category.", savedCount: 0 }), { headers: corsHeaders });
         }
 
-        console.log(`[WORKER] VICTORY! Found ${records.length} records for task: ${task_type} ${symbol || ''}`);
+        console.log(`[WORKER] VICTORY! Found a total of ${allRecords.length} records across all API calls for task: ${task_type}`);
 
-        const recordsToSave = records.map(r => {
-            const recordId = r.id || r.txid; 
-            //【改修】振替やコンバートのデータ構造に対応
-            const side = r.side || r.type;
-            let recordSymbol = r.symbol || r.currency;
-            if (task_type === 'convert') recordSymbol = `${r.info.fromAsset}/${r.info.toAsset}`;
+        //【改修】各種APIの異なるレスポンス構造を統一フォーマットに整形
+        const recordsToSave = allRecords.map(r => {
+            const isFiat = r.orderId; // Fiat Order-specific field
+            const isTrade = r.orderId && !r.fiatCurrency; // Spot Trade-specific field
+
+            let record = {} as any;
+            if (isFiat) {
+                record = {
+                    id: r.orderId, symbol: `${r.cryptoCurrency}/${r.fiatCurrency}`,
+                    side: r.transactionType === '0' ? 'buy' : 'sell',
+                    price: parseFloat(r.fiatAmount) / parseFloat(r.cryptoAmount),
+                    amount: parseFloat(r.cryptoAmount),
+                    ts: r.createTime
+                };
+            } else { // Assume Spot trade, withdrawal, deposit etc.
+                record = {
+                    id: r.id || r.txid, symbol: r.symbol || r.currency,
+                    side: r.side || r.type,
+                    price: r.price, amount: r.amount, 
+                    fee: r.fee?.cost, fee_asset: r.fee?.currency,
+                    ts: r.timestamp,
+                };
+            }
 
             return {
-                user_id: user.id, 
-                exchange: exchangeName, 
-                trade_id: String(recordId), 
-                symbol: recordSymbol, 
-                side: side,
-                price: r.price ?? (task_type === 'convert' ? parseFloat(r.info.toAmount)/parseFloat(r.info.fromAmount) : 0),
-                amount: r.amount, 
-                fee: r.fee?.cost, 
-                fee_asset: r.fee?.currency,
-                ts: new Date(r.timestamp).toISOString(), 
-                raw_data: r,
+                user_id: user.id, exchange: exchangeName, trade_id: String(record.id),
+                symbol: record.symbol, side: record.side, price: record.price, amount: record.amount,
+                fee: record.fee, fee_asset: record.fee_asset,
+                ts: new Date(record.ts).toISOString(), raw_data: r,
             };
         }).filter(r => r.trade_id && r.symbol);
 
         if (recordsToSave.length === 0) {
-            console.log(`[WORKER] Mapped records are 0. It means fetched data was not in a savable format.`);
-            return new Response(JSON.stringify({ message: "No valid records to save.", savedCount: 0 }), { headers: corsHeaders });
+            return new Response(JSON.stringify({ message: "Fetched records were not in a savable format.", savedCount: 0 }), { headers: corsHeaders });
         }
 
         const { error: dbError } = await supabaseAdmin.from('exchange_trades').upsert(recordsToSave, { onConflict: 'user_id,exchange,trade_id' });
