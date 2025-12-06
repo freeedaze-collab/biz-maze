@@ -10,9 +10,9 @@ const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-
 async function getKey() { return (await crypto.subtle.importKey("raw", Uint8Array.from(atob(Deno.env.get("EDGE_KMS_KEY")!), c => c.charCodeAt(0)), "AES-GCM", false, ["decrypt"])) }
 async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> { const p = blob.split(":"); const k = await getKey(); const d = await crypto.subtle.decrypt({ name: "AES-GCM", iv: decode(p[1]) }, k, decode(p[2])); return JSON.parse(new TextDecoder().decode(d)) }
 
-// ★★★【最終・論理的修正：分割取得（Pagination）】★★★
-// APIが大量データ要求に空データを返す事実に基づき、
-// whileループで90日間を7日単位に分割し、繰り返し取得する。
+// ★★★【最終・絶対修正：提供資料への完全準拠】★★★
+// 記事#1の教えに従い、sinceパラメータを `exchange.parse8601()` でフォーマットする。
+// これにより、取引所が理解できる正しい形式で日時を渡し、根本的な取得方法の誤りを正す。
 Deno.serve(async (req) => {
     if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
@@ -36,60 +36,32 @@ Deno.serve(async (req) => {
             options: { 'defaultType': 'spot' }
         });
 
-        let allRecords: any[] = [];
-        const ninetyDaysAgo = Date.now() - 90 * 24 * 60 * 60 * 1000;
+        //【最重要修正】記事#1の作法に倣い、日時を取引所が理解できる形式に変換
+        const since = exchangeInstance.parse8601(new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString());
 
-        //【最重要修正】90日分を一括取得するのではなく、7日間隔のループで分割取得する
+        let records: any[] = [];
+
         if (task_type === 'trade') {
             if (!symbol) throw new Error('Symbol is required for trade task.');
-            
-            console.log(`[WORKER] Starting paginated fetch for ${symbol} over 90 days.`);
-            let startTime = ninetyDaysAgo;
-            const endTime = Date.now();
-            const BATCH_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // 7日間隔
-
-            await exchangeInstance.loadMarkets();
-
-            while (startTime < endTime) {
-                const currentEndTime = Math.min(startTime + BATCH_WINDOW_MS, endTime);
-                console.log(`[WORKER] Fetching chunk for ${symbol} from ${new Date(startTime).toISOString()} to ${new Date(currentEndTime).toISOString()}`);
-
-                try {
-                    // sinceではなく、startTimeとendTimeをparamsで明確に指定
-                    const trades = await exchangeInstance.fetchMyTrades(symbol, undefined, 1000, {
-                         'startTime': startTime, 
-                         'endTime': currentEndTime 
-                    });
-                    if (trades && trades.length > 0) {
-                        console.log(`[WORKER] Found ${trades.length} trades in this chunk.`);
-                        allRecords.push(...trades);
-                    }
-                } catch (e) {
-                    console.error(`[WORKER] Error fetching chunk for ${symbol}: ${e.message}`);
-                }
-                
-                startTime = currentEndTime + 1;
-                await new Promise(resolve => setTimeout(resolve, 500)); // API負荷を考慮した待機
-            }
-            console.log(`[WORKER] Total trades found for ${symbol} across all chunks: ${allRecords.length}`);
-
-        } else {
-            // Trade以外のタスクは従来のままで実行
-            const since = ninetyDaysAgo;
-            if (task_type === 'deposits') allRecords = await exchangeInstance.fetchDeposits(undefined, since);
-            else if (task_type === 'withdrawals') allRecords = await exchangeInstance.fetchWithdrawals(undefined, since);
+            console.log(`[WORKER] Fetching trades for ${symbol} since ${new Date(since).toISOString()}`);
+            records = await exchangeInstance.fetchMyTrades(symbol, since, 1000); // 複雑なループを廃し、記事の通りシンプルに取得
+        } else if (task_type === 'deposits') {
+            records = await exchangeInstance.fetchDeposits(undefined, since);
+        } else if (task_type === 'withdrawals') {
+            records = await exchangeInstance.fetchWithdrawals(undefined, since);
+        } else if (task_type === 'convert') {
             // @ts-ignore
-            else if (task_type === 'convert') allRecords = await exchangeInstance.fetchConvertTradeHistory(undefined, since);
+            records = await exchangeInstance.fetchConvertTradeHistory(undefined, since);
         }
 
-        if (!allRecords || allRecords.length === 0) {
+        if (!records || records.length === 0) {
             console.log(`[WORKER] No records found for task: ${task_type} ${symbol || ''}`);
             return new Response(JSON.stringify({ message: "No new records.", savedCount: 0 }), { headers: corsHeaders });
         }
 
-        console.log(`[WORKER] Found total ${allRecords.length} records for task: ${task_type} ${symbol || ''}`);
+        console.log(`[WORKER] Found ${records.length} records for task: ${task_type} ${symbol || ''}`);
 
-        const recordsToSave = allRecords.map(r => {
+        const recordsToSave = records.map(r => {
             const recordId = r.id || r.txid; const side = r.side || r.type;
             let recordSymbol = r.symbol || r.currency;
             if (task_type === 'convert') recordSymbol = `${r.info.fromAsset}/${r.info.toAsset}`;
@@ -106,14 +78,11 @@ Deno.serve(async (req) => {
             return new Response(JSON.stringify({ message: "No valid records to save.", savedCount: 0 }), { headers: corsHeaders });
         }
 
-        // 念の為、重複を排除
-        const uniqueRecords = Array.from(new Map(recordsToSave.map(r => [`${r.exchange}-${r.trade_id}`, r])).values());
-
-        const { error: dbError } = await supabaseAdmin.from('exchange_trades').upsert(uniqueRecords, { onConflict: 'user_id,exchange,trade_id' });
+        const { error: dbError } = await supabaseAdmin.from('exchange_trades').upsert(recordsToSave, { onConflict: 'user_id,exchange,trade_id' });
         if (dbError) throw dbError;
 
-        console.log(`[WORKER] VICTORY! Successfully saved ${uniqueRecords.length} records.`);
-        return new Response(JSON.stringify({ message: `Saved ${uniqueRecords.length} records.` }), { headers: corsHeaders });
+        console.log(`[WORKER] VICTORY! Successfully saved ${recordsToSave.length} records.`);
+        return new Response(JSON.stringify({ message: `Saved ${recordsToSave.length} records.` }), { headers: corsHeaders });
 
     } catch (err) {
         console.error(`[WORKER-CRASH] Task failed for ${req.method} ${req.url}:`, err);
