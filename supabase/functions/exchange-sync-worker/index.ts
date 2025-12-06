@@ -12,8 +12,8 @@ async function getKey() { /* ... */ return (await crypto.subtle.importKey("raw",
 async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> { /* ... */ const p = blob.split(":"); const k = await getKey(); const d = await crypto.subtle.decrypt({ name: "AES-GCM", iv: decode(p[1]) }, k, decode(p[2])); return JSON.parse(new TextDecoder().decode(d)) }
 function transformRecord(r: any, uid: string, ex: string) { const rid=r.id||r.txid; if(!rid)return null; const s=r.side||r.type; const sy=r.symbol||r.currency; if(!sy||!s||!r.amount||!r.timestamp)return null; return {user_id:uid,exchange:ex,trade_id:String(rid),symbol:sy,side:s,price:r.price??0,amount:r.amount,fee:r.fee?.cost,fee_asset:r.fee?.currency,ts:new Date(r.timestamp).toISOString(),raw_data:r} }
 
-// ★★★【最終修正版】★★★
-// "spot"(現物)市場を明確に指定
+// ★★★【最終検証・諜報モード】★★★
+// ccxtの`verbose`フラグを有効にし、RAWリクエスト/レスポンスを記録
 Deno.serve(async (req) => {
     if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
@@ -37,14 +37,15 @@ Deno.serve(async (req) => {
             apiKey: credentials.apiKey, 
             secret: credentials.apiSecret, 
             password: credentials.apiPassphrase,
-            options: { 'defaultType': 'spot' }, // ★★★【最重要修正】現物取引を明示的に指定！
+            options: { 'defaultType': 'spot' }, 
+            verbose: true, // ★★★【諜報モードON】★★★
         });
 
-        console.log(`[WORKER] Fetching spot trades for ${symbol}...`);
+        console.log(`[WORKER] Fetching spot trades for ${symbol} with verbose logging...`);
         const trades = await exchangeInstance.fetchMyTrades(symbol, NINETY_DAYS_AGO);
 
         if (!trades || trades.length === 0) {
-            console.log(`[WORKER] No new spot trades found for ${symbol}.`);
+            console.log(`[WORKER] No new spot trades found for ${symbol}. (Check verbose logs for details)`);
             return new Response(JSON.stringify({ message: `Sync complete for ${symbol}.`, savedCount: 0 }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
         }
 
