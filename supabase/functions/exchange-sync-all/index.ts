@@ -6,9 +6,9 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 
-// ★★★【最終・絶対修正：司令官の越権行為の禁止】★★★
-// 司令官は、作戦計画の立案に専念し、一切、プライベートAPI（fetchBalanceなど）を呼び出さない。
-// 関連市場の特定は、我々のDB内の既存データ（exchange_trades）のみを元に行う。
+// ★★★【最終改修：ユーザー指摘の完全反映】★★★
+// fiat(法定通貨購入)タスクに加え、bn-flexのような収益プロダクトの申込/償還を
+// 取得するための `simple-earn` タスクを司令部の作戦計画に追加する。
 Deno.serve(async (req) => {
     if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
@@ -26,15 +26,21 @@ Deno.serve(async (req) => {
 
         const tasksToDispatch: any[] = [];
 
-        // 1.【特殊任務の計画】APIアクセス不要
-        // ccxtのインスタンスは、has[]のチェックのためだけに、認証情報なしで作成
+        // 1.【特殊任務の計画】
         const publicExchangeInstance = new ccxt[exchangeName](); 
         if (publicExchangeInstance.has['fetchDeposits']) tasksToDispatch.push({ task_type: 'deposits' });
         if (publicExchangeInstance.has['fetchWithdrawals']) tasksToDispatch.push({ task_type: 'withdrawals' });
-        if (exchangeName === 'binance' && publicExchangeInstance.has['fetchConvertTradeHistory']) tasksToDispatch.push({ task_type: 'convert' });
+        if (exchangeName === 'binance') {
+            tasksToDispatch.push({ task_type: 'fiat' });
+            //【最重要修正】シンプルアーン（bn-flexなど）用のタスクを追加
+            tasksToDispatch.push({ task_type: 'simple-earn'}); 
+            if (publicExchangeInstance.has['fetchConvertTradeHistory']) {
+                tasksToDispatch.push({ task_type: 'convert' });
+            }
+        }
         console.log(`[ALL-COMMANDER] Planned special tasks: ${tasksToDispatch.map(t=>t.task_type).join(', ')}`);
 
-        // 2.【市場取引の計画】DB内のデータのみを元に、APIアクセスなしで計画
+        // 2.【市場取引の計画】
         console.log(`[ALL-COMMANDER] Finding relevant assets from internal database...`);
         const { data: pastTrades, error: dbError } = await supabaseAdmin.from('exchange_trades').select('symbol').eq('user_id', user.id).eq('exchange', exchangeName);
         if (dbError) throw new Error(`Failed to fetch past trades from DB: ${dbError.message}`);
@@ -50,7 +56,6 @@ Deno.serve(async (req) => {
             });
         }
 
-        // もしDBに履歴が全くない場合、主要通貨だけでもスキャン対象に加える
         if (relevantAssets.size === 0) {
             console.log(`[ALL-COMMANDER] No past trades found. Adding default major assets to scan.`);
             ['BTC', 'ETH', 'USDT', 'JPY'].forEach(a => relevantAssets.add(a));
@@ -70,7 +75,7 @@ Deno.serve(async (req) => {
         }
         tasksToDispatch.push(...Array.from(symbolsToFetch).map(symbol => ({ task_type: 'trade', symbol: symbol })));
 
-        // 3.【司令部から工作員へ】全計画をワーカーに指令として渡す
+        // 3.【司令部から工作員へ】
         if (tasksToDispatch.length === 0) {
             console.log(`[ALL-COMMANDER] No tasks to dispatch.`);
             return new Response(JSON.stringify({ message: `No tasks to dispatch.` }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
