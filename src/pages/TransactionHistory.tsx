@@ -5,7 +5,6 @@ import { Link } from 'react-router-dom';
 import { supabase } from "../integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 
-// --- Data Structures ---
 interface Transaction {
     ts: string;
     tx_hash: string;
@@ -17,57 +16,14 @@ interface Transaction {
     value_usd: number | null;
 }
 
-interface Holding {
-    asset: string;
-    cost_currency: string;
-    current_amount: number;
-    total_cost: number;
-    avg_buy_price: number;
-    current_price: number | null;
-    current_price_currency: string | null;
-    current_value: number | null;
-    unrealized_pnl: number | null;
-    unrealized_pnl_percent: number | null;
-}
-
-// --- Main Component ---
 export default function TransactionHistory() {
-    // States for transactions
     const [transactions, setTransactions] = useState<Transaction[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
-    
-    // States for portfolio holdings
-    const [holdings, setHoldings] = useState<Holding[]>([]);
-    const [isPortfolioLoading, setIsPortfolioLoading] = useState(true);
-    const [portfolioError, setPortfolioError] = useState<string | null>(null);
-
-    // States for sync operations
     const [isSyncing, setIsSyncing] = useState(false);
     const [isWalletSyncing, setIsWalletSyncing] = useState(false);
     const [syncProgress, setSyncProgress] = useState<string[]>([]);
 
-    // --- Data Fetching Hooks ---
-    useEffect(() => {
-        // Reset states on initial load
-        setIsLoading(true);
-        setIsPortfolioLoading(true);
-        setError(null);
-        setPortfolioError(null);
-
-        // Create independent promises for fetching data
-        const fetchTransactionsPromise = fetchTransactions();
-        const fetchPortfolioPromise = fetchPortfolio();
-
-        // Wait for both to complete
-        Promise.all([fetchTransactionsPromise, fetchPortfolioPromise]).finally(() => {
-            // You might want to set a general loading state to false here if you had one
-        });
-
-    }, []); // Empty dependency array ensures this runs only once on mount
-
-
-    // --- Async Functions ---
     const fetchTransactions = async () => {
         setIsLoading(true);
         try {
@@ -82,21 +38,7 @@ export default function TransactionHistory() {
         }
     };
 
-    const fetchPortfolio = async () => {
-        setIsPortfolioLoading(true);
-        try {
-            const { data, error } = await supabase.functions.invoke('portfolio-summary');
-            if (error) throw new Error(`Function invocation failed: ${error.message}`);
-            // @ts-ignore
-            if (data.error) throw new Error(`Function returned an error: ${data.error}`);
-            setHoldings(data || []);
-        } catch (err: any) {
-            console.error("Error fetching portfolio:", err);
-            setPortfolioError(`Failed to load portfolio: ${err.message}`);
-        } finally {
-            setIsPortfolioLoading(false);
-        }
-    };
+    useEffect(() => { fetchTransactions(); }, []);
 
     const handleSyncWallet = async () => {
         setIsWalletSyncing(true);
@@ -105,8 +47,8 @@ export default function TransactionHistory() {
             const { data, error } = await supabase.functions.invoke('sync-wallet-transactions');
             if (error) throw error;
             // @ts-ignore
-            setSyncProgress(prev => [...prev, data.message || 'Wallet sync complete.', 'Refreshing data...']);
-            await Promise.all([fetchTransactions(), fetchPortfolio()]);
+            setSyncProgress(prev => [...prev, data.message || 'Wallet sync complete.', 'Refreshing list...']);
+            await fetchTransactions();
         } catch(err: any) {
             console.error("Wallet sync failed:", err);
             setSyncProgress(prev => [...prev, `A critical error occurred: ${err.message}`]);
@@ -115,24 +57,39 @@ export default function TransactionHistory() {
         }
     }
 
+    // ★★★【診断用コード】★★★
+    // 原因を特定するため、処理を極限まで単純化。
+    // 'binance' という一つの取引所に対してだけ `exchange-sync-all` を呼び出し、結果を画面に表示する。
     const handleSyncAllExchanges = async () => {
         setIsSyncing(true);
-        setSyncProgress(['Starting exchange sync...']);
+        setSyncProgress(['[DIAGNOSTIC MODE] Starting sync...']);
+        console.log('[DIAGNOSTIC] Attempting to invoke exchange-sync-all');
+        
         try {
-            const { data, error } = await supabase.functions.invoke('exchange-sync-all');
-             if (error) throw error;
-            // @ts-ignore
-            setSyncProgress(prev => [...prev, data.message || 'Exchange sync complete.', 'Refreshing data...']);
-            await Promise.all([fetchTransactions(), fetchPortfolio()]);
-        } catch (err: any) {
-            console.error("Exchange sync failed:", err);
-            setSyncProgress(prev => [...prev, `A critical error occurred: ${err.message}`]);
+            const testExchange = 'binance';
+            setSyncProgress(prev => [...prev, `[DIAGNOSTIC] Invoking function for a single exchange: ${testExchange}`]);
+
+            const { data, error } = await supabase.functions.invoke('exchange-sync-all', {
+                body: { exchange: testExchange },
+            });
+
+            if (error) {
+                console.error('[DIAGNOSTIC] Invocation returned an error:', error);
+                setSyncProgress(prev => [...prev, `[DIAGNOSTIC] FAILED. The function returned an error: ${error.message}`]);
+            } else {
+                console.log('[DIAGNOSTIC] Invocation returned data:', data);
+                setSyncProgress(prev => [...prev, `[DIAGNOSTIC] SUCCESS! The function returned a response.`, `Response: ${JSON.stringify(data)}`]);
+            }
+
+        } catch (catchedError: any) {
+            console.error("[DIAGNOSTIC] The entire operation failed in a catch block:", catchedError);
+            setSyncProgress(prev => [...prev, `[DIAGNOSTIC] CRITICAL FAILURE. Could not execute the invoke command: ${catchedError.message}`]);
         } finally {
             setIsSyncing(false);
+            setSyncProgress(prev => [...prev, "[DIAGNOSTIC MODE] Finished."]);
         }
     };
-
-    // --- Formatting Helpers ---
+    
     const generateDescription = (tx: Transaction): string => {
         if (tx.symbol) return tx.symbol;
         if (tx.source === 'exchange' && tx.exchange) return `Trade on ${tx.exchange}`;
@@ -140,36 +97,17 @@ export default function TransactionHistory() {
         return ''
     }
 
-    const formatCurrency = (value: number | null, currency: string | null = 'USD') => {
-        if (value === null || typeof value === 'undefined') return 'N/A';
-        return value.toLocaleString('en-US', { style: 'currency', currency: currency });
-    }
-    
-    const formatNumber = (value: number | null) => {
+    const formatCurrency = (value: number | null) => {
         if (value === null || typeof value === 'undefined') return '-';
-        return value.toFixed(8);
+        return value.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
     }
 
-    const formatPercentage = (value: number | null) => {
-        if (value === null || typeof value === 'undefined') return '-';
-        const sign = value > 0 ? '+' : '';
-        return `${sign}${value.toFixed(2)}%`;
-    }
-
-    const getPnlClass = (pnl: number | null) => {
-        if (pnl === null || pnl === 0) return 'text-gray-500';
-        return pnl > 0 ? 'text-green-500' : 'text-red-500';
-    }
-
-    // --- Render Method ---
     return (
         <div className="p-4 md:p-6 lg:p-8">
-            <h1 className="text-3xl font-bold mb-6">Transactions & Portfolio</h1>
-            
-            {/* --- Sync Section --- */}
+            <h1 className="text-3xl font-bold mb-6">Transactions</h1>
             <section className="mb-8">
                 <h2 className="text-2xl font-semibold mb-2">Data Sync</h2>
-                <p className="text-gray-600 dark:text-gray-400 mb-4">Manually sync transaction history. Your portfolio summary will update automatically.</p>
+                <p className="text-gray-600 dark:text-gray-400 mb-4">Manually sync the latest transaction history from your connected sources.</p>
                 <div className="flex items-center space-x-4">
                     <Button variant="outline" size="sm" onClick={handleSyncAllExchanges} disabled={isSyncing || isWalletSyncing}>{isSyncing ? 'Syncing Exchanges...' : 'Sync Exchanges'}</Button>
                     <Button variant="outline" size="sm" onClick={handleSyncWallet} disabled={isWalletSyncing || isSyncing}>{isWalletSyncing ? 'Syncing Wallet...' : 'Sync Wallet'}</Button>
@@ -182,50 +120,6 @@ export default function TransactionHistory() {
                     </div>
                 )}
             </section>
-
-            {/* --- Portfolio Summary Section --- */}
-            <section className="mb-8">
-                <h2 className="text-2xl font-semibold mb-4">Portfolio Summary</h2>
-                {isPortfolioLoading ? <p>Loading portfolio...</p> : portfolioError ? <p className="text-red-500 font-mono">{portfolioError}</p> : (
-                    <div className="w-full overflow-x-auto">
-                         <table className="min-w-full text-sm text-left">
-                            <thead className="font-mono text-gray-500">
-                                <tr>
-                                    <th className="p-2 font-semibold">Asset</th>
-                                    <th className="p-2 font-semibold text-right">Amount</th>
-                                    <th className="p-2 font-semibold text-right">Avg. Buy Price</th>
-                                    <th className="p-2 font-semibold text-right">Current Price</th>
-                                    <th className="p-2 font-semibold text-right">Total Cost</th>
-                                    <th className="p-2 font-semibold text-right">Current Value</th>
-                                    <th className="p-2 font-semibold text-right">Unrealized P&L</th>
-                                </tr>
-                            </thead>
-                            <tbody className="font-mono">
-                                {holdings.length > 0 ? holdings.map((h) => (
-                                    <tr key={h.asset} className="border-b border-gray-200 dark:border-gray-700">
-                                        <td className="p-2 font-bold whitespace-nowrap">{h.asset}</td>
-                                        <td className="p-2 text-right whitespace-nowrap">{formatNumber(h.current_amount)}</td>
-                                        <td className="p-2 text-right whitespace-nowrap">{formatCurrency(h.avg_buy_price, h.cost_currency)}</td>
-                                        <td className="p-2 text-right whitespace-nowrap">{formatCurrency(h.current_price, h.current_price_currency)}</td>
-                                        <td className="p-2 text-right whitespace-nowrap">{formatCurrency(h.total_cost, h.cost_currency)}</td>
-                                        <td className="p-2 text-right whitespace-nowrap">{formatCurrency(h.current_value, h.current_price_currency)}</td>
-                                        <td className={`p-2 text-right font-semibold whitespace-nowrap ${getPnlClass(h.unrealized_pnl)}`}>
-                                            <div>{formatCurrency(h.unrealized_pnl, h.current_price_currency)}</div>
-                                            <div className="text-xs">({formatPercentage(h.unrealized_pnl_percent)})</div>
-                                        </td>
-                                    </tr>
-                                )) : (
-                                    <tr>
-                                        <td colSpan={7} className="text-center text-gray-500 py-4">No holdings found. Sync your transactions to build your portfolio.</td>
-                                    </tr>
-                                )}
-                            </tbody>
-                        </table>
-                    </div>
-                )}
-            </section>
-
-            {/* --- All Transactions Section --- */}
             <section>
                 <h2 className="text-2xl font-semibold mb-4">All Transactions</h2>
                 {isLoading ? <p>Loading transactions...</p> : error ? <p className="text-red-500 font-mono">{error}</p> : (

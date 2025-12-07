@@ -86,6 +86,7 @@ Deno.serve(async (req) => {
                     side: isBuy ? 'buy' : 'sell',
                     price: parseFloat(r.price),
                     amount: parseFloat(isBuy ? r.obtainAmount : r.sourceAmount),
+                    cost: parseFloat(isBuy ? r.sourceAmount : r.obtainAmount), // ★【支払額】を記録
                     fee: parseFloat(r.totalFee),
                     fee_asset: r.fiatCurrency,
                     ts: r.createTime
@@ -98,12 +99,23 @@ Deno.serve(async (req) => {
                     side: isSubscription ? 'earn_subscribe' : 'earn_redeem',
                     price: 1, 
                     amount: parseFloat(r.amount),
+                    cost: parseFloat(r.amount), // ★ Earnなので取得額=コスト
                     fee: 0, 
                     fee_asset: '',
                     ts: r.time
                 };
             } else { 
-                rec = { id: r.id || r.txid, symbol: r.symbol || r.currency, side: r.side || r.type, price: r.price, amount: r.amount, fee: r.fee?.cost, fee_asset: r.fee?.currency, ts: r.timestamp };
+                rec = { 
+                    id: r.id || r.txid, 
+                    symbol: r.symbol || r.currency, 
+                    side: r.side || r.type, 
+                    price: r.price, 
+                    amount: r.amount, 
+                    cost: r.cost, // ★ 市場取引の支払額
+                    fee: r.fee?.cost, 
+                    fee_asset: r.fee?.currency, 
+                    ts: r.timestamp 
+                };
             }
 
             let value_usd: number | null = null;
@@ -122,6 +134,7 @@ Deno.serve(async (req) => {
                 side: rec.side, 
                 price: rec.price ?? 0, 
                 amount: rec.amount ?? 0, 
+                cost: rec.cost ?? null, // ★【支払額】を最終オブジェクトに反映
                 fee: rec.fee ?? 0, 
                 fee_asset: rec.fee_asset ?? '', 
                 ts: rec.ts, 
@@ -138,7 +151,8 @@ Deno.serve(async (req) => {
             }
             return isValid;
         }).map(r => {
-            return { ...r, ts: new Date(parseInt(String(r.ts), 10)).toISOString() };
+            // costがnullでないことを確認してからDBへ
+            return { ...r, cost: r.cost ?? 0, ts: new Date(parseInt(String(r.ts), 10)).toISOString() };
         });
 
         if (recordsToSave.length === 0) {
