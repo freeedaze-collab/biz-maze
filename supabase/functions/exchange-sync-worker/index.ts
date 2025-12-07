@@ -74,12 +74,12 @@ Deno.serve(async (req) => {
         console.log(`[WORKER] Found ${records.length} records for task: ${task_type}`);
 
         const intermediateRecords = records.map(r => {
-            let payment_amount: number | string | null = null;
-            let rec: any = {};
+            const isFiatPayment = task_type === 'fiat'; 
+            const isSimpleEarn = task_type === 'simple-earn';
 
-            if (task_type === 'fiat') {
+            let rec: any = {};
+            if (isFiatPayment) {
                 const isBuy = r.transactionType === '0';
-                payment_amount = parseFloat(isBuy ? r.sourceAmount : r.obtainAmount);
                 rec = {
                     id: r.orderNo,
                     symbol: `${r.cryptoCurrency}/${r.fiatCurrency}`,
@@ -87,31 +87,23 @@ Deno.serve(async (req) => {
                     price: parseFloat(r.price),
                     amount: parseFloat(isBuy ? r.obtainAmount : r.sourceAmount),
                     fee: parseFloat(r.totalFee),
+                    fee_asset: r.fiatCurrency,
                     ts: r.createTime
                 };
-            } else if (task_type === 'simple-earn') {
+            } else if (isSimpleEarn) {
                 const isSubscription = !!r.purchaseId;
-                payment_amount = parseFloat(r.amount);
                 rec = {
                     id: r.purchaseId || r.redeemId,
                     symbol: r.asset,
                     side: isSubscription ? 'earn_subscribe' : 'earn_redeem',
                     price: 1, 
                     amount: parseFloat(r.amount),
-                    fee: 0,
+                    fee: 0, 
+                    fee_asset: '',
                     ts: r.time
                 };
-            } else {
-                payment_amount = r.cost;
-                rec = { 
-                    id: r.id || r.txid, 
-                    symbol: r.symbol || r.currency, 
-                    side: r.side || r.type, 
-                    price: r.price, 
-                    amount: r.amount, 
-                    fee: r.fee?.cost, 
-                    ts: r.timestamp 
-                };
+            } else { 
+                rec = { id: r.id || r.txid, symbol: r.symbol || r.currency, side: r.side || r.type, price: r.price, amount: r.amount, fee: r.fee?.cost, fee_asset: r.fee?.currency, ts: r.timestamp };
             }
 
             let value_usd: number | null = null;
@@ -131,8 +123,7 @@ Deno.serve(async (req) => {
                 price: rec.price ?? 0, 
                 amount: rec.amount ?? 0, 
                 fee: rec.fee ?? 0, 
-                // ★★★【ご指示通り】支払額(cost)を、既存の fee_currency 列に格納 ★★★
-                fee_currency: payment_amount ? String(payment_amount) : null, 
+                fee_asset: rec.fee_asset ?? '', 
                 ts: rec.ts, 
                 value_usd: value_usd,
                 raw_data: r,
@@ -147,7 +138,6 @@ Deno.serve(async (req) => {
             }
             return isValid;
         }).map(r => {
-            // cost列への参照を完全に削除
             return { ...r, ts: new Date(parseInt(String(r.ts), 10)).toISOString() };
         });
 
@@ -155,7 +145,6 @@ Deno.serve(async (req) => {
             return new Response(JSON.stringify({ message: "Fetched records were not in a savable format.", savedCount: 0 }), { headers: corsHeaders });
         }
 
-        // 'cost'列が存在しないため、このupsertは成功する
         const { error: dbError, data: savedData } = await supabaseAdmin.from('exchange_trades').upsert(recordsToSave, { onConflict: 'user_id,exchange,trade_id' }).select();
         if (dbError) throw dbError;
 
