@@ -13,38 +13,53 @@ Deno.serve(async (req) => {
     }
 
     try {
-        // Create a Supabase client with the user's authorization to invoke other functions
+        // --- [START] ROBUST BODY HANDLING ---
+        // This function is designed to be called in two ways:
+        // 1. With an empty body, signaling a full sync of all user credentials.
+        // 2. With a JSON body like `{"credential_ids": ["id1", "id2"]}` for a partial sync.
+        let credentialIdsToSync: string[] | null = null;
+        try {
+            const body = await req.json();
+            if (body && Array.isArray(body.credential_ids)) {
+                credentialIdsToSync = body.credential_ids;
+            }
+        } catch (e) {
+            // This error is expected if the request has no body or malformed JSON.
+            // We robustly interpret this as a signal to sync ALL credentials.
+            console.log("No valid JSON body found, proceeding to sync all credentials for user.");
+        }
+        // --- [END] ROBUST BODY HANDLING ---
+
         const supabase = createClient(
             Deno.env.get('SUPABASE_URL')!,
             Deno.env.get('SUPABASE_ANON_KEY')!,
             { global: { headers: { Authorization: req.headers.get('Authorization')! } } }
         );
 
-        // Get the user from the session.
         const { data: { user } } = await supabase.auth.getUser();
-        if (!user) {
-            console.error("User not authenticated");
-            throw new Error('User not authenticated');
-        }
+        if (!user) throw new Error('User not authenticated');
         
-        console.log(`User ${user.id} authenticated.`);
+        console.log(`User ${user.id} authenticated. Plan: ${credentialIdsToSync ? `Sync specific IDs` : 'Sync all'}`);
 
-        // Use the admin client to securely fetch credentials
         const adminSupabase = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
 
-        const { data: credentials, error: credsError } = await adminSupabase
-            .from('exchange_api_credentials') // CORRECTED table name
-            .select('id, exchange') // Select only what's needed to trigger the worker
+        // Build the query to fetch the credentials that need to be synced.
+        let query = adminSupabase
+            .from('exchange_api_credentials')
+            .select('id, exchange')
             .eq('user_id', user.id);
 
-        if (credsError) {
-            console.error("Error fetching credentials:", credsError);
-            throw credsError;
+        // If specific IDs were provided in the request, filter the query.
+        if (credentialIdsToSync && credentialIdsToSync.length > 0) {
+            query = query.in('id', credentialIdsToSync);
         }
 
+        const { data: credentials, error: credsError } = await query;
+
+        if (credsError) throw credsError;
+
         if (!credentials || credentials.length === 0) {
-            console.log("No credentials found for user.");
-            return new Response(JSON.stringify({ message: 'No exchange credentials found for this user.' }), {
+            return new Response(JSON.stringify({ message: 'No matching exchange credentials found to sync.' }), {
                 headers: { ...corsHeaders, 'Content-Type': 'application/json' },
                 status: 200
             });
@@ -52,16 +67,13 @@ Deno.serve(async (req) => {
         
         console.log(`Found ${credentials.length} credentials. Invoking worker for each.`);
 
-        // Invoke the worker function for each credential.
-        // This offloads the heavy work to background workers.
+        // Asynchronously invoke the worker function for each credential.
         const invocationPromises = credentials.map(cred => {
-            console.log(`Invoking worker for exchange: ${cred.exchange} (credential ID: ${cred.id})`);
             return supabase.functions.invoke('exchange-sync-worker', {
-                body: { credential_id: cred.id } // Pass the credential ID to the worker
+                body: { credential_id: cred.id }
             });
         });
 
-        // Wait for all invocation requests to be sent.
         await Promise.all(invocationPromises);
 
         console.log("All worker invocations have been successfully triggered.");
@@ -72,7 +84,7 @@ Deno.serve(async (req) => {
         });
 
     } catch (err) {
-        console.error('Critical error in exchange-sync-all function:', err);
+        console.error(`[ALL-COMMANDER-CRASH] Critical error in exchange-sync-all:`, err);
         return new Response(JSON.stringify({ error: err.message }), {
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
             status: 500,
