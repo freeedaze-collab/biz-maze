@@ -38,19 +38,22 @@ const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-
 
 async function syncTradesForCredential(supabase: SupabaseClient, credentialId: string) {
     // 1. Fetch the specific credential using the ID
+    // CORRECTED: Select `encrypted_blob` instead of the non-existent `blob` column.
     const { data: cred, error: credError } = await supabase
         .from('exchange_api_credentials')
-        .select('user_id, exchange, blob')
+        .select('user_id, exchange, encrypted_blob')
         .eq('id', credentialId)
         .single();
 
-    if (credError) throw new Error(`Credential not found: ${credError.message}`);
-    const { user_id, exchange, blob } = cred;
+    if (credError) throw new Error(`Credential lookup failed: ${credError.message}`);
+    if (!cred || !cred.encrypted_blob) throw new Error(`Credential not found or blob is empty for ID: ${credentialId}`);
+    
+    const { user_id, exchange, encrypted_blob } = cred;
 
     console.log(`[WORKER] Starting sync for user ${user_id} on exchange ${exchange}`);
 
-    // 2. Decrypt the API keys
-    const { apiKey, apiSecret } = await decrypt(blob);
+    // 2. Decrypt the API keys from the correct column
+    const { apiKey, apiSecret } = await decrypt(encrypted_blob);
     if (!apiKey || !apiSecret) throw new Error(`Decryption failed for credential ID: ${credentialId}`);
 
     // 3. Initialize CCXT and fetch trades
