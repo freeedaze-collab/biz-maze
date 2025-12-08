@@ -1,93 +1,66 @@
--- supabase/migrations/20251216_fix_holdings_calculation.sql
--- PURPOSE: Final, definitive fix for holdings calculation.
--- This version correctly handles all transaction types, removes destructive filtering,
--- and adds the requested realized capital gain/loss column.
+-- supabase/migrations/20251214_add_identifiers_to_view.sql
+-- PURPOSE: Add wallet_address and connection_name, AND critically, fix the amount calculation for SELL trades.
 
--- Drop the existing view to ensure a clean re-creation of the schema.
-DROP VIEW IF EXISTS public.v_holdings CASCADE;
+-- Drop the view and dependent views to redefine the base structure.
+DROP VIEW IF EXISTS public.all_transactions CASCADE;
 
--- =================================================================
--- TABLE: asset_prices (Ensures it exists)
--- =================================================================
-CREATE TABLE IF NOT EXISTS public.asset_prices (
-    asset TEXT PRIMARY KEY,
-    current_price NUMERIC NOT NULL,
-    last_updated TIMESTAMPTZ DEFAULT now()
-);
-
--- Insert/update dummy data for demonstration.
-INSERT INTO public.asset_prices (asset, current_price)
-VALUES
-    ('ETH', 3500.00),
-    ('BTC', 68000.00)
-ON CONFLICT (asset) DO UPDATE SET
-    current_price = EXCLUDED.current_price,
-    last_updated = now();
+CREATE OR REPLACE VIEW public.all_transactions AS
 
 -- =================================================================
--- VIEW: v_holdings (Definitive, Corrected, and Enhanced Version)
+-- On-chain Transactions (FROM: public.wallet_transactions)
+-- This part remains unchanged.
 -- =================================================================
-CREATE OR REPLACE VIEW public.v_holdings AS
-
-WITH base_calcs AS (
-    -- Step 1: Aggregate all inflows, outflows, costs, and proceeds from the base transactions view.
-    SELECT
-        user_id,
-        asset,
-
-        -- ★ FIX: Inflows now include all relevant types (buy, receive, deposit, in).
-        SUM(CASE WHEN type ILIKE 'buy' OR type ILIKE 'receive' OR type ILIKE 'deposit%' OR type ILIKE 'in' THEN amount ELSE 0 END) as total_inflow_amount,
-
-        -- ★ FIX: Outflows now include all relevant types (sell, send, withdraw, out).
-        SUM(CASE WHEN type ILIKE 'sell' OR type ILIKE 'send' OR type ILIKE 'withdraw%' OR type ILIKE 'out' THEN amount ELSE 0 END) as total_outflow_amount,
-
-        -- Cost basis calculations (from BUYs only).
-        SUM(CASE WHEN type ILIKE 'buy' THEN amount * price ELSE 0 END) as total_buy_cost,
-        SUM(CASE WHEN type ILIKE 'buy' THEN amount ELSE 0 END) as total_buy_quantity,
-
-        -- ★ NEW: Sell proceeds and quantity for capital gain calculation.
-        SUM(CASE WHEN type ILIKE 'sell' THEN amount * price ELSE 0 END) as total_sell_proceeds,
-        SUM(CASE WHEN type ILIKE 'sell' THEN amount ELSE 0 END) as total_sell_quantity
-
-    FROM
-        public.all_transactions
-    GROUP BY
-        user_id,
-        asset
-)
-
--- Step 2: Join with prices and calculate all final metrics.
 SELECT
-    b.user_id,
-    b.asset,
-    -- Final Current Amount (can now be negative if more was sold than bought).
-    (b.total_inflow_amount - b.total_outflow_amount) as current_amount,
-
-    -- Current market price (defaults to 0 if not available).
-    COALESCE(ap.current_price, 0) as current_price,
-
-    -- Current market value.
-    ROUND(
-        (b.total_inflow_amount - b.total_outflow_amount) * COALESCE(ap.current_price, 0),
-        2
-    ) AS current_value,
-
-    -- Average Buy Price (cost per unit bought).
-    ROUND(
-        (CASE WHEN b.total_buy_quantity > 0 THEN b.total_buy_cost / b.total_buy_quantity ELSE 0 END),
-        2
-    ) as average_buy_price,
-
-    -- Total acquisition cost (total spent on buys).
-    ROUND(b.total_buy_cost, 2) as total_cost,
-
-    -- ★ NEW: Realized Capital Gain/Loss.
-    ROUND(
-        b.total_sell_proceeds - (b.total_sell_quantity * (CASE WHEN b.total_buy_quantity > 0 THEN b.total_buy_cost / b.total_buy_quantity ELSE 0 END)),
-        2
-    ) as realized_capital_gain_loss
+    t.id::text,
+    t.user_id,
+    t.tx_hash AS reference_id,
+    t.timestamp AS date,
+    'On-chain: ' || t.direction || ' ' || COALESCE(t.asset_symbol, 'ETH') AS description,
+    (t.value_wei / 1e18) AS amount,
+    COALESCE(t.asset_symbol, 'ETH') AS asset,
+    NULL AS quote_asset,
+    NULL AS price, -- On-chain transactions don't have a direct price.
+    t.direction AS type,
+    'on-chain' as source,
+    t.chain_id::text AS chain,
+    t.wallet_address,
+    NULL::text AS connection_name
 FROM
-    base_calcs b
+    public.wallet_transactions t
+
+UNION ALL
+
+-- =================================================================
+-- Exchange Trades (FROM: public.exchange_trades)
+-- ★★★ THIS SECTION IS NOW CORRECTED ★★★
+-- =================================================================
+SELECT
+    et.trade_id::text AS id,
+    et.user_id,
+    et.trade_id::text AS reference_id,
+    et.ts AS date,
+    -- Description remains as is, for human readability.
+    'Exchange: ' || et.side || ' ' || et.amount::text || ' ' || et.symbol || ' @ ' || et.price::text AS description,
+
+    -- ★ CRUCIAL FIX: Calculate the amount of the BASE asset correctly.
+    CASE
+        WHEN et.side = 'buy' THEN et.amount -- For buys, amount is already the base asset quantity.
+        WHEN et.side = 'sell' AND et.price IS NOT NULL AND et.price > 0 THEN et.amount / et.price -- For sells, calculate base asset quantity from quote amount and price.
+        ELSE 0 -- If price is zero for a sell, we cannot know the amount, so default to 0.
+    END AS amount,
+
+    split_part(et.symbol, '/', 1) AS asset, -- e.g., 'BTC' from 'BTC/JPY'
+    split_part(et.symbol, '/', 2) AS quote_asset, -- e.g., 'JPY' from 'BTC/JPY'
+
+    -- ★ FIX: Use the actual price from the exchange_trades table.
+    et.price,
+
+    et.side AS type, -- 'buy' or 'sell'
+    'exchange' as source,
+    et.exchange AS chain,
+    NULL::text AS wallet_address,
+    ec.connection_name
+FROM
+    public.exchange_trades et
 LEFT JOIN
-    public.asset_prices ap ON b.asset = ap.asset;
--- ★ CRUCIAL FIX: The WHERE clause that was filtering out BTC has been completely removed.
+    public.exchange_connections ec ON et.exchange_connection_id = ec.id;
