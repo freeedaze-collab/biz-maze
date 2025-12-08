@@ -17,9 +17,11 @@ SELECT
     t.timestamp AS date,
     'On-chain: ' || t.direction || ' ' || COALESCE(t.asset_symbol, 'UNKNOWN_ASSET') AS description,
     (t.value_wei / 1e18) AS amount,
+    -- FIX: Default NULL asset symbols to 'UNKNOWN_ASSET' to prevent misclassification as ETH
     COALESCE(t.asset_symbol, 'UNKNOWN_ASSET') AS asset,
     NULL AS quote_asset,
     NULL AS price,
+    -- NOTE: On-chain transactions do not have an inherent acquisition cost in this table
     NULL::numeric AS acquisition_price_total,
     t.direction AS type, -- 'IN' or 'OUT'
     'on-chain' as source,
@@ -37,7 +39,6 @@ SELECT
     et.user_id,
     et.trade_id::text AS reference_id,
     et.ts AS date,
-    -- FIX: Use et.price for the description
     'Exchange: ' || et.side || ' ' || et.amount::text || ' ' || et.symbol || ' @ ' || et.price::text AS description,
     et.amount,
     split_part(et.symbol, '/', 1) AS asset,
