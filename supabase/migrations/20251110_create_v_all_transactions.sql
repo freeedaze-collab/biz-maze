@@ -1,106 +1,60 @@
--- 統合ビュー: ウォレット + 取引所の取引を安全に統合
--- to_jsonb 抽出でスキーマ揺れに強く、UNIX ms / ISO の時刻や売買符号をビュー側で調整
 
--- 既存ビューを再生成（テーブルの有無に応じて内容を切り替える）
-DO $$
-DECLARE
-  has_exchange boolean;
-BEGIN
-  SELECT EXISTS (
-    SELECT 1 FROM information_schema.tables
-    WHERE table_schema = 'public' AND table_name = 'exchange_trades'
-  ) INTO has_exchange;
+-- supabase/migrations/20251110_create_v_all_transactions.sql
+-- PURPOSE: Defines the consolidated transaction view for the entire application.
+-- This is the single source of truth for all transaction-like activities.
 
-  IF has_exchange THEN
-    EXECUTE $$
-      CREATE OR REPLACE VIEW public.v_all_transactions AS
-      (
-        -- Wallet side
-        SELECT
-          w.user_id,
-          'wallet'::text AS source,
-          (to_jsonb(w)->>'id') AS source_id,
-          w.id AS tx_id,
-          concat('wallet:', coalesce(to_jsonb(w)->>'id', w.id::text, 'unknown')) AS ctx_id,
-          COALESCE(
-            (to_jsonb(w)->>'timestamp')::timestamptz,
-            (to_jsonb(w)->>'ts')::timestamptz,
-            to_timestamp(NULLIF(to_jsonb(w)->>'time', '')::bigint / 1000.0),
-            w.created_at
-          ) AS ts,
-          COALESCE(to_jsonb(w)->>'chain', to_jsonb(w)->>'chain_id') AS chain,
-          COALESCE(to_jsonb(w)->>'tx_hash', to_jsonb(w)->>'transaction_hash') AS tx_hash,
-          COALESCE(to_jsonb(w)->>'asset', to_jsonb(w)->>'asset_symbol', to_jsonb(w)->>'currency') AS asset,
-          CASE
-            WHEN to_jsonb(w)->>'amount' IS NOT NULL THEN (to_jsonb(w)->>'amount')::numeric
-            WHEN to_jsonb(w)->>'value_wei' IS NOT NULL THEN (to_jsonb(w)->>'value_wei')::numeric / 1e18
-            ELSE NULL
-          END AS amount,
-          NULL::text AS exchange,
-          NULL::text AS symbol,
-          NULL::numeric AS fee,
-          NULL::text AS fee_asset
-        FROM public.wallet_transactions w
+-- Drop the existing view to ensure a clean replacement with the updated structure
+DROP VIEW IF EXISTS public.v_all_transactions;
 
-        UNION ALL
+-- Create the definitive version of the view
+CREATE OR REPLACE VIEW public.v_all_transactions AS
 
-        -- Exchange side (best-effort: JSON 抽出で必須列の欠落に耐性)
-        SELECT
-          e.user_id,
-          'exchange'::text AS source,
-          COALESCE(to_jsonb(e)->>'id', to_jsonb(e)->>'trade_id', to_jsonb(e)->>'txid', to_jsonb(e)->>'order_id') AS source_id,
-          nullif((to_jsonb(e)->>'id')::bigint, 0) AS tx_id,
-          concat('exchange:', coalesce(to_jsonb(e)->>'id', to_jsonb(e)->>'trade_id', to_jsonb(e)->>'txid', to_jsonb(e)->>'order_id', 'unknown')) AS ctx_id,
-          COALESCE(
-            (to_jsonb(e)->>'ts')::timestamptz,
-            (to_jsonb(e)->>'timestamp')::timestamptz,
-            to_timestamp(NULLIF(to_jsonb(e)->>'time', '')::bigint / 1000.0),
-            (to_jsonb(e)->>'created_at')::timestamptz
-          ) AS ts,
-          NULL::text AS chain,
-          COALESCE(to_jsonb(e)->>'tx_hash', to_jsonb(e)->>'trade_id') AS tx_hash,
-          COALESCE(to_jsonb(e)->>'asset', to_jsonb(e)->>'base_asset') AS asset,
-          (CASE LOWER(COALESCE(to_jsonb(e)->>'side', '')) WHEN 'sell' THEN -1 ELSE 1 END) * COALESCE(
-            (to_jsonb(e)->>'amount')::numeric,
-            (to_jsonb(e)->>'qty')::numeric,
-            ((to_jsonb(e)->>'quantity')::numeric)
-          ) * COALESCE(NULLIF((to_jsonb(e)->>'price')::numeric, 0), 1) AS amount,
-          COALESCE(to_jsonb(e)->>'exchange', to_jsonb(e)->>'exchange_name') AS exchange,
-          COALESCE(to_jsonb(e)->>'symbol', to_jsonb(e)->>'pair') AS symbol,
-          COALESCE((to_jsonb(e)->>'fee')::numeric, 0) AS fee,
-          COALESCE(to_jsonb(e)->>'fee_asset', to_jsonb(e)->>'fee_currency') AS fee_asset
-        FROM public.exchange_trades e
-      );
-    $$;
-  ELSE
-    -- exchange_trades が無い環境ではウォレットのみのビューを作る
-    EXECUTE $$
-      CREATE OR REPLACE VIEW public.v_all_transactions AS
-      SELECT
-        w.user_id,
-        'wallet'::text AS source,
-        (to_jsonb(w)->>'id') AS source_id,
-        w.id AS tx_id,
-        concat('wallet:', coalesce(to_jsonb(w)->>'id', w.id::text, 'unknown')) AS ctx_id,
-        COALESCE(
-          (to_jsonb(w)->>'timestamp')::timestamptz,
-          (to_jsonb(w)->>'ts')::timestamptz,
-          to_timestamp(NULLIF(to_jsonb(w)->>'time', '')::bigint / 1000.0),
-          w.created_at
-        ) AS ts,
-        COALESCE(to_jsonb(w)->>'chain', to_jsonb(w)->>'chain_id') AS chain,
-        COALESCE(to_jsonb(w)->>'tx_hash', to_jsonb(w)->>'transaction_hash') AS tx_hash,
-        COALESCE(to_jsonb(w)->>'asset', to_jsonb(w)->>'asset_symbol', to_jsonb(w)->>'currency') AS asset,
-        CASE
-          WHEN to_jsonb(w)->>'amount' IS NOT NULL THEN (to_jsonb(w)->>'amount')::numeric
-          WHEN to_jsonb(w)->>'value_wei' IS NOT NULL THEN (to_jsonb(w)->>'value_wei')::numeric / 1e18
-          ELSE NULL
-        END AS amount,
-        NULL::text AS exchange,
-        NULL::text AS symbol,
-        NULL::numeric AS fee,
-        NULL::text AS fee_asset
-      FROM public.wallet_transactions w;
-    $$;
-  END IF;
-END $$;
+-- =================================================================
+-- Part 1: On-chain Transactions (from public.wallet_transactions)
+-- =================================================================
+SELECT
+    t.id::text,
+    t.user_id,
+    t.tx_hash AS reference_id,
+    t.timestamp AS date,
+    'On-chain: ' || t.direction || ' ' || COALESCE(t.asset_symbol, 'ETH') AS description,
+    (t.value_wei / 1e18) AS amount,
+    COALESCE(t.asset_symbol, 'ETH') AS asset, -- Base asset
+    NULL AS quote_asset, -- No quote asset for on-chain tx
+    NULL AS price,       -- No price for on-chain tx
+    t.direction AS type, -- 'IN' or 'OUT'
+    'on-chain' as source,
+    t.chain_id::text AS chain
+FROM
+    public.wallet_transactions t
+
+UNION ALL
+
+-- =================================================================
+-- Part 2: Exchange Trades (from public.exchange_trades)
+-- =================================================================
+SELECT
+    et.trade_id::text AS id,
+    et.user_id,
+    et.trade_id::text AS reference_id,
+    et.ts AS date,
+    -- Description now uses the calculated per-unit price for consistency
+    'Exchange: ' || et.side || ' ' || et.amount::text || ' ' || et.symbol || ' @ ' ||
+      (CASE
+          WHEN et.amount IS NOT NULL AND et.amount <> 0 THEN et.fee_currency::numeric / et.amount
+          ELSE 0
+      END)::text AS description,
+    et.amount,
+    split_part(et.symbol, '/', 1) AS asset,      -- Base asset (e.g., BTC)
+    split_part(et.symbol, '/', 2) AS quote_asset, -- Quote asset (e.g., USD)
+    -- This is the per-unit price, calculated from total cost (fee_currency) / amount
+    CASE
+      WHEN et.amount IS NOT NULL AND et.amount <> 0 THEN et.fee_currency::numeric / et.amount
+      ELSE 0
+    END AS price,
+    et.side AS type, -- 'buy' or 'sell'
+    'exchange' as source,
+    et.exchange AS chain
+FROM
+    public.exchange_trades et;
+
