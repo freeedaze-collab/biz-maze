@@ -17,14 +17,17 @@ Deno.serve(async (req) => {
         const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(req.headers.get('Authorization')!.replace('Bearer ', ''));
         if (userError || !user) throw new Error('User not found.');
 
-        const { exchange: exchangeName, task_type, symbol } = await req.json();
-        if (!exchangeName || !task_type) throw new Error('exchange and task_type are required.');
-        console.log(`[WORKER] Starting task: ${task_type} for ${exchangeName} ${symbol ? `on ${symbol}`: ''}`);
-
-        // ★ MODIFICATION 1: Select 'id' along with 'encrypted_blob'
-        const { data: conn, error: connError } = await supabaseAdmin.from('exchange_connections').select('id, encrypted_blob').eq('user_id', user.id).eq('exchange', exchangeName).single();
-        if (connError || !conn) throw new Error(`Connection not found for ${exchangeName}`);
+        // ★ MODIFICATION 1: Expect 'connection_id' from the commander
+        const { connection_id, task_type, symbol } = await req.json();
+        if (!connection_id || !task_type) throw new Error('connection_id and task_type are required.');
         
+        // ★ MODIFICATION 2: Fetch connection details using the provided connection_id
+        const { data: conn, error: connError } = await supabaseAdmin.from('exchange_connections').select('exchange, encrypted_blob').eq('id', connection_id).eq('user_id', user.id).single();
+        if (connError || !conn) throw new Error(`Connection not found for id: ${connection_id}`);
+        const exchangeName = conn.exchange;
+        
+        console.log(`[WORKER] Starting task: ${task_type} for ${exchangeName} (Conn: ${connection_id}) ${symbol ? `on ${symbol}`: ''}`);
+
         const credentials = await decryptBlob(conn.encrypted_blob!);
         
         const exchangeInstance = new ccxt[exchangeName]({
@@ -125,8 +128,8 @@ Deno.serve(async (req) => {
             return {
                 user_id: user.id, 
                 exchange: exchangeName, 
-                // ★ MODIFICATION 2: Add the connection ID to the record to be saved
-                exchange_connection_id: conn.id,
+                // ★ MODIFICATION 3: Add the connection ID to the final record
+                exchange_connection_id: connection_id, 
                 trade_id: rec.id ? String(rec.id) : null,
                 symbol: rec.symbol, 
                 side: rec.side, 
