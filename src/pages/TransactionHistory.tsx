@@ -1,7 +1,7 @@
 
 // @ts-nocheck
 import { Link } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabaseClient";
 import {
   Card,
@@ -35,23 +35,47 @@ const fetchTransactions = async () => {
   return data;
 };
 
+const syncWallet = async () => {
+  const { error } = await supabase.functions.invoke("sync-wallet-transactions");
+  if (error) {
+    throw new Error(error.message);
+  }
+};
+
+const syncAllExchanges = async () => {
+  const { error } = await supabase.functions.invoke("exchange-sync-all");
+  if (error) {
+    throw new Error(error.message);
+  }
+};
+
 const TransactionHistoryScreen1 = () => {
-  const {
-    data: holdings,
-    isLoading: isLoadingHoldings,
-    error: errorHoldings,
-  } = useQuery({
+  const queryClient = useQueryClient();
+
+  const { data: holdings, isLoading: isLoadingHoldings, error: errorHoldings } = useQuery({
     queryKey: ["holdings"],
     queryFn: fetchHoldings,
   });
 
-  const {
-    data: transactions,
-    isLoading: isLoadingTransactions,
-    error: errorTransactions,
-  } = useQuery({
+  const { data: transactions, isLoading: isLoadingTransactions, error: errorTransactions } = useQuery({
     queryKey: ["transactions"],
     queryFn: fetchTransactions,
+  });
+
+  const { mutate: runSyncWallet, isPending: isSyncingWallet } = useMutation({
+    mutationFn: syncWallet,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["holdings"] });
+      queryClient.invalidateQueries({ queryKey: ["transactions"] });
+    },
+  });
+
+  const { mutate: runSyncAllExchanges, isPending: isSyncingAllExchanges } = useMutation({
+    mutationFn: syncAllExchanges,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["holdings"] });
+      queryClient.invalidateQueries({ queryKey: ["transactions"] });
+    },
   });
 
   return (
@@ -76,7 +100,9 @@ const TransactionHistoryScreen1 = () => {
                   <CardTitle>Wallet (ethereum)</CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <Button>Sync</Button>
+                  <Button onClick={() => runSyncWallet()} disabled={isSyncingWallet}>
+                    {isSyncingWallet ? "Syncing..." : "Sync"}
+                  </Button>
                 </CardContent>
               </Card>
               <Card>
@@ -84,7 +110,9 @@ const TransactionHistoryScreen1 = () => {
                   <CardTitle>All Connected Exchanges</CardTitle>
                 </CardHeader>
                 <CardContent className="flex flex-col items-start gap-4">
-                  <Button>Sync All</Button>
+                  <Button onClick={() => runSyncAllExchanges()} disabled={isSyncingAllExchanges}>
+                    {isSyncingAllExchanges ? "Syncing..." : "Sync All"}
+                  </Button>
                   <Link
                     to="/management/exchange-services"
                     className="text-sm text-primary hover:underline"
