@@ -1,6 +1,6 @@
 -- supabase/migrations/20240523120000_consolidated_views_rebuild.sql
--- PURPOSE: Implements a strict calculation for value_in_usd and adds a capital_gain column.
--- VERSION: 17
+-- PURPOSE: Adds usage and note columns to the all_transactions view.
+-- VERSION: 18
 
 -- Step 1: Safely drop views in reverse order of dependency.
 DROP VIEW IF EXISTS public.v_holdings CASCADE;
@@ -9,18 +9,15 @@ DROP VIEW IF EXISTS public.internal_transfer_pairs CASCADE;
 DROP VIEW IF EXISTS public.all_transactions CASCADE;
 
 -- =================================================================
--- VIEW 1: all_transactions (Strict value_in_usd Calculation)
--- This version removes the COALESCE fallback. The `value_in_usd` is now calculated strictly
--- from `acquisition_price_total` and the exchange rate. If a rate is missing, `value_in_usd` will be NULL.
+-- VIEW 1: all_transactions (Added usage and note)
+-- Now includes the `usage` and `note` columns from the base tables.
 -- =================================================================
 CREATE OR REPLACE VIEW public.all_transactions AS
 -- Exchange Trades (via CTE)
 WITH trades_with_acquisition_price AS (
     SELECT
         *,
-        -- Define quote_asset within the CTE.
         split_part(symbol, '/', 2) AS quote_asset,
-        -- Calculate the total acquisition price in the original quote currency.
         CASE
             WHEN side = 'buy' THEN (price * amount) + COALESCE(fee, 0)
             WHEN side = 'sell' THEN amount - COALESCE(fee, 0)
@@ -34,27 +31,24 @@ SELECT
     et.trade_id::text AS reference_id,
     et.ts AS date,
     'Exchange: ' || et.side || ' ' || et.amount::text || ' ' || et.symbol || ' @ ' || et.price::text AS description,
-    -- Correctly represents the amount of the base asset.
     CASE
         WHEN et.side = 'buy' THEN et.amount
         WHEN et.side = 'sell' AND et.price IS NOT NULL AND et.price > 0 THEN et.amount / et.price
         ELSE et.amount
     END AS amount,
     split_part(et.symbol, '/', 1) AS asset,
-    et.quote_asset, -- Use the quote_asset from the CTE.
+    et.quote_asset,
     et.price,
-    et.acquisition_price_total, -- The pre-calculated acquisition price
-
-    -- Step 2: Strictly convert the acquisition price to USD.
-    -- If a rate is missing from `daily_exchange_rates`, this will result in NULL.
+    et.acquisition_price_total,
     CASE
         WHEN et.quote_asset = 'USD' THEN et.acquisition_price_total
         ELSE et.acquisition_price_total * rates.rate
     END AS value_in_usd,
-
     et.side AS type,
     'exchange' as source,
-    et.exchange AS chain
+    et.exchange AS chain,
+    et.usage, -- Added
+    et.note   -- Added
 FROM trades_with_acquisition_price et
 LEFT JOIN public.daily_exchange_rates rates
     ON DATE(et.ts) = rates.date
@@ -68,11 +62,13 @@ SELECT
     t.id::text, t.user_id, t.tx_hash, t.timestamp,
     'On-chain: ' || t.direction || ' ' || COALESCE(t.asset_symbol, 'ETH'),
     (t.value_wei / 1e18), COALESCE(t.asset_symbol, 'ETH'),
-    'USD', -- Quote asset is always USD
+    'USD',
     CASE WHEN (t.value_wei / 1e18) <> 0 THEN t.value_usd / (t.value_wei / 1e18) ELSE 0 END,
     t.value_usd AS acquisition_price_total,
     t.value_usd AS value_in_usd,
-    t.direction, 'on-chain', t.chain_id::text
+    t.direction, 'on-chain', t.chain_id::text,
+    t.usage, -- Added
+    t.note   -- Added
 FROM public.wallet_transactions t;
 
 -- =================================================================
@@ -88,7 +84,7 @@ END as transaction_type
 FROM public.all_transactions t;
 
 -- =================================================================
--- VIEW 3: v_holdings (Added capital_gain column)
+-- VIEW 3: v_holdings (No changes needed for this step)
 -- =================================================================
 CREATE OR REPLACE VIEW public.v_holdings AS
 WITH base_calcs AS (
@@ -107,7 +103,6 @@ SELECT
     COALESCE((SELECT ap.current_price FROM public.asset_prices ap WHERE ap.asset = b.asset), 0) as current_price,
     (b.total_inflow_amount - b.total_outflow_amount) * COALESCE((SELECT ap.current_price FROM public.asset_prices ap WHERE ap.asset = b.asset), 0) AS current_value_usd,
     (CASE WHEN b.total_quantity_of_priced_inflows > 0 THEN b.total_cost_for_priced_inflows / b.total_quantity_of_priced_inflows ELSE 0 END) as average_buy_price,
-    -- Capital Gain Calculation as requested: (Acquisition Cost) - (Current Value)
-    ((b.total_inflow_amount - b.total_outflow_amount) * (CASE WHEN b.total_quantity_of_priced_inflows > 0 THEN b.total_cost_for_priced_inflows / b.total_quantity_of_priced_inflows ELSE 0 END)) - ((b.total_inflow_amount - b.total_outflow_amount) * COALESCE((SELECT ap.current_price FROM public.asset_prices ap WHERE ap.asset = b.asset), 0)) as capital_gain
+    ((b.total_inflow_amount - b.total_outflow_amount) * COALESCE((SELECT ap.current_price FROM public.asset_prices ap WHERE ap.asset = b.asset), 0)) - ((b.total_inflow_amount - b.total_outflow_amount) * (CASE WHEN b.total_quantity_of_priced_inflows > 0 THEN b.total_cost_for_priced_inflows / b.total_quantity_of_priced_inflows ELSE 0 END)) as capital_gain
 FROM base_calcs b
 WHERE (b.total_inflow_amount - b.total_outflow_amount) > 0.000001;
