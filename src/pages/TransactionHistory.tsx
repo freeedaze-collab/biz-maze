@@ -1,325 +1,121 @@
 
-// src/pages/TransactionHistory.tsx
-// VERSION 4: Adds inline editing for accounting 'usage' and 'note' fields.
-import React, { useState, useEffect, useCallback } from 'react';
-import { Link } from 'react-router-dom';
-import { supabase } from "../integrations/supabase/client";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+// src/pages/Accounting.tsx
+// VERSION 2: Fetches data directly from the new database views instead of invoking a function.
+import { useEffect, useState } from "react";
+import { supabase } from "@/integrations/supabase/client";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
+// --- Type Definitions for Financial Statements from DB Views ---
+type PLAccount = { account: string; balance: number; }
+type BSAccount = { account: string; balance: number; }
 
-// --- Constants ---
-const accountingUsageOptions = [
-    { value: 'investment_acquisition_ias38', label: 'Investment Acquisition (IAS 38)' },
-    { value: 'trading_acquisition_ias2', label: 'Trading Acquisition (IAS 2)' },
-    { value: 'mining_rewards', label: 'Mining Rewards' },
-    { value: 'staking_rewards', label: 'Staking Rewards' },
-    { value: 'revenue_ifrs15', label: 'Received as Consideration (IFRS 15)' },
-    { value: 'impairment_ias38', label: 'Impairment (IAS 38)' },
-    { value: 'revaluation_increase_ias38', label: 'Revaluation Increase (IAS 38)' },
-    { value: 'revaluation_decrease_ias38', label: 'Revaluation Decrease (IAS 38)' },
-    { value: 'lcnrv_ias2', label: 'LCNRV Adjustment (IAS 2)' },
-    { value: 'fvlcs_ias2', label: 'FVLCS Adjustment (IAS 2)' },
-    { value: 'sale_ias38', label: 'Sale of Intangible Asset (IAS 38)' },
-    { value: 'sale_ias2', label: 'Sale of Inventory (IAS 2)' },
-    { value: 'crypto_to_crypto_exchange', label: 'Crypto-to-Crypto Exchange' },
-    { value: 'gas_fees', label: 'Gas / Network Fee' },
-    { value: 'loss_unrecoverable', label: 'Loss of Crypto (Unrecoverable)' },
-    { value: 'unspecified', label: 'Unspecified' },
-];
-
-// --- Data Structures ---
-interface Holding {
-    asset: string;
-    currentAmount: number;
-    currentPrice: number;
-    currentValueUsd: number;
-    averageBuyPrice: number;
-    capitalGain: number;
+interface FinancialStatements {
+    profitAndLoss: PLAccount[];
+    balanceSheet: BSAccount[];
 }
 
-interface Transaction {
-    id: string; // This is the unique ID from the view
-    reference_id: string; // Original ID from source table
-    date: string;
-    source: string;
-    description: string;
-    amount: number;
-    asset: string;
-    quoteAsset: string;
-    price: number;
-    valueInUsd: number;
-    type: string;
-    usage: string | null;
-    note: string | null;
-}
+// --- Helper Components ---
+const formatCurrency = (value: number) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value);
 
-type EditedTransaction = Partial<Pick<Transaction, 'usage' | 'note'>>;
+const StatementCard: React.FC<{ title: string; data: { account: string; balance: number }[]; totalLabel?: string; totalValue?: number; }> = ({ title, data, totalLabel, totalValue }) => (
+    <Card>
+        <CardHeader>
+            <CardTitle>{title}</CardTitle>
+        </CardHeader>
+        <CardContent>
+            <Table>
+                <TableHeader>
+                    <TableRow>
+                        <TableHead>Account</TableHead>
+                        <TableHead className="text-right">Balance</TableHead>
+                    </TableRow>
+                </TableHeader>
+                <TableBody>
+                    {data.map((item, index) => (
+                        <TableRow key={index}>
+                            <TableCell className="font-medium">{item.account}</TableCell>
+                            <TableCell className="text-right">{formatCurrency(item.balance)}</TableCell>
+                        </TableRow>
+                    ))}
+                    {totalLabel && totalValue !== undefined && (
+                        <TableRow className="font-bold border-t-2">
+                            <TableCell>{totalLabel}</TableCell>
+                            <TableCell className="text-right">{formatCurrency(totalValue)}</TableCell>
+                        </TableRow>
+                    )}
+                </TableBody>
+            </Table>
+        </CardContent>
+    </Card>
+);
 
 
-// --- Main Component ---
-export default function TransactionHistory() {
-    // Component State
-    const [transactions, setTransactions] = useState<Transaction[]>([]);
-    const [holdings, setHoldings] = useState<Holding[]>([]);
-    const [editedTransactions, setEditedTransactions] = useState<Record<string, EditedTransaction>>({});
-    
-    // UI/Loading State
+// --- Main Accounting Component ---
+export default function Accounting() {
+    const [statements, setStatements] = useState<FinancialStatements | null>(null);
     const [isLoading, setIsLoading] = useState(true);
-    const [isSaving, setIsSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
-    const [isSyncing, setIsSyncing] = useState(false);
-    const [isUpdatingPrices, setIsUpdatingPrices] = useState(false);
-    const [syncMessage, setSyncMessage] = useState<string | null>(null);
-
-    // --- Data Fetching ---
-    const fetchAllData = useCallback(async () => {
-        setIsLoading(true);
-        setError(null);
-        setEditedTransactions({}); // Clear pending edits on refresh
-        try {
-            const [holdingsRes, transactionsRes] = await Promise.all([
-                supabase.from('v_holdings').select('*'),
-                supabase.from('all_transactions').select('*').order('date', { ascending: false }).limit(100)
-            ]);
-
-            if (holdingsRes.error) throw new Error(`Holdings Error: ${holdingsRes.error.message}`);
-            if (transactionsRes.error) throw new Error(`Transactions Error: ${transactionsRes.error.message}`);
-            
-            setHoldings(holdingsRes.data || []);
-            setTransactions(transactionsRes.data as Transaction[] || []);
-        } catch (err: any) {
-            console.error("Error fetching data:", err);
-            setError(`Failed to load data: ${err.message}`);
-        } finally {
-            setIsLoading(false);
-        }
-    }, []);
 
     useEffect(() => {
-        fetchAllData();
-    }, [fetchAllData]);
+        const fetchStatements = async () => {
+            setIsLoading(true);
+            setError(null);
 
-    // --- Event Handlers ---
-    const handleInputChange = (id: string, field: 'usage' | 'note', value: string) => {
-        setEditedTransactions(prev => ({
-            ...prev,
-            [id]: {
-                ...prev[id],
-                [field]: value,
-            },
-        }));
-    };
+            try {
+                // Fetch all statements from the new views in parallel
+                const [plRes, bsRes] = await Promise.all([
+                    supabase.from('v_profit_and_loss').select('account, balance'),
+                    supabase.from('v_balance_sheet').select('account, balance')
+                ]);
 
-    const handleSaveChanges = async () => {
-        setIsSaving(true);
-        setError(null);
-        setSyncMessage("Saving changes...");
+                if (plRes.error) throw new Error(`Profit & Loss Error: ${plRes.error.message}`);
+                if (bsRes.error) throw new Error(`Balance Sheet Error: ${bsRes.error.message}`);
 
-        const updates = Object.entries(editedTransactions);
-        if (updates.length === 0) {
-            setSyncMessage("No changes to save.");
-            setIsSaving(false);
-            return;
-        }
+                setStatements({
+                    profitAndLoss: plRes.data as PLAccount[],
+                    balanceSheet: bsRes.data as BSAccount[],
+                });
 
-        try {
-            const exchangeUpdates: { trade_id: string, usage?: string | null, note?: string | null }[] = [];
-            const walletUpdates: { id: string, usage?: string | null, note?: string | null }[] = [];
+            } catch (err: any) {
+                console.error("Error fetching financial statements:", err);
+                setError(`Failed to load statements: ${err.message}. Ensure the database views (e.g., v_profit_and_loss) are created.`);
+            } finally {
+                setIsLoading(false);
+            }
+        };
 
-            updates.forEach(([id, changes]) => {
-                const originalTx = transactions.find(t => t.id === id);
-                if (!originalTx) return;
+        fetchStatements();
+    }, []);
 
-                if (originalTx.source === 'exchange') {
-                    exchangeUpdates.push({ trade_id: originalTx.reference_id, ...changes });
-                } else if (originalTx.source === 'on-chain') {
-                    walletUpdates.push({ id: originalTx.reference_id, ...changes });
-                }
-            });
-            
-            const results = await Promise.all([
-                exchangeUpdates.length > 0 ? supabase.from('exchange_trades').upsert(exchangeUpdates) : Promise.resolve({ error: null }),
-                walletUpdates.length > 0 ? supabase.from('wallet_transactions').upsert(walletUpdates) : Promise.resolve({ error: null }),
-            ]);
+    const netIncome = statements?.profitAndLoss.reduce((sum, item) => sum + item.balance, 0) ?? 0;
 
-            const [exchangeResult, walletResult] = results;
-            if (exchangeResult.error) throw new Error(`Exchange update failed: ${exchangeResult.error.message}`);
-            if (walletResult.error) throw new Error(`Wallet update failed: ${walletResult.error.message}`);
-
-            setSyncMessage("Changes saved successfully. Refreshing data...");
-            await fetchAllData();
-            setSyncMessage("Data refreshed.");
-
-        } catch (err: any) {
-            console.error("Save failed:", err);
-            setError(`Failed to save changes: ${err.message}`);
-        } finally {
-            setIsSaving(false);
-        }
-    };
-
-
-    const handleSync = async (syncFunction: 'sync-wallet-transactions' | 'exchange-sync-all' | 'sync-historical-exchange-rates', syncType: string) => {
-        setIsSyncing(true);
-        setSyncMessage(`Syncing ${syncType}...`);
-        try {
-            const { error } = await supabase.functions.invoke(syncFunction);
-            if (error) throw error;
-            setSyncMessage(`${syncType} sync complete. Refreshing all data...`);
-            await fetchAllData();
-            setSyncMessage(`${syncType} data refreshed successfully.`);
-        } catch (err: any) {
-            console.error(`${syncType} sync failed:`, err);
-            setError(`A critical error occurred during ${syncType} sync: ${err.message}`);
-        } finally {
-            setIsSyncing(false);
-        }
-    };
-
-    const handleUpdatePrices = async () => {
-        setIsUpdatingPrices(true);
-        setError(null);
-        setSyncMessage('Updating asset prices (USD)...');
-        try {
-            await supabase.functions.invoke('sync-historical-exchange-rates');
-            setSyncMessage('Exchange rates synced. Updating asset prices...');
-
-            const { error } = await supabase.functions.invoke('update-prices');
-            if (error) throw error;
-            setSyncMessage('Prices updated. Refreshing all data...');
-
-            await fetchAllData();
-            setSyncMessage('Portfolio and transactions refreshed with latest prices.');
-
-        } catch (err: any) {
-            console.error("Price update failed:", err);
-            setError(`Failed to update prices: ${err.message}`);
-        } finally {
-            setIsUpdatingPrices(false);
-        }
-    };
-
-    // --- Formatting & Style Helpers ---
-    const formatCurrency = (value: number | null) => value?.toLocaleString('en-US', { style: 'currency', currency: 'USD' }) ?? 'N/A';
-    const formatNumber = (value: number | null) => value?.toFixed(6) ?? '-';
-    const getPnlClass = (pnl: number | null) => (pnl ?? 0) === 0 ? 'text-gray-500' : pnl > 0 ? 'text-green-500' : 'text-red-500';
-
-    // --- Render Method ---
     return (
         <div className="p-4 md:p-6 lg:p-8">
-            <h1 className="text-3xl font-bold mb-6">Transactions & Portfolio</h1>
+            <h1 className="text-3xl font-bold mb-6">Financial Statements</h1>
+
+            {isLoading && <p>Loading financial statements...</p>}
+            {error && <div className="p-4 mb-4 text-sm text-red-700 bg-red-100 rounded-lg" role="alert">{error}</div>}
             
-            <section className="mb-8">
-                <h2 className="text-2xl font-semibold mb-2">Actions</h2>
-                <div className="flex items-center space-x-4">
-                    <Button variant="outline" size="sm" onClick={handleUpdatePrices} disabled={isUpdatingPrices || isSyncing || isSaving}>
-                        {isUpdatingPrices ? 'Updating...' : 'Update Prices & Rates'}
-                    </Button>
-                    <Button variant="outline" size="sm" onClick={() => handleSync('exchange-sync-all', 'Exchanges')} disabled={isSyncing || isUpdatingPrices || isSaving}>
-                        {isSyncing ? 'Syncing...' : 'Sync Exchanges'}
-                    </Button>
-                     <Button size="sm" onClick={handleSaveChanges} disabled={isSaving || isSyncing || Object.keys(editedTransactions).length === 0}>
-                        {isSaving ? 'Saving...' : 'Save Changes'}
-                    </Button>
-                     <Link to="/management/exchange-services" className="text-sm font-medium text-blue-600 hover:underline">Manage API Keys</Link>
+            {statements && (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    {/* --- Profit & Loss --- */}
+                    <StatementCard 
+                        title="Profit & Loss Statement" 
+                        data={statements.profitAndLoss} 
+                        totalLabel="Net Income" 
+                        totalValue={netIncome} 
+                    />
+
+                    {/* --- Balance Sheet --- */}
+                    <StatementCard 
+                        title="Balance Sheet" 
+                        data={statements.balanceSheet} 
+                    />
+                    
+                    {/* Cash Flow will be added in the next step */}
                 </div>
-                {(syncMessage || error) && (
-                    <div className="mt-4 p-4 bg-gray-100 dark:bg-gray-800 rounded-lg text-sm font-mono">
-                        {syncMessage && <p>{syncMessage}</p>}
-                        {error && <p className="text-red-500">Error: {error}</p>}
-                    </div>
-                )}
-            </section>
-
-            <section className="mb-8">
-                <h2 className="text-2xl font-semibold mb-4">Portfolio Summary</h2>
-                {isLoading ? <p>Loading portfolio...</p> : (
-                    <div className="w-full overflow-x-auto">
-                         <table className="min-w-full text-sm text-left">
-                            <thead className="font-mono text-gray-500">
-                                <tr>
-                                    <th className="p-2 font-semibold">Asset</th>
-                                    <th className="p-2 font-semibold text-right">Amount</th>
-                                    <th className="p-2 font-semibold text-right">Avg. Buy Price</th>
-                                    <th className="p-2 font-semibold text-right">Current Price</th>
-                                    <th className="p-2 font-semibold text-right">Current Value</th>
-                                    <th className="p-2 font-semibold text-right">Unrealized P&L</th>
-                                </tr>
-                            </thead>
-                            <tbody className="font-mono">
-                                {holdings.length > 0 ? holdings.map((h) => (
-                                    <tr key={h.asset} className="border-b border-gray-200 dark:border-gray-700">
-                                        <td className="p-2 font-bold whitespace-nowrap">{h.asset}</td>
-                                        <td className="p-2 text-right whitespace-nowrap">{formatNumber(h.currentAmount)}</td>
-                                        <td className="p-2 text-right whitespace-nowrap">{formatCurrency(h.averageBuyPrice)}</td>
-                                        <td className="p-2 text-right whitespace-nowrap">{formatCurrency(h.currentPrice)}</td>
-                                        <td className="p-2 text-right whitespace-nowrap font-semibold">{formatCurrency(h.currentValueUsd)}</td> 
-                                        <td className={`p-2 text-right whitespace-nowrap ${getPnlClass(h.capitalGain)}`}>{formatCurrency(h.capitalGain)}</td>
-                                    </tr>
-                                )) : (
-                                    <tr><td colSpan={6} className="text-center text-gray-500 py-4">No holdings found.</td></tr>
-                                )}
-                            </tbody>
-                        </table>
-                    </div>
-                )}
-            </section>
-
-            <section>
-                <h2 className="text-2xl font-semibold mb-4">All Transactions</h2>
-                {isLoading ? <p>Loading transactions...</p> : (
-                    <div className="w-full overflow-x-auto">
-                         <table className="min-w-full text-sm text-left">
-                            <thead className="font-mono text-gray-500">
-                                <tr>
-                                    <th className="p-2 font-semibold">Date</th>
-                                    <th className="p-2 font-semibold">Description</th>
-                                    <th className="p-2 font-semibold text-right">Amount</th>
-                                    <th className="p-2 font-semibold">Usage</th>
-                                    <th className="p-2 font-semibold">Note</th>
-                                </tr>
-                            </thead>
-                            <tbody className="font-mono">
-                                {transactions.length > 0 ? transactions.map((tx) => {
-                                    const editedTx = editedTransactions[tx.id];
-                                    return (
-                                    <tr key={tx.id} className="border-b border-gray-200 dark:border-gray-700">
-                                        <td className="p-2 whitespace-nowrap">{new Date(tx.date).toLocaleString()}</td>
-                                        <td className="p-2 text-gray-600 dark:text-gray-400">{tx.description}</td>
-                                        <td className="p-2 text-right">{formatNumber(tx.amount)} {tx.asset}</td>
-                                        <td className="p-2" style={{minWidth: '200px'}}>
-                                            <Select 
-                                                value={editedTx?.usage ?? tx.usage ?? 'unspecified'}
-                                                onValueChange={(value) => handleInputChange(tx.id, 'usage', value)}
-                                            >
-                                                <SelectTrigger><SelectValue/></SelectTrigger>
-                                                <SelectContent>
-                                                    {accountingUsageOptions.map(opt => 
-                                                        <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
-                                                    )}
-                                                </SelectContent>
-                                            </Select>
-                                        </td>
-                                        <td className="p-2" style={{minWidth: '200px'}}>
-                                            <Input
-                                                type="text"
-                                                placeholder="Add a note..."
-                                                value={editedTx?.note ?? tx.note ?? ''}
-                                                onChange={(e) => handleInputChange(tx.id, 'note', e.target.value)}
-                                                className="w-full"
-                                            />
-                                        </td>
-                                    </tr>
-                                )}) : (
-                                    <tr><td colSpan={5} className="text-center text-gray-500 py-4">No transactions found.</td></tr>
-                                )}
-                            </tbody>
-                        </table>
-                    </div>
-                )}
-            </section>
+            )}
         </div>
     );
 }
