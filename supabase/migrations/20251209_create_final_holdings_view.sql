@@ -1,5 +1,5 @@
 -- supabase/migrations/20251209_create_final_holdings_view.sql
--- PURPOSE: Creates a self-contained view to calculate capital gains, avoiding dependency issues.
+-- PURPOSE: Creates a self-contained view for capital gains, calculating price from fee_currency.
 
 -- Drop the existing v_holdings view to replace it
 DROP VIEW IF EXISTS public.v_holdings;
@@ -7,29 +7,32 @@ DROP VIEW IF EXISTS public.v_holdings;
 CREATE OR REPLACE VIEW public.v_holdings AS
 WITH
 -- Step 1: Define all transactions in a CTE to ensure this view is self-contained.
--- This avoids any dependency on other views that might be out of sync during migration.
 all_transactions_cte AS (
     -- On-chain Transactions from wallet_transactions
     SELECT
         t.user_id,
-        t.direction AS type, -- 'IN' or 'OUT'
+        t.direction AS type,
         (t.value_wei / 1e18) AS amount,
-        COALESCE(t.asset_symbol, 'ETH') AS asset, -- Base asset
-        NULL AS quote_asset, -- No quote asset for on-chain tx
+        COALESCE(t.asset_symbol, 'ETH') AS asset,
+        NULL AS quote_asset,
         NULL AS price
     FROM
         public.wallet_transactions t
 
     UNION ALL
 
-    -- Exchange Trades from exchange_trades
+    -- Exchange Trades from exchange_trades, calculating per-unit price
     SELECT
         et.user_id,
-        et.side AS type, -- 'buy' or 'sell'
+        et.side AS type,
         et.amount,
-        split_part(et.symbol, '/', 1) AS asset,      -- Base asset (e.g., BTC)
-        split_part(et.symbol, '/', 2) AS quote_asset, -- Quote asset (e.g., USD)
-        et.price
+        split_part(et.symbol, '/', 1) AS asset,
+        split_part(et.symbol, '/', 2) AS quote_asset,
+        -- Per-unit price is calculated from fee_currency (total cost) / amount
+        CASE
+            WHEN et.amount IS NOT NULL AND et.amount <> 0 THEN et.fee_currency::numeric / et.amount
+            ELSE 0
+        END AS price
     FROM
         public.exchange_trades et
 ),
@@ -47,7 +50,7 @@ aggregated_transactions AS (
         SUM(CASE WHEN type = 'IN' THEN amount ELSE 0 END) AS total_deposited,
         SUM(CASE WHEN type = 'OUT' THEN amount ELSE 0 END) AS total_withdrawn
     FROM
-        all_transactions_cte -- Use the self-contained CTE defined above
+        all_transactions_cte
     GROUP BY
         user_id, asset
 )
