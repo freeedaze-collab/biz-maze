@@ -63,20 +63,28 @@ Deno.serve(async (req) => {
             });
         }
         
-        console.log(`Found ${credentials.length} credentials. Invoking worker for each.`);
+        console.log(`Found ${credentials.length} credentials. Invoking workers for trades and transfers.`);
 
-        const invocationPromises = credentials.map(cred => {
-            // Correctly pass the credential_id to the worker
-            return supabase.functions.invoke('exchange-sync-worker', {
-                body: { credential_id: cred.id } 
-            });
+        // For each credential, invoke a worker for 'trades' and another for 'transfers'
+        const invocationPromises = credentials.flatMap(cred => {
+            const tasks = ['trades', 'transfers'];
+            return tasks.map(task_type => 
+                supabase.functions.invoke('exchange-sync-worker', {
+                    body: { 
+                        credential_id: cred.id,
+                        exchange: cred.exchange,
+                        task_type: task_type
+                    }
+                })
+            );
         });
 
         await Promise.all(invocationPromises);
 
         console.log("All worker invocations have been successfully triggered.");
         
-        return new Response(JSON.stringify({ message: `Sync triggered for ${credentials.length} exchanges.` }), {
+        const totalInvocations = credentials.length * 2;
+        return new Response(JSON.stringify({ message: `Sync triggered for ${totalInvocations} tasks across ${credentials.length} exchanges.` }), {
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
             status: 202, 
         });
