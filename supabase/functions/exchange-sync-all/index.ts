@@ -37,13 +37,20 @@ Deno.serve(async (req) => {
         const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(req.headers.get('Authorization')!.replace('Bearer ', ''));
         if (userError || !user) throw new Error('User not found.');
         
-        // [FIX] リクエストボディが空、または不正な場合に安全にエラーを返す
+        // [FIX] リクエストボディの解析をより安全に行う
+        const body = await req.text();
+        if (!body) {
+            return new Response(JSON.stringify({ error: "Request body is empty. Expected a JSON object with an 'exchange' key." }), {
+                headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 
+            });
+        }
+
         let payload;
         try {
-            payload = await req.json();
+            payload = JSON.parse(body);
         } catch (e) {
-            console.error("[ALL - Commander] Failed to parse JSON body:", e.message);
-            return new Response(JSON.stringify({ error: "Invalid request body. Expected a JSON object with an 'exchange' key." }), {
+            console.error("[ALL - Commander] Failed to parse JSON body:", body);
+            return new Response(JSON.stringify({ error: "Invalid JSON format in request body." }), {
                 headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 
             });
         }
