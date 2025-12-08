@@ -1,6 +1,6 @@
 
 // src/pages/TransactionHistory.tsx
-// VERSION 5: Fixes a bug in handleSaveChanges that omitted user_id on updates.
+// VERSION 6: Corrects the onConflict clause for exchange_trades upsert.
 import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { supabase } from "../integrations/supabase/client";
@@ -129,7 +129,6 @@ export default function TransactionHistory() {
         }
 
         try {
-            // These payloads must include the primary key columns for conflict detection and the user_id for RLS.
             const exchangeUpdates: (EditedTransaction & { trade_id: string; user_id: string })[] = [];
             const walletUpdates: (EditedTransaction & { id: string; user_id: string })[] = [];
 
@@ -145,19 +144,19 @@ export default function TransactionHistory() {
                 if (originalTx.source === 'exchange') {
                     exchangeUpdates.push({
                         ...payload,
-                        trade_id: originalTx.reference_id, // Primary key for conflict
+                        trade_id: originalTx.reference_id,
                     });
                 } else if (originalTx.source === 'on-chain') {
                     walletUpdates.push({
                         ...payload,
-                        id: originalTx.reference_id, // Primary key for conflict
+                        id: originalTx.reference_id,
                     });
                 }
             });
             
             const results = await Promise.all([
                 exchangeUpdates.length > 0 
-                    ? supabase.from('exchange_trades').upsert(exchangeUpdates, { onConflict: 'trade_id' }) 
+                    ? supabase.from('exchange_trades').upsert(exchangeUpdates, { onConflict: 'user_id,trade_id' }) 
                     : Promise.resolve({ error: null }),
                 walletUpdates.length > 0 
                     ? supabase.from('wallet_transactions').upsert(walletUpdates, { onConflict: 'id' }) 
