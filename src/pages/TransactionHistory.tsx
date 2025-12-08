@@ -1,6 +1,6 @@
 
 // src/pages/TransactionHistory.tsx
-// VERSION 7: Final fix. Matches the composite unique key (user_id, exchange, trade_id) for upserts.
+// VERSION 8: Final fix #2. Removes the non-existent 'quoteAsset' column from the select query.
 import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { supabase } from "../integrations/supabase/client";
@@ -49,7 +49,6 @@ interface Transaction {
     description: string;
     amount: number;
     asset: string;
-    quoteAsset: string;
     price: number;
     valueInUsd: number;
     type: string;
@@ -84,8 +83,8 @@ export default function TransactionHistory() {
             const { data: { user } } = await supabase.auth.getUser();
             if (!user) throw new Error("User not authenticated");
 
-            // Fetch all columns, including 'chain' for the upsert logic
-            const selectColumns = 'id, user_id, reference_id, date, source, chain, description, amount, asset, quoteAsset, price, valueInUsd, type, usage, note';
+            // Fetch all columns, ensuring they all exist in the view
+            const selectColumns = 'id, user_id, reference_id, date, source, chain, description, amount, asset, price, valueInUsd, type, usage, note';
 
             const [holdingsRes, transactionsRes] = await Promise.all([
                 supabase.from('v_holdings').select('*').eq('user_id', user.id),
@@ -137,14 +136,14 @@ export default function TransactionHistory() {
                 if (originalTx.source === 'exchange') {
                     exchangeUpdates.push({
                         user_id: originalTx.user_id,
-                        exchange: originalTx.chain, // The 'exchange' column for the composite key
-                        trade_id: originalTx.reference_id, // The 'trade_id' column for the composite key
+                        exchange: originalTx.chain, 
+                        trade_id: originalTx.reference_id, 
                         ...changes
                     });
                 } else if (originalTx.source === 'on-chain') {
                     walletUpdates.push({
-                        id: originalTx.reference_id, // Primary key for on-chain txs
-                        user_id: originalTx.user_id, // RLS
+                        id: originalTx.reference_id, 
+                        user_id: originalTx.user_id, 
                         ...changes
                     });
                 }
