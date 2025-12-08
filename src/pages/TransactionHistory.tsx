@@ -1,15 +1,35 @@
 
 // src/pages/TransactionHistory.tsx
-// FINAL VERSION: Connects to the new `all_transactions` and `v_holdings` views, and displays realized P&L.
-// VERSION 3: Corrects property names from snake_case to camelCase to match supabase-js v2 response.
+// VERSION 4: Adds inline editing for accounting 'usage' and 'note' fields.
 import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { supabase } from "../integrations/supabase/client";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
-// --- Data Structures Aligned with Database Views (using camelCase) ---
 
-// Based on the latest v_holdings view (v17)
+// --- Constants ---
+const accountingUsageOptions = [
+    { value: 'investment_acquisition_ias38', label: 'Investment Acquisition (IAS 38)' },
+    { value: 'trading_acquisition_ias2', label: 'Trading Acquisition (IAS 2)' },
+    { value: 'mining_rewards', label: 'Mining Rewards' },
+    { value: 'staking_rewards', label: 'Staking Rewards' },
+    { value: 'revenue_ifrs15', label: 'Received as Consideration (IFRS 15)' },
+    { value: 'impairment_ias38', label: 'Impairment (IAS 38)' },
+    { value: 'revaluation_increase_ias38', label: 'Revaluation Increase (IAS 38)' },
+    { value: 'revaluation_decrease_ias38', label: 'Revaluation Decrease (IAS 38)' },
+    { value: 'lcnrv_ias2', label: 'LCNRV Adjustment (IAS 2)' },
+    { value: 'fvlcs_ias2', label: 'FVLCS Adjustment (IAS 2)' },
+    { value: 'sale_ias38', label: 'Sale of Intangible Asset (IAS 38)' },
+    { value: 'sale_ias2', label: 'Sale of Inventory (IAS 2)' },
+    { value: 'crypto_to_crypto_exchange', label: 'Crypto-to-Crypto Exchange' },
+    { value: 'gas_fees', label: 'Gas / Network Fee' },
+    { value: 'loss_unrecoverable', label: 'Loss of Crypto (Unrecoverable)' },
+    { value: 'unspecified', label: 'Unspecified' },
+];
+
+// --- Data Structures ---
 interface Holding {
     asset: string;
     currentAmount: number;
@@ -19,9 +39,9 @@ interface Holding {
     capitalGain: number;
 }
 
-// Based on the new all_transactions view
 interface Transaction {
-    id: string;
+    id: string; // This is the unique ID from the view
+    reference_id: string; // Original ID from source table
     date: string;
     source: string;
     description: string;
@@ -31,29 +51,34 @@ interface Transaction {
     price: number;
     valueInUsd: number;
     type: string;
+    usage: string | null;
+    note: string | null;
 }
+
+type EditedTransaction = Partial<Pick<Transaction, 'usage' | 'note'>>;
+
 
 // --- Main Component ---
 export default function TransactionHistory() {
-    // State Management
+    // Component State
     const [transactions, setTransactions] = useState<Transaction[]>([]);
     const [holdings, setHoldings] = useState<Holding[]>([]);
+    const [editedTransactions, setEditedTransactions] = useState<Record<string, EditedTransaction>>({});
+    
+    // UI/Loading State
     const [isLoading, setIsLoading] = useState(true);
+    const [isSaving, setIsSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
-
     const [isSyncing, setIsSyncing] = useState(false);
     const [isUpdatingPrices, setIsUpdatingPrices] = useState(false);
     const [syncMessage, setSyncMessage] = useState<string | null>(null);
 
-    // --- Data Fetching Functions ---
-
+    // --- Data Fetching ---
     const fetchAllData = useCallback(async () => {
         setIsLoading(true);
         setError(null);
-        setSyncMessage(null);
+        setEditedTransactions({}); // Clear pending edits on refresh
         try {
-            // Fetch from the definitive views: v_holdings and all_transactions
-            // supabase-js v2 automatically converts snake_case to camelCase
             const [holdingsRes, transactionsRes] = await Promise.all([
                 supabase.from('v_holdings').select('*'),
                 supabase.from('all_transactions').select('*').order('date', { ascending: false }).limit(100)
@@ -61,9 +86,9 @@ export default function TransactionHistory() {
 
             if (holdingsRes.error) throw new Error(`Holdings Error: ${holdingsRes.error.message}`);
             if (transactionsRes.error) throw new Error(`Transactions Error: ${transactionsRes.error.message}`);
-
+            
             setHoldings(holdingsRes.data || []);
-            setTransactions(transactionsRes.data || []);
+            setTransactions(transactionsRes.data as Transaction[] || []);
         } catch (err: any) {
             console.error("Error fetching data:", err);
             setError(`Failed to load data: ${err.message}`);
@@ -72,12 +97,69 @@ export default function TransactionHistory() {
         }
     }, []);
 
-    // Initial data load
     useEffect(() => {
         fetchAllData();
     }, [fetchAllData]);
 
-    // --- Action Handlers ---
+    // --- Event Handlers ---
+    const handleInputChange = (id: string, field: 'usage' | 'note', value: string) => {
+        setEditedTransactions(prev => ({
+            ...prev,
+            [id]: {
+                ...prev[id],
+                [field]: value,
+            },
+        }));
+    };
+
+    const handleSaveChanges = async () => {
+        setIsSaving(true);
+        setError(null);
+        setSyncMessage("Saving changes...");
+
+        const updates = Object.entries(editedTransactions);
+        if (updates.length === 0) {
+            setSyncMessage("No changes to save.");
+            setIsSaving(false);
+            return;
+        }
+
+        try {
+            const exchangeUpdates: { trade_id: string, usage?: string | null, note?: string | null }[] = [];
+            const walletUpdates: { id: string, usage?: string | null, note?: string | null }[] = [];
+
+            updates.forEach(([id, changes]) => {
+                const originalTx = transactions.find(t => t.id === id);
+                if (!originalTx) return;
+
+                if (originalTx.source === 'exchange') {
+                    exchangeUpdates.push({ trade_id: originalTx.reference_id, ...changes });
+                } else if (originalTx.source === 'on-chain') {
+                    walletUpdates.push({ id: originalTx.reference_id, ...changes });
+                }
+            });
+            
+            const results = await Promise.all([
+                exchangeUpdates.length > 0 ? supabase.from('exchange_trades').upsert(exchangeUpdates) : Promise.resolve({ error: null }),
+                walletUpdates.length > 0 ? supabase.from('wallet_transactions').upsert(walletUpdates) : Promise.resolve({ error: null }),
+            ]);
+
+            const [exchangeResult, walletResult] = results;
+            if (exchangeResult.error) throw new Error(`Exchange update failed: ${exchangeResult.error.message}`);
+            if (walletResult.error) throw new Error(`Wallet update failed: ${walletResult.error.message}`);
+
+            setSyncMessage("Changes saved successfully. Refreshing data...");
+            await fetchAllData();
+            setSyncMessage("Data refreshed.");
+
+        } catch (err: any) {
+            console.error("Save failed:", err);
+            setError(`Failed to save changes: ${err.message}`);
+        } finally {
+            setIsSaving(false);
+        }
+    };
+
 
     const handleSync = async (syncFunction: 'sync-wallet-transactions' | 'exchange-sync-all' | 'sync-historical-exchange-rates', syncType: string) => {
         setIsSyncing(true);
@@ -119,21 +201,10 @@ export default function TransactionHistory() {
         }
     };
 
-    // --- Formatting Helpers ---
-    const formatCurrency = (value: number | null) => {
-        if (value === null || typeof value === 'undefined') return 'N/A';
-        return value.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
-    };
-
-    const formatNumber = (value: number | null) => {
-        if (value === null || typeof value === 'undefined') return '-';
-        return value.toFixed(6);
-    };
-
-    const getPnlClass = (pnl: number | null) => {
-        if (pnl === null || pnl === 0) return 'text-gray-500';
-        return pnl > 0 ? 'text-green-500' : 'text-red-500';
-    };
+    // --- Formatting & Style Helpers ---
+    const formatCurrency = (value: number | null) => value?.toLocaleString('en-US', { style: 'currency', currency: 'USD' }) ?? 'N/A';
+    const formatNumber = (value: number | null) => value?.toFixed(6) ?? '-';
+    const getPnlClass = (pnl: number | null) => (pnl ?? 0) === 0 ? 'text-gray-500' : pnl > 0 ? 'text-green-500' : 'text-red-500';
 
     // --- Render Method ---
     return (
@@ -143,11 +214,14 @@ export default function TransactionHistory() {
             <section className="mb-8">
                 <h2 className="text-2xl font-semibold mb-2">Actions</h2>
                 <div className="flex items-center space-x-4">
-                    <Button variant="outline" size="sm" onClick={handleUpdatePrices} disabled={isUpdatingPrices || isSyncing}>
+                    <Button variant="outline" size="sm" onClick={handleUpdatePrices} disabled={isUpdatingPrices || isSyncing || isSaving}>
                         {isUpdatingPrices ? 'Updating...' : 'Update Prices & Rates'}
                     </Button>
-                    <Button variant="outline" size="sm" onClick={() => handleSync('exchange-sync-all', 'Exchanges')} disabled={isSyncing || isUpdatingPrices}>
+                    <Button variant="outline" size="sm" onClick={() => handleSync('exchange-sync-all', 'Exchanges')} disabled={isSyncing || isUpdatingPrices || isSaving}>
                         {isSyncing ? 'Syncing...' : 'Sync Exchanges'}
+                    </Button>
+                     <Button size="sm" onClick={handleSaveChanges} disabled={isSaving || isSyncing || Object.keys(editedTransactions).length === 0}>
+                        {isSaving ? 'Saving...' : 'Save Changes'}
                     </Button>
                      <Link to="/management/exchange-services" className="text-sm font-medium text-blue-600 hover:underline">Manage API Keys</Link>
                 </div>
@@ -168,10 +242,10 @@ export default function TransactionHistory() {
                                 <tr>
                                     <th className="p-2 font-semibold">Asset</th>
                                     <th className="p-2 font-semibold text-right">Amount</th>
-                                    <th className="p-2 font-semibold text-right">Avg. Buy Price (USD)</th>
-                                    <th className="p-2 font-semibold text-right">Current Price (USD)</th>
-                                    <th className="p-2 font-semibold text-right">Current Value (USD)</th>
-                                    <th className="p-2 font-semibold text-right">Unrealized P&L (USD)</th>
+                                    <th className="p-2 font-semibold text-right">Avg. Buy Price</th>
+                                    <th className="p-2 font-semibold text-right">Current Price</th>
+                                    <th className="p-2 font-semibold text-right">Current Value</th>
+                                    <th className="p-2 font-semibold text-right">Unrealized P&L</th>
                                 </tr>
                             </thead>
                             <tbody className="font-mono">
@@ -182,14 +256,10 @@ export default function TransactionHistory() {
                                         <td className="p-2 text-right whitespace-nowrap">{formatCurrency(h.averageBuyPrice)}</td>
                                         <td className="p-2 text-right whitespace-nowrap">{formatCurrency(h.currentPrice)}</td>
                                         <td className="p-2 text-right whitespace-nowrap font-semibold">{formatCurrency(h.currentValueUsd)}</td> 
-                                        <td className={`p-2 text-right whitespace-nowrap ${getPnlClass(h.capitalGain)}`}>
-                                            {formatCurrency(h.capitalGain)}
-                                        </td>
+                                        <td className={`p-2 text-right whitespace-nowrap ${getPnlClass(h.capitalGain)}`}>{formatCurrency(h.capitalGain)}</td>
                                     </tr>
                                 )) : (
-                                    <tr>
-                                        <td colSpan={6} className="text-center text-gray-500 py-4">No holdings found. Sync your transactions to build your portfolio.</td>
-                                    </tr>
+                                    <tr><td colSpan={6} className="text-center text-gray-500 py-4">No holdings found.</td></tr>
                                 )}
                             </tbody>
                         </table>
@@ -205,27 +275,45 @@ export default function TransactionHistory() {
                             <thead className="font-mono text-gray-500">
                                 <tr>
                                     <th className="p-2 font-semibold">Date</th>
-                                    <th className="p-2 font-semibold">Source</th>
                                     <th className="p-2 font-semibold">Description</th>
                                     <th className="p-2 font-semibold text-right">Amount</th>
-                                    <th className="p-2 font-semibold text-right">Value (USD)</th>
-                                    <th className="p-2 font-semibold">Type</th>
+                                    <th className="p-2 font-semibold">Usage</th>
+                                    <th className="p-2 font-semibold">Note</th>
                                 </tr>
                             </thead>
                             <tbody className="font-mono">
-                                {transactions.length > 0 ? transactions.map((tx) => (
+                                {transactions.length > 0 ? transactions.map((tx) => {
+                                    const editedTx = editedTransactions[tx.id];
+                                    return (
                                     <tr key={tx.id} className="border-b border-gray-200 dark:border-gray-700">
                                         <td className="p-2 whitespace-nowrap">{new Date(tx.date).toLocaleString()}</td>
-                                        <td className="p-2 whitespace-nowrap">{tx.source}</td>
                                         <td className="p-2 text-gray-600 dark:text-gray-400">{tx.description}</td>
                                         <td className="p-2 text-right">{formatNumber(tx.amount)} {tx.asset}</td>
-                                        <td className="p-2 text-right">{formatCurrency(tx.valueInUsd)}</td>
-                                        <td className="p-2 font-semibold">{tx.type}</td>
+                                        <td className="p-2" style={{minWidth: '200px'}}>
+                                            <Select 
+                                                value={editedTx?.usage ?? tx.usage ?? 'unspecified'}
+                                                onValueChange={(value) => handleInputChange(tx.id, 'usage', value)}
+                                            >
+                                                <SelectTrigger><SelectValue/></SelectTrigger>
+                                                <SelectContent>
+                                                    {accountingUsageOptions.map(opt => 
+                                                        <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+                                                    )}
+                                                </SelectContent>
+                                            </Select>
+                                        </td>
+                                        <td className="p-2" style={{minWidth: '200px'}}>
+                                            <Input
+                                                type="text"
+                                                placeholder="Add a note..."
+                                                value={editedTx?.note ?? tx.note ?? ''}
+                                                onChange={(e) => handleInputChange(tx.id, 'note', e.target.value)}
+                                                className="w-full"
+                                            />
+                                        </td>
                                     </tr>
-                                )) : (
-                                    <tr>
-                                        <td colSpan={6} className="text-center text-gray-500 py-4">No transactions found.</td>
-                                    </tr>
+                                )}) : (
+                                    <tr><td colSpan={5} className="text-center text-gray-500 py-4">No transactions found.</td></tr>
                                 )}
                             </tbody>
                         </table>
