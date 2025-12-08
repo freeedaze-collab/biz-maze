@@ -1,6 +1,6 @@
 
 // src/pages/TransactionHistory.tsx
-// VERSION 8: Final fix #2. Removes the non-existent 'quoteAsset' column from the select query.
+// VERSION 9: Fixes column name mismatch for 'value_in_usd'.
 import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { supabase } from "../integrations/supabase/client";
@@ -50,7 +50,7 @@ interface Transaction {
     amount: number;
     asset: string;
     price: number;
-    valueInUsd: number;
+    value_in_usd: number;
     type: string;
     usage: string | null;
     note: string | null;
@@ -84,7 +84,7 @@ export default function TransactionHistory() {
             if (!user) throw new Error("User not authenticated");
 
             // Fetch all columns, ensuring they all exist in the view
-            const selectColumns = 'id, user_id, reference_id, date, source, chain, description, amount, asset, price, valueInUsd, type, usage, note';
+            const selectColumns = 'id, user_id, reference_id, date, source, chain, description, amount, asset, price, value_in_usd, type, usage, note';
 
             const [holdingsRes, transactionsRes] = await Promise.all([
                 supabase.from('v_holdings').select('*').eq('user_id', user.id),
