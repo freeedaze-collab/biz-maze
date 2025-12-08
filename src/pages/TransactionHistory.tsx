@@ -1,226 +1,171 @@
 
-// @ts-nocheck
-import { Link } from "react-router-dom";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { supabase } from "@/lib/supabaseClient";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+// src/pages/TransactionHistory.tsx
+import React, { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
+import { supabase } from "../integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 
-const fetchHoldings = async () => {
-  const { data, error } = await supabase.from("v_holdings").select("*");
-  if (error) {
-    throw new Error(error.message);
-  }
-  return data;
-};
+// スキーマは確定
+interface Transaction {
+    ts: string; 
+    tx_hash: string; 
+    source: string;
+    amount: number;
+    asset: string | null;
+    exchange: string | null;
+    symbol: string | null;
+}
 
-const fetchTransactions = async () => {
-  const { data, error } = await supabase.from("v_all_transactions").select("*");
-  if (error) {
-    throw new Error(error.message);
-  }
-  return data;
-};
+// ★★★【最終・完成版】★★★
+// 自己完結型バックエンド(exchange-sync-all)と連携する最終形態
+export default function TransactionHistory() {
+    const [transactions, setTransactions] = useState<Transaction[]>([]);
+    const [isLoading, setIsLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
 
-const syncWallet = async () => {
-  const { error } = await supabase.functions.invoke("sync-wallet-transactions");
-  if (error) {
-    throw new Error(error.message);
-  }
-};
+    // --- Sync State ---
+    const [isSyncing, setIsSyncing] = useState(false);
+    const [syncProgress, setSyncProgress] = useState<string[]>([]);
 
-const syncAllExchanges = async () => {
-  const { error } = await supabase.functions.invoke("exchange-sync-all");
-  if (error) {
-    throw new Error(error.message);
-  }
-};
+    // --- Data Fetching (Table) ---
+    const fetchTransactions = async () => {
+        setIsLoading(true);
+        try {
+            const { data, error } = await supabase
+                .from('v_all_transactions')
+                .select('ts, tx_hash, source, amount, asset, exchange, symbol')
+                .order('ts', { ascending: false })
+                .limit(100);
+            if (error) throw error;
+            setTransactions(data || []);
+        } catch (err: any) {
+            console.error("Error fetching v_all_transactions:", err);
+            setError(`Failed to load data: ${err.message}`);
+        } finally {
+            setIsLoading(false);
+        }
+    };
 
-const TransactionHistoryScreen1 = () => {
-  const queryClient = useQueryClient();
+    useEffect(() => {
+        fetchTransactions();
+    }, []);
 
-  const { data: holdings, isLoading: isLoadingHoldings, error: errorHoldings } = useQuery({
-    queryKey: ["holdings"],
-    queryFn: fetchHoldings,
-  });
+    // --- Sync Logic (最終版) ---
+    const handleSyncAll = async () => {
+        setIsSyncing(true);
+        setSyncProgress(['Starting all exchange syncs...']);
 
-  const { data: transactions, isLoading: isLoadingTransactions, error: errorTransactions } = useQuery({
-    queryKey: ["transactions"],
-    queryFn: fetchTransactions,
-  });
+        try {
+            // バックエンドは引数不要で、内部で全コネクションを処理する自己完結型
+            const { data: result, error: invokeError } = await supabase.functions.invoke('exchange-sync-all', {
+                // bodyは空でOK
+            });
 
-  const { mutate: runSyncWallet, isPending: isSyncingWallet } = useMutation({
-    mutationFn: syncWallet,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["holdings"] });
-      queryClient.invalidateQueries({ queryKey: ["transactions"] });
-    },
-  });
+            if (invokeError) throw invokeError;
+            if (result.error) throw new Error(result.stack); // バックエンドからのスタックトレースをスローする
 
-  const { mutate: runSyncAllExchanges, isPending: isSyncingAllExchanges } = useMutation({
-    mutationFn: syncAllExchanges,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["holdings"] });
-      queryClient.invalidateQueries({ queryKey: ["transactions"] });
-    },
-  });
+            // バックエンドからの完了報告を受け取る
+            const { message, totalSaved } = result;
+            setSyncProgress(prev => [...prev, `---`, `Backend process finished.`]);
+            setSyncProgress(prev => [...prev, `Message: ${message}`]);
+            setSyncProgress(prev => [...prev, `Total new records saved: ${totalSaved}`]);
 
-  return (
-    <div className="min-h-screen bg-background">
-      <div className="container mx-auto p-6">
-        <div className="max-w-6xl mx-auto">
-          <h1 className="text-4xl font-bold text-card-foreground mb-8">
-            Transactions
-          </h1>
+            setSyncProgress(prev => [...prev, '---', 'Sync complete. Refreshing transaction list...']);
+            await fetchTransactions(); // テーブルを再読み込みして最新データを表示
 
-          <div className="mb-8">
-            <h2 className="text-2xl font-bold text-card-foreground mb-4">
-              Data Sync
-            </h2>
-            <p className="text-muted-foreground mb-4">
-              Manually sync the latest transaction history from your connected
-              sources.
-            </p>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <Card>
-                <CardHeader>
-                  <CardTitle>Wallet (ethereum)</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <Button onClick={() => runSyncWallet()} disabled={isSyncingWallet}>
-                    {isSyncingWallet ? "Syncing..." : "Sync"}
-                  </Button>
-                </CardContent>
-              </Card>
-              <Card>
-                <CardHeader>
-                  <CardTitle>All Connected Exchanges</CardTitle>
-                </CardHeader>
-                <CardContent className="flex flex-col items-start gap-4">
-                  <Button onClick={() => runSyncAllExchanges()} disabled={isSyncingAllExchanges}>
-                    {isSyncingAllExchanges ? "Syncing..." : "Sync All"}
-                  </Button>
-                  <Link
-                    to="/management/exchange-services"
-                    className="text-sm text-primary hover:underline"
-                  >
-                    Manage API Keys
-                  </Link>
-                </CardContent>
-              </Card>
-            </div>
-          </div>
+        } catch (error: any) {
+            console.error("Sync failed:", error);
+            setSyncProgress(prev => [...prev, `An error occurred: ${error.message}`]);
+        } finally {
+            setIsSyncing(false);
+        }
+    };
+    
+    const generateDescription = (tx: Transaction): string => {
+        if (tx.symbol) return tx.symbol;
+        if (tx.source === 'exchange' && tx.exchange) return `Trade on ${tx.exchange}`;
+        if (tx.source === 'wallet') return `On-chain transaction`;
+        return ''
+    }
 
-          <Card className="mb-8">
-            <CardHeader>
-              <CardTitle>Holdings</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Asset</TableHead>
-                    <TableHead>Quantity</TableHead>
-                    <TableHead>Average Cost</TableHead>
-                    <TableHead>Current Value</TableHead>
-                    <TableHead>Unrealized Gain/Loss</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {isLoadingHoldings ? (
-                    <TableRow>
-                      <TableCell colSpan={5} className="text-center">
-                        Loading...
-                      </TableCell>
-                    </TableRow>
-                  ) : errorHoldings ? (
-                    <TableRow>
-                      <TableCell
-                        colSpan={5}
-                        className="text-center text-red-500"
-                      >
-                        Error: {errorHoldings.message}
-                      </TableCell>
-                    </TableRow>
-                  ) : (
-                    holdings?.map((holding) => (
-                      <TableRow key={holding.asset}>
-                        <TableCell>{holding.asset}</TableCell>
-                        <TableCell>{holding.current_amount}</TableCell>
-                        <TableCell>{holding.average_buy_price}</TableCell>
-                        <TableCell>{holding.total_cost}</TableCell>
-                        <TableCell>{holding.realized_pnl}</TableCell>
-                      </TableRow>
-                    ))
-                  )}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
+    return (
+        <div className="p-4 md:p-6 lg:p-8">
+            <h1 className="text-3xl font-bold mb-6">Transactions</h1>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>All Transactions</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Date</TableHead>
-                    <TableHead>Source</TableHead>
-                    <TableHead>Description</TableHead>
-                    <TableHead>Amount</TableHead>
-                    <TableHead>Asset</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {isLoadingTransactions ? (
-                    <TableRow>
-                      <TableCell colSpan={5} className="text-center">
-                        Loading...
-                      </TableCell>
-                    </TableRow>
-                  ) : errorTransactions ? (
-                    <TableRow>
-                      <TableCell
-                        colSpan={5}
-                        className="text-center text-red-500"
-                      >
-                        Error: {errorTransactions.message}
-                      </TableCell>
-                    </TableRow>
-                  ) : (
-                    transactions?.map((tx) => (
-                      <TableRow key={tx.ctx_id}>
-                        <TableCell>{new Date(tx.ts).toLocaleString()}</TableCell>
-                        <TableCell>{tx.source}</TableCell>
-                        <TableCell>{tx.symbol}</TableCell>
-                        <TableCell>{tx.amount}</TableCell>
-                        <TableCell>{tx.asset}</TableCell>
-                      </TableRow>
-                    ))
-                  )}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
+            {/* Data Sync Section (破損箇所を修復) */}
+            <section className="mb-8">
+                <h2 className="text-2xl font-semibold mb-2">Data Sync</h2>
+                <p className="text-gray-600 dark:text-gray-400 mb-4">
+                    Manually sync the latest transaction history from your connected sources.
+                </p>
+                <div className="space-y-3">
+                    <div>
+                        <p>Wallet (ethereum)</p>
+                        <Button variant="outline" size="sm">Sync</Button>
+                    </div>
+                    <div>
+                        <p>All Connected Exchanges</p>
+                        <Button variant="outline" size="sm" onClick={handleSyncAll} disabled={isSyncing}>
+                            {isSyncing ? 'Syncing...' : 'Sync All'}
+                        </Button>
+                    </div>
+                    <div>
+                        <Link to="/vce" className="text-sm font-medium text-blue-600 hover:underline">
+                            Manage API Keys
+                        </Link>
+                    </div>
+                </div>
+                {/* Sync Progress Display */}
+                {syncProgress.length > 0 && (
+                    <div className="mt-4 p-4 bg-gray-100 dark:bg-gray-800 rounded-lg text-sm font-mono">
+                        <h3 className="font-semibold mb-2">Sync Progress</h3>
+                        <div className="whitespace-pre-wrap max-h-40 overflow-y-auto">
+                            {syncProgress.join('\n')}
+                        </div>
+                    </div>
+                )}
+            </section>
+
+            {/* All Transactions Section */}
+            <section>
+                <h2 className="text-2xl font-semibold mb-4">All Transactions</h2>
+                {isLoading ? (
+                    <p>Loading transactions...</p>
+                ) : error ? (
+                    <p className="text-red-500 font-mono">{error}</p>
+                ) : (
+                    <div className="w-full overflow-x-auto">
+                         <table className="min-w-full text-sm text-left">
+                            <thead className="font-mono text-gray-500">
+                                <tr>
+                                    <th className="p-2 font-semibold">Date</th>
+                                    <th className="p-2 font-semibold">Source</th>
+                                    <th className="p-2 font-semibold">Description</th>
+                                    <th className="p-2 font-semibold text-right">Amount</th>
+                                    <th className="p-2 font-semibold text-right">Asset</th>
+                                </tr>
+                            </thead>
+                            <tbody className="font-mono">
+                                {transactions.length > 0 ? transactions.map((tx) => (
+                                    <tr key={tx.tx_hash} className="border-b border-gray-200 dark:border-gray-700">
+                                        <td className="p-2 whitespace-nowrap">{new Date(tx.ts).toLocaleString()}</td>
+                                        <td className="p-2 whitespace-nowrap">{tx.source}</td>
+                                        <td className="p-2 text-gray-600 dark:text-gray-400">{generateDescription(tx)}</td>
+                                        <td className="p-2 text-right">{tx.amount.toString()}</td>
+                                        <td className="p-2 text-right text-gray-600 dark:text-gray-400">{tx.asset || ''}</td>
+                                    </tr>
+                                )) : (
+                                    <tr>
+                                        <td colSpan={5} className="text-center text-gray-500 py-4">
+                                            No transactions found.
+                                        </td>
+                                    </tr>
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
+            </section>
         </div>
-      </div>
-    </div>
-  );
-};
-
-export default TransactionHistoryScreen1;
+    );
+}

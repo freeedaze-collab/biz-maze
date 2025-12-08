@@ -1,3 +1,4 @@
+
 // supabase/functions/exchange-sync-worker/index.ts
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
 import ccxt from 'https://esm.sh/ccxt@4.3.40' // 安定バージョンに固定
@@ -26,29 +27,15 @@ async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: s
 }
 
 function transformRecord(record: any, userId: string, exchange: string) {
-    const recordId = record.id || record.txid;
-    if (!recordId) return null;
-
-    const side = record.side || record.type; 
-    const symbol = record.symbol || record.currency;
-    const price = record.price ?? 0;
-    const fee_cost = record.fee?.cost;
-    const fee_currency = record.fee?.currency;
-
+    // (transformRecordの実装はexchange-sync-allと同じなため、簡略化のため省略)
+    // 実際には、all側のコードをここにコピー＆ペーストしてください。
+    const recordId = record.id || record.txid; if (!recordId) return null;
+    const side = record.side || record.type; const symbol = record.symbol || record.currency;
+    const price = record.price ?? 0; const fee_cost = record.fee?.cost; const fee_currency = record.fee?.currency;
     if (!symbol || !side || !record.amount || !record.timestamp) return null;
-
     return {
-        user_id: userId,
-        exchange: exchange,
-        trade_id: String(recordId),
-        symbol: symbol,
-        side: side,
-        price: price,
-        amount: record.amount,
-        fee: fee_cost,
-        fee_asset: fee_currency,
-        ts: new Date(record.timestamp).toISOString(),
-        raw_data: record,
+        user_id: userId, exchange: exchange, trade_id: String(recordId), symbol: symbol, side: side, price: price,
+        amount: record.amount, fee: fee_cost, fee_asset: fee_currency, ts: new Date(record.timestamp).toISOString(), raw_data: record,
     };
 }
 
