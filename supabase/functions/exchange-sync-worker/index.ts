@@ -26,19 +26,49 @@ async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: s
 }
 // --- END OF DECRYPTION HELPER ---
 
+// --- UNIFIED TRANSFORMER for trades and transfers ---
+function transformCcxtRecord(record: any, userId: string, exchange: string) {
+    const recordId = record.id;
+    if (!recordId) {
+        console.warn("[WORKER] Skipping record without ID:", record);
+        return null;
+    }
+
+    const isTrade = record.price !== undefined && record.side;
+    const type = isTrade ? record.side : (record.type || 'transfer');
+    const symbol = isTrade ? record.symbol : record.currency;
+
+    if (!symbol || !type || record.amount === undefined || !record.timestamp) {
+        console.warn("[WORKER] Skipping record with missing essential fields:", record);
+        return null;
+    }
+
+    return {
+        user_id: userId,
+        exchange: exchange,
+        trade_id: String(recordId), // Use the exchange's unique ID for the record
+        symbol: symbol, // e.g., 'BTC/USDT' for trades, 'BTC' for transfers
+        ts: new Date(record.timestamp).toISOString(),
+        side: type, // 'buy', 'sell', 'deposit', 'withdrawal'
+        price: record.price, // Null for transfers
+        amount: record.amount,
+        fee: record.fee?.cost,
+        fee_currency: record.fee?.currency,
+        raw_data: record,
+    };
+}
+// --- END OF TRANSFORMER ---
+
 const initializeCcxt = (exchange, apiKey, apiSecret, apiPassphrase) => {
     return new (ccxt as any)[exchange]({
-        apiKey,
-        secret: apiSecret,
-        password: apiPassphrase, // Passphrase for exchanges like KuCoin
-        enableRateLimit: true,
+        apiKey, secret: apiSecret, password: apiPassphrase, enableRateLimit: true,
     });
 };
 
 const getSinceTimestamp = (days = 365) => new Date(Date.now() - 1000 * 60 * 60 * 24 * days).getTime();
 
 async function syncTradesForCredential(supabase: SupabaseClient, cred: any) {
-    const { user_id, exchange, id: credentialId, encrypted_blob } = cred;
+    const { user_id, exchange, encrypted_blob } = cred;
     console.log(`[WORKER] Starting 'trades' sync for user ${user_id} on exchange ${exchange}`);
 
     const { apiKey, apiSecret, apiPassphrase } = await decryptBlob(encrypted_blob);
@@ -51,29 +81,20 @@ async function syncTradesForCredential(supabase: SupabaseClient, cred: any) {
 
     const allTrades = await exchangeInstance.fetchMyTrades(undefined, getSinceTimestamp());
     console.log(`[WORKER] Fetched ${allTrades.length} trades from ${exchange}.`);
-
     if (allTrades.length === 0) return { inserted: 0, skipped: 0 };
 
-    const { data: existingTrades } = await supabase.from('exchange_trades').select('trade_id').eq('user_id', user_id).eq('exchange', exchange);
-    const existingTradeIds = new Set(existingTrades.map(t => t.trade_id));
+    const transformed = allTrades.map(t => transformCcxtRecord(t, user_id, exchange)).filter(Boolean);
+    if (transformed.length === 0) return { inserted: 0, skipped: allTrades.length };
 
-    const tradesToInsert = allTrades.filter(trade => !existingTradeIds.has(trade.id)).map(trade => ({
-        user_id, exchange, trade_id: trade.id, symbol: trade.symbol, ts: trade.datetime,
-        side: trade.side, price: trade.price, amount: trade.amount, fee: trade.fee?.cost,
-        fee_currency: trade.fee?.currency, raw_data: trade,
-    }));
+    console.log(`[WORKER] Inserting/updating ${transformed.length} new trades into exchange_trades.`);
+    const { error, data } = await supabase.from('exchange_trades').upsert(transformed, { onConflict: 'user_id,exchange,trade_id' }).select();
+    if (error) throw new Error(`Failed to upsert trades: ${error.message}`);
 
-    if (tradesToInsert.length === 0) return { inserted: 0, skipped: allTrades.length };
-
-    console.log(`[WORKER] Inserting ${tradesToInsert.length} new trades.`);
-    const { error } = await supabase.from('exchange_trades').insert(tradesToInsert);
-    if (error) throw new Error(`Failed to insert trades: ${error.message}`);
-
-    return { inserted: tradesToInsert.length, skipped: allTrades.length - tradesToInsert.length };
+    return { inserted: data?.length ?? 0, skipped: allTrades.length - (data?.length ?? 0) };
 }
 
 async function syncTransfersForCredential(supabase: SupabaseClient, cred: any) {
-    const { user_id, exchange, id: credentialId, encrypted_blob } = cred;
+    const { user_id, exchange, encrypted_blob } = cred;
     console.log(`[WORKER] Starting 'transfers' sync for user ${user_id} on exchange ${exchange}`);
 
     const { apiKey, apiSecret, apiPassphrase } = await decryptBlob(encrypted_blob);
@@ -87,31 +108,22 @@ async function syncTransfersForCredential(supabase: SupabaseClient, cred: any) {
         if(exchangeInstance.has['fetchDeposits']) allTransfers.push(...await exchangeInstance.fetchDeposits(undefined, since));
         if(exchangeInstance.has['fetchWithdrawals']) allTransfers.push(...await exchangeInstance.fetchWithdrawals(undefined, since));
     } else {
-        console.log(`[WORKER] Exchange ${exchange} supports neither fetchTransfers nor fetchDeposits/Withdrawals. Skipping.`);
+        console.log(`[WORKER] Exchange ${exchange} does not support fetching transfers. Skipping.`);
         return { inserted: 0, skipped: 0 };
     }
     
     console.log(`[WORKER] Fetched ${allTransfers.length} transfers from ${exchange}.`);
     if (allTransfers.length === 0) return { inserted: 0, skipped: 0 };
 
-    const { data: existing } = await supabase.from('wallet_transactions').select('source_id').eq('user_id', user_id).eq('source', 'exchange');
-    const existingSourceIds = new Set(existing.map(t => t.source_id));
+    const transformed = allTransfers.map(t => transformCcxtRecord(t, user_id, exchange)).filter(Boolean);
+    if (transformed.length === 0) return { inserted: 0, skipped: allTransfers.length };
 
-    const transfersToInsert = allTransfers.filter(t => t && t.id && !existingSourceIds.has(t.id)).map(t => ({
-        user_id, source: 'exchange', source_id: t.id, ctx_id: `exchange:${t.id}`,
-        ts: t.datetime, chain: t.network, tx_hash: t.txid, asset: t.currency,
-        amount: t.type === 'withdrawal' ? -Math.abs(t.amount) : Math.abs(t.amount),
-        fee: t.fee?.cost, raw_data: t, exchange: exchange, symbol: null,
-        fee_asset: t.fee?.currency,
-    }));
-    
-    if (transfersToInsert.length === 0) return { inserted: 0, skipped: allTransfers.length };
+    console.log(`[WORKER] Inserting/updating ${transformed.length} new transfers into exchange_trades.`);
+    // [CRITICAL FIX] Upsert transfers into the exchange_trades table, not wallet_transactions
+    const { error, data } = await supabase.from('exchange_trades').upsert(transformed, { onConflict: 'user_id,exchange,trade_id' }).select();
+    if (error) throw new Error(`Failed to upsert transfers: ${error.message}`);
 
-    console.log(`[WORKER] Inserting ${transfersToInsert.length} new transfers.`);
-    const { error } = await supabase.from('wallet_transactions').insert(transfersToInsert);
-    if (error) throw new Error(`Failed to insert transfers: ${error.message}`);
-
-    return { inserted: transfersToInsert.length, skipped: allTransfers.length - transfersToInsert.length };
+    return { inserted: data?.length ?? 0, skipped: allTransfers.length - (data?.length ?? 0) };
 }
 
 Deno.serve(async (req) => {
