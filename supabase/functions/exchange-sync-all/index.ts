@@ -16,89 +16,98 @@ Deno.serve(async (req) => {
         const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(authorization.replace('Bearer ', ''));
         if (userError || !user) throw new Error('User not found.');
 
-        // ★ MODIFICATION 1: Expect 'connection_id' instead of 'exchangeName'
-        const { connection_id } = await req.json();
-        if (!connection_id) throw new Error('connection_id is required.');
+        // ★ MODIFICATION 1: Make body parsing optional and handle different scenarios
+        let body = {};
+        try { body = await req.json(); } catch (e) { /* Ignore parsing error if body is empty */ }
+        const { connection_id, exchange: exchangeName } = body as { connection_id?: number, exchange?: string };
 
-        // Get the exchange name from the connection_id
-        const { data: connection, error: connError } = await supabaseAdmin
-            .from('exchange_connections')
-            .select('exchange')
-            .eq('id', connection_id)
-            .eq('user_id', user.id) // Security check
-            .single();
+        let connectionsToProcess: {id: number, exchange: string}[] = [];
+        let query = supabaseAdmin.from('exchange_connections').select('id, exchange').eq('user_id', user.id);
 
-        if (connError || !connection) throw new Error(`Connection not found for id: ${connection_id}`);
-        const exchangeName = connection.exchange;
-        console.log(`[ALL-COMMANDER] Received plan request for: ${exchangeName} (Conn ID: ${connection_id})`);
-
-        const tasksToDispatch: any[] = [];
-
-        const publicExchangeInstance = new ccxt[exchangeName](); 
-        if (publicExchangeInstance.has['fetchDeposits']) tasksToDispatch.push({ task_type: 'deposits' });
-        if (publicExchangeInstance.has['fetchWithdrawals']) tasksToDispatch.push({ task_type: 'withdrawals' });
-        if (exchangeName === 'binance') {
-            tasksToDispatch.push({ task_type: 'fiat' });
-            tasksToDispatch.push({ task_type: 'simple-earn'}); 
-            if (publicExchangeInstance.has['fetchConvertTradeHistory']) {
-                tasksToDispatch.push({ task_type: 'convert' });
-            }
+        if (connection_id) {
+            console.log(`[ALL-COMMANDER] Sync requested for specific connection ID: ${connection_id}`);
+            query = query.eq('id', connection_id);
+        } else if (exchangeName) {
+            console.log(`[ALL-COMMANDER] Sync requested for exchange: ${exchangeName}`);
+            query = query.eq('exchange', exchangeName);
+        } else {
+            console.log(`[ALL-COMMANDER] Sync requested for ALL connections.`);
         }
-        console.log(`[ALL-COMMANDER] Planned special tasks: ${tasksToDispatch.map(t=>t.task_type).join(', ')}`);
 
-        console.log(`[ALL-COMMANDER] Finding relevant assets from internal database...`);
-        const { data: pastTrades, error: dbError } = await supabaseAdmin.from('exchange_trades').select('symbol').eq('user_id', user.id).eq('exchange_connection_id', connection_id);
-        if (dbError) throw new Error(`Failed to fetch past trades from DB: ${dbError.message}`);
+        const { data: connections, error: connsError } = await query;
+        if (connsError) throw new Error(`Failed to fetch connections: ${connsError.message}`);
+        if (connections) {
+            connectionsToProcess = connections;
+        }
 
-        const relevantAssets = new Set<string>();
-        if(pastTrades) {
-            pastTrades.forEach(trade => {
-                const assets = trade.symbol.split('/');
-                if(assets.length === 2) {
-                    relevantAssets.add(assets[0]);
-                    relevantAssets.add(assets[1]);
+        if (connectionsToProcess.length === 0) {
+            return new Response(JSON.stringify({ message: "No matching connections found to sync." }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+        }
+
+        console.log(`[ALL-COMMANDER] Found ${connectionsToProcess.length} connection(s) to process.`);
+        let totalDispatchedTasks = 0;
+
+        // Loop through each connection and dispatch tasks for it
+        for (const conn of connectionsToProcess) {
+            const currentExchangeName = conn.exchange;
+            const currentConnectionId = conn.id;
+            console.log(`[ALL-COMMANDER] Planning tasks for ${currentExchangeName} (Conn ID: ${currentConnectionId})`);
+
+            const tasksToDispatch: any[] = [];
+            const publicExchangeInstance = new ccxt[currentExchangeName](); 
+
+            // Special tasks
+            if (publicExchangeInstance.has['fetchDeposits']) tasksToDispatch.push({ task_type: 'deposits' });
+            if (publicExchangeInstance.has['fetchWithdrawals']) tasksToDispatch.push({ task_type: 'withdrawals' });
+            if (currentExchangeName === 'binance') {
+                tasksToDispatch.push({ task_type: 'fiat' });
+                tasksToDispatch.push({ task_type: 'simple-earn'}); 
+                if (publicExchangeInstance.has['fetchConvertTradeHistory']) {
+                    tasksToDispatch.push({ task_type: 'convert' });
                 }
-            });
-        }
+            }
 
-        if (relevantAssets.size === 0) {
-            console.log(`[ALL-COMMANDER] No past trades found. Adding default major assets to scan.`);
-            ['BTC', 'ETH', 'USDT', 'JPY'].forEach(a => relevantAssets.add(a));
-        }
+            // Market trade tasks
+            const { data: pastTrades, error: dbError } = await supabaseAdmin.from('exchange_trades').select('symbol').eq('user_id', user.id).eq('exchange_connection_id', currentConnectionId);
+            if (dbError) console.warn(`Could not fetch past trades for Conn ID ${currentConnectionId}: ${dbError.message}`);
 
-        console.log(`[ALL-COMMANDER] Found ${relevantAssets.size} relevant assets. Planning market scan...`);
+            const relevantAssets = new Set<string>();
+            if (pastTrades) {
+                pastTrades.forEach(trade => {
+                    const assets = trade.symbol.split('/');
+                    if(assets.length === 2) { relevantAssets.add(assets[0]); relevantAssets.add(assets[1]); }
+                });
+            }
+            if (relevantAssets.size === 0) { ['BTC', 'ETH', 'USDT', 'JPY'].forEach(a => relevantAssets.add(a)); }
 
-        await publicExchangeInstance.loadMarkets();
-        const symbolsToFetch = new Set<string>();
-        const majorCurrencies = ['USDT', 'BTC', 'ETH', 'JPY', 'BUSD'];
+            await publicExchangeInstance.loadMarkets();
+            const symbolsToFetch = new Set<string>();
+            const majorCurrencies = ['USDT', 'BTC', 'ETH', 'JPY', 'BUSD'];
+            for (const asset of relevantAssets) {
+                for (const currency of majorCurrencies) {
+                    if (publicExchangeInstance.markets[`${asset}/${currency}`]) symbolsToFetch.add(`${asset}/${currency}`);
+                    if (publicExchangeInstance.markets[`${currency}/${asset}`]) symbolsToFetch.add(`${currency}/${asset}`);
+                }
+            }
+            tasksToDispatch.push(...Array.from(symbolsToFetch).map(symbol => ({ task_type: 'trade', symbol: symbol })));
 
-        for (const asset of relevantAssets) {
-            for (const currency of majorCurrencies) {
-                if (publicExchangeInstance.markets[`${asset}/${currency}`]) symbolsToFetch.add(`${asset}/${currency}`);
-                if (publicExchangeInstance.markets[`${currency}/${asset}`]) symbolsToFetch.add(`${currency}/${asset}`);
+            if (tasksToDispatch.length > 0) {
+                console.log(`[ALL-COMMANDER] Dispatching ${tasksToDispatch.length} tasks for Conn ID ${currentConnectionId}...`);
+                const allInvocations = tasksToDispatch.map(task => 
+                    supabaseAdmin.functions.invoke('exchange-sync-worker', {
+                        headers: { 'Authorization': authorization },
+                        // ★ MODIFICATION 2: Pass the specific connection_id for this loop iteration
+                        body: { connection_id: currentConnectionId, ...task }
+                    })
+                );
+                await Promise.allSettled(allInvocations);
+                totalDispatchedTasks += tasksToDispatch.length;
             }
         }
-        tasksToDispatch.push(...Array.from(symbolsToFetch).map(symbol => ({ task_type: 'trade', symbol: symbol })));
 
-        if (tasksToDispatch.length === 0) {
-            console.log(`[ALL-COMMANDER] No tasks to dispatch.`);
-            return new Response(JSON.stringify({ message: `No tasks to dispatch.` }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-        }
-        
-        console.log(`[ALL-COMMANDER] Dispatching a total of ${tasksToDispatch.length} tasks to workers...`);
-        
-        // ★ MODIFICATION 2: Pass the 'connection_id' to the worker in the body
-        const allInvocations = tasksToDispatch.map(task => 
-            supabaseAdmin.functions.invoke('exchange-sync-worker', {
-                headers: { 'Authorization': authorization },
-                body: { connection_id: connection_id, ...task }
-            })
-        );
-
-        await Promise.allSettled(allInvocations);
-
-        console.log(`[ALL-COMMANDER] All ${tasksToDispatch.length} tasks have been dispatched.`);
-        return new Response(JSON.stringify({ message: `Successfully dispatched ${tasksToDispatch.length} tasks for connection ${connection_id}.` }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+        const successMessage = `Successfully dispatched a total of ${totalDispatchedTasks} tasks for ${connectionsToProcess.length} connection(s).`;
+        console.log(`[ALL-COMMANDER] ${successMessage}`);
+        return new Response(JSON.stringify({ message: successMessage }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
     } catch (err) {
         console.error("[ALL-COMMANDER-CRASH] Plan building failed:", err);
