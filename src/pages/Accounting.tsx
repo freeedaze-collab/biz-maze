@@ -1,6 +1,6 @@
 
 // src/pages/Accounting.tsx
-// VERSION 3: Adds the Cash Flow Statement.
+// VERSION 4: Handles NULL values from the database gracefully.
 import React, { useState, useEffect, useCallback } from 'react';
 import { supabase } from "../integrations/supabase/client";
 import { useAuth } from '../hooks/useAuth';
@@ -8,8 +8,8 @@ import { useAuth } from '../hooks/useAuth';
 // --- Helper Functions & Components ---
 
 const formatCurrency = (value: number | null | undefined) => {
-    if (value == null) return 'N/A';
-    return value.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+    const numericValue = value ?? 0;
+    return numericValue.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
 };
 
 interface FinancialCardProps {
@@ -46,7 +46,7 @@ export default function Accounting() {
     const { user } = useAuth();
     const [plData, setPlData] = useState<any>(null);
     const [bsData, setBsData] = useState<any>(null);
-    const [cfData, setCfData] = useState<any>(null); // New state for Cash Flow data
+    const [cfData, setCfData] = useState<any>(null);
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
@@ -59,16 +59,17 @@ export default function Accounting() {
             const [plRes, bsRes, cfRes] = await Promise.all([
                 supabase.from('v_profit_loss_statement').select('*').eq('user_id', user.id).single(),
                 supabase.from('v_balance_sheet').select('*').eq('user_id', user.id).single(),
-                supabase.from('v_cash_flow_statement').select('*').eq('user_id', user.id).single() // Fetch CF data
+                supabase.from('v_cash_flow_statement').select('*').eq('user_id', user.id).single()
             ]);
 
-            if (plRes.error) throw new Error(`Profit & Loss Error: ${plRes.error.message}`);
-            if (bsRes.error) throw new Error(`Balance Sheet Error: ${bsRes.error.message}`);
-            if (cfRes.error) throw new Error(`Cash Flow Error: ${cfRes.error.message}`);
+            // Gracefully handle cases where no data exists for a user yet (PGRST116: PostgREST error for no rows found)
+            if (plRes.error && plRes.error.code !== 'PGRST116') throw new Error(`Profit & Loss Error: ${plRes.error.message}`);
+            if (bsRes.error && bsRes.error.code !== 'PGRST116') throw new Error(`Balance Sheet Error: ${bsRes.error.message}`);
+            if (cfRes.error && cfRes.error.code !== 'PGRST116') throw new Error(`Cash Flow Error: ${cfRes.error.message}`);
 
             setPlData(plRes.data);
             setBsData(bsRes.data);
-            setCfData(cfRes.data); // Set CF data
+            setCfData(cfRes.data);
 
         } catch (err: any) {
             console.error("Failed to fetch accounting data:", err);
@@ -120,7 +121,7 @@ export default function Accounting() {
         { label: "Outflow for Intangible Assets", value: cfData?.cash_out_for_intangibles },
         { label: "Inflow from Sale of Intangibles", value: cfData?.cash_in_from_intangibles },
     ];
-    const financingCfItems = [
+    const financingCfItems: { label: string; value: number | null | undefined }[] = [
         // { label: "Inflow from Capital Contribution", value: cfData?.cash_in_from_financing },
         // { label: "Outflow to Owners", value: cfData?.cash_out_to_owners },
     ];
