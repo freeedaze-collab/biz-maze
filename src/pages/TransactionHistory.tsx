@@ -1,6 +1,6 @@
 
 // src/pages/TransactionHistory.tsx
-// VERSION 6: Corrects the onConflict clause for exchange_trades upsert.
+// VERSION 7: Final fix. Matches the composite unique key (user_id, exchange, trade_id) for upserts.
 import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { supabase } from "../integrations/supabase/client";
@@ -40,11 +40,12 @@ interface Holding {
 }
 
 interface Transaction {
-    id: string; // This is the unique ID from the view
-    user_id: string; // The user's ID
-    reference_id: string; // Original ID from source table
+    id: string; 
+    user_id: string; 
+    reference_id: string;
     date: string;
     source: string;
+    chain: string; // Represents the exchange or blockchain name
     description: string;
     amount: number;
     asset: string;
@@ -78,14 +79,17 @@ export default function TransactionHistory() {
     const fetchAllData = useCallback(async () => {
         setIsLoading(true);
         setError(null);
-        setEditedTransactions({}); // Clear pending edits on refresh
+        setEditedTransactions({});
         try {
             const { data: { user } } = await supabase.auth.getUser();
             if (!user) throw new Error("User not authenticated");
 
+            // Fetch all columns, including 'chain' for the upsert logic
+            const selectColumns = 'id, user_id, reference_id, date, source, chain, description, amount, asset, quoteAsset, price, valueInUsd, type, usage, note';
+
             const [holdingsRes, transactionsRes] = await Promise.all([
                 supabase.from('v_holdings').select('*').eq('user_id', user.id),
-                supabase.from('all_transactions').select('*').eq('user_id', user.id).order('date', { ascending: false }).limit(100)
+                supabase.from('all_transactions').select(selectColumns).eq('user_id', user.id).order('date', { ascending: false }).limit(100)
             ]);
 
             if (holdingsRes.error) throw new Error(`Holdings Error: ${holdingsRes.error.message}`);
@@ -107,13 +111,7 @@ export default function TransactionHistory() {
 
     // --- Event Handlers ---
     const handleInputChange = (id: string, field: 'usage' | 'note', value: string) => {
-        setEditedTransactions(prev => ({
-            ...prev,
-            [id]: {
-                ...prev[id],
-                [field]: value,
-            },
-        }));
+        setEditedTransactions(prev => ({ ...prev, [id]: { ...prev[id], [field]: value } }));
     };
 
     const handleSaveChanges = async () => {
@@ -129,34 +127,32 @@ export default function TransactionHistory() {
         }
 
         try {
-            const exchangeUpdates: (EditedTransaction & { trade_id: string; user_id: string })[] = [];
-            const walletUpdates: (EditedTransaction & { id: string; user_id: string })[] = [];
+            const exchangeUpdates: any[] = [];
+            const walletUpdates: any[] = [];
 
             updates.forEach(([viewId, changes]) => {
                 const originalTx = transactions.find(t => t.id === viewId);
                 if (!originalTx) return;
 
-                const payload = {
-                    user_id: originalTx.user_id,
-                    ...changes
-                };
-
                 if (originalTx.source === 'exchange') {
                     exchangeUpdates.push({
-                        ...payload,
-                        trade_id: originalTx.reference_id,
+                        user_id: originalTx.user_id,
+                        exchange: originalTx.chain, // The 'exchange' column for the composite key
+                        trade_id: originalTx.reference_id, // The 'trade_id' column for the composite key
+                        ...changes
                     });
                 } else if (originalTx.source === 'on-chain') {
                     walletUpdates.push({
-                        ...payload,
-                        id: originalTx.reference_id,
+                        id: originalTx.reference_id, // Primary key for on-chain txs
+                        user_id: originalTx.user_id, // RLS
+                        ...changes
                     });
                 }
             });
             
             const results = await Promise.all([
                 exchangeUpdates.length > 0 
-                    ? supabase.from('exchange_trades').upsert(exchangeUpdates, { onConflict: 'user_id,trade_id' }) 
+                    ? supabase.from('exchange_trades').upsert(exchangeUpdates, { onConflict: 'user_id,exchange,trade_id' }) 
                     : Promise.resolve({ error: null }),
                 walletUpdates.length > 0 
                     ? supabase.from('wallet_transactions').upsert(walletUpdates, { onConflict: 'id' }) 
