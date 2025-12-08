@@ -1,141 +1,121 @@
+
 // src/pages/Accounting.tsx
+// VERSION 2: Fetches data directly from the new database views instead of invoking a function.
 import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
-type Statements = {
-  pl: { lines: { account_code: string; amount: number }[]; net_income: number };
-  bs: { lines: { account_code: string; amount: number }[] };
-  cf: { method: "indirect"; operating: number; adjustments: number };
-};
+// --- Type Definitions for Financial Statements from DB Views ---
+type PLAccount = { account: string; balance: number; }
+type BSAccount = { account: string; balance: number; }
 
+interface FinancialStatements {
+    profitAndLoss: PLAccount[];
+    balanceSheet: BSAccount[];
+}
+
+// --- Helper Components ---
+const formatCurrency = (value: number) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value);
+
+const StatementCard: React.FC<{ title: string; data: { account: string; balance: number }[]; totalLabel?: string; totalValue?: number; }> = ({ title, data, totalLabel, totalValue }) => (
+    <Card>
+        <CardHeader>
+            <CardTitle>{title}</CardTitle>
+        </CardHeader>
+        <CardContent>
+            <Table>
+                <TableHeader>
+                    <TableRow>
+                        <TableHead>Account</TableHead>
+                        <TableHead className="text-right">Balance</TableHead>
+                    </TableRow>
+                </TableHeader>
+                <TableBody>
+                    {data.map((item, index) => (
+                        <TableRow key={index}>
+                            <TableCell className="font-medium">{item.account}</TableCell>
+                            <TableCell className="text-right">{formatCurrency(item.balance)}</TableCell>
+                        </TableRow>
+                    ))}
+                    {totalLabel && totalValue !== undefined && (
+                        <TableRow className="font-bold border-t-2">
+                            <TableCell>{totalLabel}</TableCell>
+                            <TableCell className="text-right">{formatCurrency(totalValue)}</TableCell>
+                        </TableRow>
+                    )}
+                </TableBody>
+            </Table>
+        </CardContent>
+    </Card>
+);
+
+
+// --- Main Accounting Component ---
 export default function Accounting() {
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [s, setS] = useState<Statements | null>(null);
+    const [statements, setStatements] = useState<FinancialStatements | null>(null);
+    const [isLoading, setIsLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
 
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+    useEffect(() => {
+        const fetchStatements = async () => {
+            setIsLoading(true);
+            setError(null);
 
-  const toISO = (v: string) => {
-    if (!v.trim()) return undefined;
-    const d = new Date(v.replaceAll("/", "-"));
-    return isNaN(d.getTime()) ? undefined : d.toISOString();
-  };
+            try {
+                // Fetch all statements from the new views in parallel
+                const [plRes, bsRes] = await Promise.all([
+                    supabase.from('v_profit_and_loss').select('account, balance'),
+                    supabase.from('v_balance_sheet').select('account, balance')
+                ]);
 
-  const run = async () => {
-    setLoading(true);
-    setErr(null);
-    setS(null);
-    const body: any = {};
-    // 期間指定は「付けるだけ」。サーバ未対応でも影響なし（既存仕様はそのまま）
-    const f = toISO(dateFrom);
-    const t = toISO(dateTo);
-    if (f) body.dateFrom = f;
-    if (t) body.dateTo = t;
+                if (plRes.error) throw new Error(`Profit & Loss Error: ${plRes.error.message}`);
+                if (bsRes.error) throw new Error(`Balance Sheet Error: ${bsRes.error.message}`);
 
-    const { data, error } = await supabase.functions.invoke("build-statements", {
-      body,
-    });
-    if (error) {
-      setErr(error.message ?? String(error));
-      setLoading(false);
-      return;
-    }
-    setS(data as Statements);
-    setLoading(false);
-  };
+                setStatements({
+                    profitAndLoss: plRes.data as PLAccount[],
+                    balanceSheet: bsRes.data as BSAccount[],
+                });
 
-  useEffect(() => { run(); }, []); // 既存の自動ビルド挙動は維持
+            } catch (err: any) {
+                console.error("Error fetching financial statements:", err);
+                setError(`Failed to load statements: ${err.message}. Ensure the database views (e.g., v_profit_and_loss) are created.`);
+            } finally {
+                setIsLoading(false);
+            }
+        };
 
-  return (
-    <div className="p-6 space-y-8">
-      <h1 className="text-2xl font-bold">Accounting / Tax</h1>
+        fetchStatements();
+    }, []);
 
-      <div className="flex items-center gap-3 flex-wrap">
-        <div className="flex items-center gap-2">
-          <span>Since</span>
-          <input
-            className="border rounded px-2 py-1 min-w-[120px]"
-            placeholder="yyyy/mm/dd"
-            value={dateFrom}
-            onChange={(e)=>setDateFrom(e.target.value)}
-          />
+    const netIncome = statements?.profitAndLoss.reduce((sum, item) => sum + item.balance, 0) ?? 0;
+
+    return (
+        <div className="p-4 md:p-6 lg:p-8">
+            <h1 className="text-3xl font-bold mb-6">Financial Statements</h1>
+
+            {isLoading && <p>Loading financial statements...</p>}
+            {error && <div className="p-4 mb-4 text-sm text-red-700 bg-red-100 rounded-lg" role="alert">{error}</div>}
+            
+            {statements && (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    {/* --- Profit & Loss --- */}
+                    <StatementCard 
+                        title="Profit & Loss Statement" 
+                        data={statements.profitAndLoss} 
+                        totalLabel="Net Income" 
+                        totalValue={netIncome} 
+                    />
+
+                    {/* --- Balance Sheet --- */}
+                    <StatementCard 
+                        title="Balance Sheet" 
+                        data={statements.balanceSheet} 
+                    />
+                    
+                    {/* Cash Flow will be added in the next step */}
+                </div>
+            )}
         </div>
-        <div className="flex items-center gap-2">
-          <span>Until</span>
-          <input
-            className="border rounded px-2 py-1 min-w-[120px]"
-            placeholder="yyyy/mm/dd"
-            value={dateTo}
-            onChange={(e)=>setDateTo(e.target.value)}
-          />
-        </div>
-        <button className="bg-blue-600 text-white px-4 py-2 rounded disabled:opacity-50"
-          onClick={run}
-          disabled={loading}
-        >
-          {loading ? "Building..." : "Build Statements"}
-        </button>
-      </div>
-
-      {err && <div className="text-red-600">{err}</div>}
-
-      {s && (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          {/* Profit & Loss */}
-          <div className="border rounded p-4">
-            <h2 className="font-semibold mb-3">Profit & Loss</h2>
-            <table className="w-full text-sm">
-              <tbody>
-                {s.pl.lines.map((l) => (
-                  <tr key={l.account_code}>
-                    <td className="py-1">{l.account_code}</td>
-                    <td className="py-1 text-right">${l.amount.toLocaleString()}</td>
-                  </tr>
-                ))}
-                <tr className="border-t">
-                  <td className="py-1 font-semibold">Net Income</td>
-                  <td className="py-1 text-right font-semibold">
-                    ${s.pl.net_income.toLocaleString()}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
-          {/* Balance Sheet */}
-          <div className="border rounded p-4">
-            <h2 className="font-semibold mb-3">Balance Sheet</h2>
-            <table className="w-full text-sm">
-              <tbody>
-                {s.bs.lines.map((l, i) => (
-                  <tr key={`${l.account_code}-${i}`}>
-                    <td className="py-1">{l.account_code}</td>
-                    <td className="py-1 text-right">${l.amount.toLocaleString()}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Cash Flow */}
-          <div className="border rounded p-4">
-            <h2 className="font-semibold mb-3">Cash Flow (Indirect)</h2>
-            <table className="w-full text-sm">
-              <tbody>
-                <tr>
-                  <td className="py-1">Operating Cash Flow</td>
-                  <td className="py-1 text-right">${s.cf.operating.toLocaleString()}</td>
-                </tr>
-                <tr>
-                  <td className="py-1">Adjustments</td>
-                  <td className="py-1 text-right">${s.cf.adjustments.toLocaleString()}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-    </div>
-  );
+    );
 }
