@@ -1,6 +1,6 @@
 -- supabase/migrations/20240523120000_consolidated_views_rebuild.sql
--- PURPOSE: Fixes SQL error by moving quote_asset definition into the CTE.
--- VERSION: 15
+-- PURPOSE: Implements a strict calculation for value_in_usd, removing the fallback to old values.
+-- VERSION: 16
 
 -- Step 1: Safely drop views in reverse order of dependency.
 DROP VIEW IF EXISTS public.v_holdings CASCADE;
@@ -9,9 +9,9 @@ DROP VIEW IF EXISTS public.internal_transfer_pairs CASCADE;
 DROP VIEW IF EXISTS public.all_transactions CASCADE;
 
 -- =================================================================
--- VIEW 1: all_transactions (Corrected CTE Logic)
--- The `quote_asset` column is now defined inside the CTE, making it accessible
--- to all parts of the subsequent SELECT statement, including the JOIN clause.
+-- VIEW 1: all_transactions (Strict value_in_usd Calculation)
+-- This version removes the COALESCE fallback. The `value_in_usd` is now calculated strictly
+-- from `acquisition_price_total` and the exchange rate. If a rate is missing, `value_in_usd` will be NULL.
 -- =================================================================
 CREATE OR REPLACE VIEW public.all_transactions AS
 -- Exchange Trades (via CTE)
@@ -45,14 +45,12 @@ SELECT
     et.price,
     et.acquisition_price_total, -- The pre-calculated acquisition price
 
-    -- Convert the pre-calculated acquisition price to USD.
-    COALESCE(
-        CASE
-            WHEN et.quote_asset = 'USD' THEN et.acquisition_price_total
-            ELSE et.acquisition_price_total * rates.rate
-        END,
-        et.value_usd -- The crucial fallback
-    ) AS value_in_usd,
+    -- Step 2: Strictly convert the acquisition price to USD.
+    -- If a rate is missing from `daily_exchange_rates`, this will result in NULL.
+    CASE
+        WHEN et.quote_asset = 'USD' THEN et.acquisition_price_total
+        ELSE et.acquisition_price_total * rates.rate
+    END AS value_in_usd,
 
     et.side AS type,
     'exchange' as source,
@@ -60,7 +58,6 @@ SELECT
 FROM trades_with_acquisition_price et
 LEFT JOIN public.daily_exchange_rates rates
     ON DATE(et.ts) = rates.date
-    -- This JOIN condition is now valid because et.quote_asset exists in the CTE.
     AND rates.source_currency = et.quote_asset
     AND rates.target_currency = 'USD'
 
