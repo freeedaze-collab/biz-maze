@@ -1,9 +1,8 @@
 
 -- supabase/migrations/20240523120000_consolidated_views_rebuild.sql
 -- PURPOSE: This single, definitive file rebuilds the entire view chain for transaction and holding calculations.
--- FINAL VERSION (v9) - The ABSOLUTE FINAL FIX: Corrects the acquisition cost calculation for BUY orders, 
--- recognizing that the `amount` in `exchange_trades` is the quote currency value for BOTH buys and sells.
--- This makes the logic symmetrical and finally fixes `average_buy_price`.
+-- FINAL VERSION (v10) - Reverting to the Correct Asymmetrical Logic. The disastrous symmetrical assumption in v9 is abandoned.
+-- This version restores the correct, working logic for calculating amount and value, which will fix the empty holdings view.
 
 -- Step 1: Safely drop all potentially outdated or broken views in reverse order of dependency.
 DROP VIEW IF EXISTS public.v_holdings CASCADE;
@@ -12,11 +11,11 @@ DROP VIEW IF EXISTS public.internal_transfer_pairs CASCADE;
 DROP VIEW IF EXISTS public.all_transactions CASCADE;
 
 -- =================================================================
--- VIEW 1: all_transactions (The PERFECTED Foundation)
--- This version makes the BUY and SELL logic symmetrical, as it was discovered that `amount` for exchange
--- trades is ALWAYS the value in the quote currency (e.g., JPY or USD spent/received).
+-- VIEW 1: all_transactions (The CORRECT, Asymmetrical Logic)
+-- This version correctly recognizes that for BUY, `amount` is asset quantity, but for SELL, `amount` is quote currency value.
 -- =================================================================
 CREATE OR REPLACE VIEW public.all_transactions AS
+-- Exchange Trades
 SELECT 
     et.trade_id::text AS id, 
     et.user_id, 
@@ -24,24 +23,31 @@ SELECT
     et.ts AS date,
     'Exchange: ' || et.side || ' ' || et.amount::text || ' ' || et.symbol || ' @ ' || et.price::text AS description,
     
-    -- THE FINAL, SYMMETRICAL AMOUNT CALCULATION
-    -- For both BUY and SELL, the actual asset quantity is the quote currency amount / price.
+    -- THE CORRECT, ASYMMETRICAL AMOUNT CALCULATION (Reverting to v8 logic)
     CASE 
-        WHEN et.price IS NOT NULL AND et.price > 0 THEN et.amount / et.price
-        ELSE 0 -- Avoid division by zero and handle cases where price isn't available
+        WHEN et.side = 'buy' THEN et.amount -- For buys, `amount` is the asset quantity.
+        WHEN et.side = 'sell' AND et.price IS NOT NULL AND et.price > 0 THEN et.amount / et.price -- For sells, `amount` is quote value, so we divide.
+        ELSE et.amount
     END AS amount, 
     
     split_part(et.symbol, '/', 1) AS asset, 
     split_part(et.symbol, '/', 2) AS quote_asset, 
     et.price,
     
-    -- THE FINAL, SYMMETRICAL VALUE CALCULATION
-    -- For both BUY and SELL, the `amount` field *is* the value, which we convert to USD.
+    -- THE CORRECT, ASYMMETRICAL VALUE CALCULATION (Reverting to v8 logic)
     CASE 
-        WHEN split_part(et.symbol, '/', 2) = 'USD' THEN 
-            CASE WHEN et.side = 'buy' THEN et.amount + COALESCE(et.fee, 0) ELSE et.amount - COALESCE(et.fee, 0) END
-        WHEN split_part(et.symbol, '/', 2) = 'JPY' THEN 
-            (CASE WHEN et.side = 'buy' THEN et.amount + COALESCE(et.fee, 0) ELSE et.amount - COALESCE(et.fee, 0) END) * rates.rate
+        WHEN et.side = 'buy' THEN
+            CASE
+                WHEN split_part(et.symbol, '/', 2) = 'USD' THEN (et.price * et.amount) + COALESCE(et.fee, 0)
+                WHEN split_part(et.symbol, '/', 2) = 'JPY' THEN ((et.price * et.amount) + COALESCE(et.fee, 0)) * rates.rate
+                ELSE NULL
+            END
+        WHEN et.side = 'sell' THEN
+            CASE
+                WHEN split_part(et.symbol, '/', 2) = 'USD' THEN et.amount - COALESCE(et.fee, 0)
+                WHEN split_part(et.symbol, '/', 2) = 'JPY' THEN (et.amount - COALESCE(et.fee, 0)) * rates.rate
+                ELSE NULL
+            END
         ELSE et.value_usd
     END AS value_in_usd,
 
@@ -69,7 +75,7 @@ SELECT
 FROM public.wallet_transactions t;
 
 -- =================================================================
--- VIEW 2: v_all_transactions_classified (Stable)
+-- VIEW 2: v_all_transactions_classified (Stable - No changes needed)
 -- =================================================================
 CREATE OR REPLACE VIEW public.v_all_transactions_classified AS
 SELECT t.*, CASE
@@ -81,7 +87,8 @@ END as transaction_type
 FROM public.all_transactions t;
 
 -- =================================================================
--- VIEW 3: v_holdings (The Clean, Final, and Correct Version)
+-- VIEW 3: v_holdings (Stable - No changes needed)
+-- With the `all_transactions` view fixed, this view will now work correctly.
 -- =================================================================
 CREATE OR REPLACE VIEW public.v_holdings AS
 WITH base_calcs AS (
