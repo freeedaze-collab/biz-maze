@@ -1,105 +1,220 @@
 
 // supabase/functions/exchange-sync-worker/index.ts
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
-import ccxt from 'https://esm.sh/ccxt@4.3.40' // 安定バージョンに固定
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
-import { decode } from "https://deno.land/std@0.177.0/encoding/base64.ts";
+import { createClient, SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import ccxt from 'https://esm.sh/ccxt@4.3.40'
 
-const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
-const NINETY_DAYS_AGO = Date.now() - 90 * 24 * 60 * 60 * 1000;
+// --- INLINED DECRYPT FUNCTION for reliability ---
+const decrypt = async (encryptedBlob: string): Promise<{ apiKey: string; apiSecret: string; }> => {
+    const encryptionKey = Deno.env.get('ENCRYPTION_KEY');
+    if (!encryptionKey) throw new Error('ENCRYPTION_KEY is not set in environment variables.');
 
-// --- 共通ヘルパー --- 
-async function getKey() {
-  const b64 = Deno.env.get("EDGE_KMS_KEY");
-  if (!b64) throw new Error("EDGE_KMS_KEY secret is not set.");
-  const raw = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
-  return await crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["decrypt"]);
-}
+    const keyBuffer = Uint8Array.from(atob(encryptionKey), c => c.charCodeAt(0));
+    const importedKey = await crypto.subtle.importKey(
+        'raw',
+        keyBuffer,
+        { name: 'AES-GCM', length: 256 },
+        false,
+        ['decrypt']
+    );
 
-async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> {
-  const parts = blob.split(":");
-  if (parts.length !== 3 || parts[0] !== 'v1') throw new Error("Invalid encrypted blob format.");
-  const iv = decode(parts[1]);
-  const ct = decode(parts[2]);
-  const key = await getKey();
-  const decryptedData = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
-  return JSON.parse(new TextDecoder().decode(decryptedData));
-}
+    const data = JSON.parse(atob(encryptedBlob));
+    const iv = Uint8Array.from(atob(data.iv), c => c.charCodeAt(0));
+    const ciphertext = Uint8Array.from(atob(data.ciphertext), c => c.charCodeAt(0));
 
-function transformRecord(record: any, userId: string, exchange: string) {
-    // (transformRecordの実装はexchange-sync-allと同じなため、簡略化のため省略)
-    // 実際には、all側のコードをここにコピー＆ペーストしてください。
-    const recordId = record.id || record.txid; if (!recordId) return null;
-    const side = record.side || record.type; const symbol = record.symbol || record.currency;
-    const price = record.price ?? 0; const fee_cost = record.fee?.cost; const fee_currency = record.fee?.currency;
-    if (!symbol || !side || !record.amount || !record.timestamp) return null;
-    return {
-        user_id: userId, exchange: exchange, trade_id: String(recordId), symbol: symbol, side: side, price: price,
-        amount: record.amount, fee: fee_cost, fee_asset: fee_currency, ts: new Date(record.timestamp).toISOString(), raw_data: record,
-    };
-}
+    const decrypted = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv },
+        importedKey,
+        ciphertext
+    );
 
-// ★★★【専門工作員(Worker)ロジック】★★★
-// 単一の市場(symbol)の取引履歴を取得・保存することに特化
-Deno.serve(async (req) => {
-    if (req.method === 'OPTIONS') {
-        return new Response('ok', { headers: corsHeaders });
+    return JSON.parse(new TextDecoder().decode(decrypted));
+};
+// --- END OF INLINED FUNCTION ---
+
+const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST, OPTIONS' };
+
+const initializeCcxt = (exchange, apiKey, apiSecret) => {
+    return new (ccxt as any)[exchange]({
+        apiKey,
+        secret: apiSecret,
+        enableRateLimit: true,
+    });
+};
+
+const getSinceTimestamp = () => new Date(Date.now() - 1000 * 60 * 60 * 24 * 365).getTime(); // 1 year lookback as a default
+
+async function syncTradesForCredential(supabase: SupabaseClient, cred: any) {
+    const { user_id, exchange, id: credentialId, encrypted_blob } = cred;
+    console.log(`[WORKER] Starting 'trades' sync for user ${user_id} on exchange ${exchange}`);
+
+    const { apiKey, apiSecret } = await decrypt(encrypted_blob);
+    if (!apiKey || !apiSecret) throw new Error(`Decryption failed for credential ID: ${credentialId}`);
+
+    const exchangeInstance = initializeCcxt(exchange, apiKey, apiSecret);
+    
+    if (!exchangeInstance.has['fetchMyTrades']) {
+        console.log(`[WORKER] Exchange ${exchange} does not support fetchMyTrades. Skipping.`);
+        return { inserted: 0, skipped: 0 };
     }
 
+    const allTrades = await exchangeInstance.fetchMyTrades(undefined, getSinceTimestamp());
+    console.log(`[WORKER] Fetched ${allTrades.length} trades from ${exchange}.`);
+
+    if (allTrades.length === 0) {
+        console.log("[WORKER] No new trades to insert.");
+        return { inserted: 0, skipped: 0 };
+    }
+
+    const { data: existingTrades, error: existingTradesError } = await supabase
+        .from('exchange_trades')
+        .select('trade_id')
+        .eq('user_id', user_id)
+        .eq('exchange', exchange);
+
+    if (existingTradesError) throw new Error(`Could not query existing trades: ${existingTradesError.message}`);
+    const existingTradeIds = new Set(existingTrades.map(t => t.trade_id));
+
+    const tradesToInsert = allTrades.filter(trade => !existingTradeIds.has(trade.id)).map(trade => ({
+        user_id,
+        exchange,
+        trade_id: trade.id,
+        symbol: trade.symbol,
+        ts: trade.datetime,
+        side: trade.side,
+        price: trade.price,
+        amount: trade.amount,
+        fee: trade.fee?.cost,
+        fee_currency: trade.fee?.currency,
+        raw_data: trade,
+    }));
+
+    if (tradesToInsert.length === 0) {
+        console.log("[WORKER] All fetched trades already exist in the database.");
+        return { inserted: 0, skipped: allTrades.length };
+    }
+
+    console.log(`[WORKER] Inserting ${tradesToInsert.length} new trades.`);
+    const { error: insertError } = await supabase.from('exchange_trades').insert(tradesToInsert);
+    if (insertError) throw new Error(`Failed to insert trades: ${insertError.message}`);
+
+    return { inserted: tradesToInsert.length, skipped: allTrades.length - tradesToInsert.length };
+}
+
+
+async function syncTransfersForCredential(supabase: SupabaseClient, cred: any) {
+    const { user_id, exchange, id: credentialId, encrypted_blob } = cred;
+    console.log(`[WORKER] Starting 'transfers' sync for user ${user_id} on exchange ${exchange}`);
+
+    const { apiKey, apiSecret } = await decrypt(encrypted_blob);
+    if (!apiKey || !apiSecret) throw new Error(`Decryption failed for credential ID: ${credentialId}`);
+
+    const exchangeInstance = initializeCcxt(exchange, apiKey, apiSecret);
+    const since = getSinceTimestamp();
+    let allTransfers = [];
+
+    if (exchangeInstance.has['fetchTransfers']) {
+        allTransfers = await exchangeInstance.fetchTransfers(undefined, since);
+    } else if (exchangeInstance.has['fetchDeposits'] || exchangeInstance.has['fetchWithdrawals']) {
+        console.log(`[WORKER] ${exchange} does not support fetchTransfers, falling back to fetchDeposits/fetchWithdrawals.`);
+        if(exchangeInstance.has['fetchDeposits']) {
+            const deposits = await exchangeInstance.fetchDeposits(undefined, since);
+            allTransfers.push(...deposits);
+        }
+        if(exchangeInstance.has['fetchWithdrawals']) {
+            const withdrawals = await exchangeInstance.fetchWithdrawals(undefined, since);
+            allTransfers.push(...withdrawals);
+        }
+    } else {
+        console.log(`[WORKER] Exchange ${exchange} does not support fetching transfers. Skipping.`);
+        return { inserted: 0, skipped: 0 };
+    }
+    
+    console.log(`[WORKER] Fetched ${allTransfers.length} transfers from ${exchange}.`);
+    if (allTransfers.length === 0) {
+        console.log("[WORKER] No new transfers to insert.");
+        return { inserted: 0, skipped: 0 };
+    }
+
+    const existingSourceIds = new Set(
+        (await supabase.from('wallet_transactions').select('source_id').eq('user_id', user_id)).data.map(t => t.source_id)
+    );
+
+    const transfersToInsert = allTransfers.filter(t => t && t.id && !existingSourceIds.has(t.id)).map(t => ({
+        user_id,
+        source: 'exchange',
+        source_id: t.id,
+        ctx_id: `exchange_transfer:${t.id}`,
+        ts: t.datetime,
+        chain: t.network,
+        tx_hash: t.txid,
+        asset: t.currency,
+        amount: t.type === 'withdrawal' ? -Math.abs(t.amount) : Math.abs(t.amount),
+        fee: t.fee?.cost,
+        raw_data: t,
+        // These fields are specific to exchange_trades, so set to null
+        exchange: exchange,
+        symbol: null, 
+        fee_asset: t.fee?.currency,
+    }));
+    
+    if (transfersToInsert.length === 0) {
+        console.log("[WORKER] All fetched transfers already exist in the database.");
+        return { inserted: 0, skipped: allTransfers.length };
+    }
+
+    console.log(`[WORKER] Inserting ${transfersToInsert.length} new transfers into wallet_transactions.`);
+    const { error: insertError } = await supabase.from('wallet_transactions').insert(transfersToInsert);
+    if (insertError) throw new Error(`Failed to insert transfers: ${insertError.message}`);
+
+    return { inserted: transfersToInsert.length, skipped: allTransfers.length - transfersToInsert.length };
+}
+
+
+Deno.serve(async (req) => {
+    if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
+
     try {
-        // --- 司令塔からの指令を受け取る ---
-        const { exchange: exchangeName, symbol } = await req.json();
-        if (!exchangeName || !symbol) {
-            throw new Error('exchange and symbol are required.');
+        const { credential_id, exchange, task_type } = await req.json();
+        if (!credential_id || !exchange || !task_type) {
+            throw new Error("Missing required params: credential_id, exchange, and task_type are required.");
         }
 
-        // --- ユーザー認証とAPIキー取得 ---
-        const supabaseAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
-        const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(req.headers.get('Authorization')!.replace('Bearer ', ''));
-        if (userError || !user) throw new Error('User not found.');
+        console.log(`[WORKER] Starting task: ${task_type} for ${exchange}`);
 
-        const { data: conn, error: connError } = await supabaseAdmin.from('exchange_connections').select('encrypted_blob').eq('user_id', user.id).eq('exchange', exchangeName).single();
-        if (connError || !conn) throw new Error(`Connection not found for ${exchangeName}`);
+        const supabaseAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
         
-        const credentials = await decryptBlob(conn.encrypted_blob!);
-        
-        // --- CCXTインスタンス化 ---
-        // @ts-ignore
-        const exchangeInstance = new ccxt[exchangeName]({
-            apiKey: credentials.apiKey, secret: credentials.apiSecret, password: credentials.apiPassphrase,
+        const { data: cred, error: credError } = await supabaseAdmin
+            .from('exchange_api_credentials')
+            .select('user_id, exchange, id, encrypted_blob')
+            .eq('id', credential_id)
+            .single();
+
+        if (credError) throw new Error(`Credential lookup failed: ${credError.message}`);
+        if (!cred) throw new Error(`Credential not found for ID: ${credential_id}`);
+
+        let result;
+        switch (task_type) {
+            case 'trades':
+                result = await syncTradesForCredential(supabaseAdmin, cred);
+                break;
+            case 'transfers':
+                result = await syncTransfersForCredential(supabaseAdmin, cred);
+                break;
+            default:
+                throw new Error(`Unknown task_type: ${task_type}`);
+        }
+
+        return new Response(JSON.stringify({ message: `Sync task '${task_type}' completed.`, ...result }), {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            status: 200
         });
 
-        // --- 単一市場の取引履歴を取得 ---
-        console.log(`[WORKER] Fetching trades for ${exchangeName} - ${symbol}...`);
-        const trades = await exchangeInstance.fetchMyTrades(symbol, NINETY_DAYS_AGO);
-
-        if (!trades || trades.length === 0) {
-            console.log(`[WORKER] No trades found for ${symbol}.`);
-            return new Response(JSON.stringify({ message: `Sync complete for ${symbol}.`, savedCount: 0 }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-        }
-
-        console.log(`[WORKER] Found ${trades.length} trades for ${symbol}.`);
-
-        // --- 取得したデータをDB形式に変換 & 保存 ---
-        const transformed = trades.map(r => transformRecord(r, user.id, exchangeName)).filter(r => r !== null);
-        
-        if (transformed.length === 0) {
-             return new Response(JSON.stringify({ message: `Sync complete for ${symbol}.`, savedCount: 0 }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-        }
-
-        const { data, error } = await supabaseAdmin.from('exchange_trades').upsert(transformed, { onConflict: 'user_id,exchange,trade_id' }).select();
-
-        if (error) {
-            console.error("[WORKER-CRASH] DATABASE UPSERT FAILED:", error);
-            throw error;
-        }
-
-        console.log(`[WORKER] Successfully saved ${data?.length ?? 0} records for ${symbol}.`);
-
-        return new Response(JSON.stringify({ message: `Sync complete for ${symbol}.`, savedCount: data?.length ?? 0 }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-
     } catch (err) {
-        console.error(`[WORKER-CRASH] A critical error occurred:`, err);
-        return new Response(JSON.stringify({ error: err.message, stack: err.stack }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 });
+        console.error(`[WORKER-CRASH] Unhandled exception:`, err);
+        return new Response(JSON.stringify({ error: err.message, stack: err.stack }), {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            status: 500
+        });
     }
 });
