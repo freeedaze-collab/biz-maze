@@ -1,6 +1,6 @@
 -- supabase/migrations/20240523120000_consolidated_views_rebuild.sql
--- PURPOSE: Refactors `all_transactions` to use a CTE, calculating `value_in_usd` from the pre-calculated `acquisition_price_total`.
--- VERSION: 14
+-- PURPOSE: Fixes SQL error by moving quote_asset definition into the CTE.
+-- VERSION: 15
 
 -- Step 1: Safely drop views in reverse order of dependency.
 DROP VIEW IF EXISTS public.v_holdings CASCADE;
@@ -9,16 +9,18 @@ DROP VIEW IF EXISTS public.internal_transfer_pairs CASCADE;
 DROP VIEW IF EXISTS public.all_transactions CASCADE;
 
 -- =================================================================
--- VIEW 1: all_transactions (Refactored for clarity and efficiency)
--- This version uses a Common Table Expression (CTE) to first calculate `acquisition_price_total`,
--- and then uses that result to calculate `value_in_usd`, avoiding redundant logic.
+-- VIEW 1: all_transactions (Corrected CTE Logic)
+-- The `quote_asset` column is now defined inside the CTE, making it accessible
+-- to all parts of the subsequent SELECT statement, including the JOIN clause.
 -- =================================================================
 CREATE OR REPLACE VIEW public.all_transactions AS
 -- Exchange Trades (via CTE)
 WITH trades_with_acquisition_price AS (
     SELECT
         *,
-        -- Step 1: Calculate the total acquisition price in the original quote currency.
+        -- Define quote_asset within the CTE.
+        split_part(symbol, '/', 2) AS quote_asset,
+        -- Calculate the total acquisition price in the original quote currency.
         CASE
             WHEN side = 'buy' THEN (price * amount) + COALESCE(fee, 0)
             WHEN side = 'sell' THEN amount - COALESCE(fee, 0)
@@ -32,18 +34,18 @@ SELECT
     et.trade_id::text AS reference_id,
     et.ts AS date,
     'Exchange: ' || et.side || ' ' || et.amount::text || ' ' || et.symbol || ' @ ' || et.price::text AS description,
-    -- This correctly represents the amount of the base asset.
+    -- Correctly represents the amount of the base asset.
     CASE
         WHEN et.side = 'buy' THEN et.amount
         WHEN et.side = 'sell' AND et.price IS NOT NULL AND et.price > 0 THEN et.amount / et.price
         ELSE et.amount
     END AS amount,
     split_part(et.symbol, '/', 1) AS asset,
-    split_part(et.symbol, '/', 2) AS quote_asset,
+    et.quote_asset, -- Use the quote_asset from the CTE.
     et.price,
     et.acquisition_price_total, -- The pre-calculated acquisition price
 
-    -- Step 2: Convert the pre-calculated acquisition price to USD.
+    -- Convert the pre-calculated acquisition price to USD.
     COALESCE(
         CASE
             WHEN et.quote_asset = 'USD' THEN et.acquisition_price_total
@@ -58,6 +60,7 @@ SELECT
 FROM trades_with_acquisition_price et
 LEFT JOIN public.daily_exchange_rates rates
     ON DATE(et.ts) = rates.date
+    -- This JOIN condition is now valid because et.quote_asset exists in the CTE.
     AND rates.source_currency = et.quote_asset
     AND rates.target_currency = 'USD'
 
