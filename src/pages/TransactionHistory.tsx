@@ -1,6 +1,7 @@
 
 // src/pages/TransactionHistory.tsx
 // FINAL VERSION: Connects to the new `all_transactions` and `v_holdings` views, and displays realized P&L.
+// VERSION 2: Corrects property names to match the database view schema.
 import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { supabase } from "../integrations/supabase/client";
@@ -8,14 +9,14 @@ import { Button } from "@/components/ui/button";
 
 // --- Data Structures Aligned with Database Views ---
 
-// Based on the latest v_holdings view
+// Based on the latest v_holdings view (v17)
 interface Holding {
     asset: string;
     current_amount: number;
     current_price: number;
-    current_value: number;
+    current_value_usd: number; // CORRECTED: Was current_value
     average_buy_price: number;
-    realized_capital_gain_loss: number; // This is the realized P&L
+    capital_gain: number;       // CORRECTED: Was realized_capital_gain_loss
 }
 
 // Based on the new all_transactions view
@@ -51,7 +52,7 @@ export default function TransactionHistory() {
         setError(null);
         setSyncMessage(null);
         try {
-            // Fetch from the definitive views: v_holdings and the new all_transactions
+            // Fetch from the definitive views: v_holdings and all_transactions
             const [holdingsRes, transactionsRes] = await Promise.all([
                 supabase.from('v_holdings').select('*'),
                 supabase.from('all_transactions').select('*').order('date', { ascending: false }).limit(100)
@@ -182,9 +183,9 @@ export default function TransactionHistory() {
                                         <td className="p-2 text-right whitespace-nowrap">{formatNumber(h.current_amount)}</td>
                                         <td className="p-2 text-right whitespace-nowrap">{formatCurrency(h.average_buy_price)}</td>
                                         <td className="p-2 text-right whitespace-nowrap">{formatCurrency(h.current_price)}</td>
-                                        <td className="p-2 text-right whitespace-nowrap font-semibold">{formatCurrency(h.current_value)}</td>
-                                        <td className={`p-2 text-right whitespace-nowrap ${getPnlClass(h.realized_capital_gain_loss)}`}>
-                                            {formatCurrency(h.realized_capital_gain_loss)}
+                                        <td className="p-2 text-right whitespace-nowrap font-semibold">{formatCurrency(h.current_value_usd)}</td> 
+                                        <td className={`p-2 text-right whitespace-nowrap ${getPnlClass(h.capital_gain)}`}>
+                                            {formatCurrency(h.capital_gain)}
                                         </td>
                                     </tr>
                                 )) : (
