@@ -1,72 +1,47 @@
 -- supabase/migrations/20251209_create_final_holdings_view.sql
--- PURPOSE: Creates a self-contained view for capital gains, calculating price from fee_currency.
+-- PURPOSE: Creates the final holdings view, deriving all data from v_all_transactions.
 
--- Drop the existing v_holdings view to replace it
+-- Drop the existing view to ensure a clean replacement with the updated logic
 DROP VIEW IF EXISTS public.v_holdings;
 
 CREATE OR REPLACE VIEW public.v_holdings AS
 WITH
--- Step 1: Define all transactions in a CTE to ensure this view is self-contained.
-all_transactions_cte AS (
-    -- On-chain Transactions from wallet_transactions
-    SELECT
-        t.user_id,
-        t.direction AS type,
-        (t.value_wei / 1e18) AS amount,
-        COALESCE(t.asset_symbol, 'ETH') AS asset,
-        NULL AS quote_asset,
-        NULL AS price
-    FROM
-        public.wallet_transactions t
-
-    UNION ALL
-
-    -- Exchange Trades from exchange_trades, calculating per-unit price
-    SELECT
-        et.user_id,
-        et.side AS type,
-        et.amount,
-        split_part(et.symbol, '/', 1) AS asset,
-        split_part(et.symbol, '/', 2) AS quote_asset,
-        -- Per-unit price is calculated from fee_currency (total cost) / amount
-        CASE
-            WHEN et.amount IS NOT NULL AND et.amount <> 0 THEN et.fee_currency::numeric / et.amount
-            ELSE 0
-        END AS price
-    FROM
-        public.exchange_trades et
-),
-
--- Step 2: Aggregate transactions to get buy/sell/deposit/withdrawal totals
+-- Step 1: Aggregate transactions directly from the canonical v_all_transactions view
 aggregated_transactions AS (
     SELECT
         user_id,
         asset,
         MAX(quote_asset) AS quote_currency,
         SUM(CASE WHEN type = 'buy' THEN amount ELSE 0 END) AS total_bought_amount,
-        SUM(CASE WHEN type = 'buy' THEN price * amount ELSE 0 END) AS total_buy_cost,
+        SUM(CASE WHEN type = 'buy' THEN acquisition_price_total ELSE 0 END) AS total_buy_cost,
         SUM(CASE WHEN type = 'sell' THEN amount ELSE 0 END) AS total_sold_amount,
-        SUM(CASE WHEN type = 'sell' THEN price * amount ELSE 0 END) AS total_sell_proceeds,
+        SUM(CASE WHEN type = 'sell' THEN acquisition_price_total ELSE 0 END) AS total_sell_proceeds,
         SUM(CASE WHEN type = 'IN' THEN amount ELSE 0 END) AS total_deposited,
         SUM(CASE WHEN type = 'OUT' THEN amount ELSE 0 END) AS total_withdrawn
     FROM
-        all_transactions_cte
+        public.v_all_transactions -- This view is now the single source of truth
     GROUP BY
         user_id, asset
 )
 
--- Step 3: Calculate final holdings, cost basis, and realized P&L
+-- Step 2: Calculate final holdings, cost basis, and realized P&L from the aggregated data
 SELECT
     a.user_id,
     a.asset AS "資産名",
     a.quote_currency,
+    -- 保有量 (Current Holdings)
     (a.total_bought_amount + a.total_deposited - a.total_sold_amount - a.total_withdrawn) AS "保有量",
+    -- 平均取得単価 (Average Acquisition Price)
     (CASE WHEN a.total_bought_amount > 0 THEN a.total_buy_cost / a.total_bought_amount ELSE 0 END) AS "平均取得単価",
+    -- 総取得価格 (Total Acquisition Cost of Current Holdings)
     ((a.total_bought_amount + a.total_deposited - a.total_sold_amount - a.total_withdrawn) *
      (CASE WHEN a.total_bought_amount > 0 THEN a.total_buy_cost / a.total_bought_amount ELSE 0 END)) AS "総取得価格",
+    -- 実現キャピタルゲイン (Realized Capital Gains)
     (a.total_sell_proceeds - (CASE WHEN a.total_bought_amount > 0 THEN (a.total_buy_cost / a.total_bought_amount) * a.total_sold_amount ELSE 0 END)) AS "実現キャピタルゲイン",
+    -- 保有資産の時価総額 (Market Value of Holdings) - Placeholder
     NULL AS "保有資産の時価総額"
 FROM
     aggregated_transactions a
 WHERE
+    -- Filter out assets with zero or negligible holdings
     (a.total_bought_amount + a.total_deposited - a.total_sold_amount - a.total_withdrawn) > 1e-9;
