@@ -1,31 +1,11 @@
 // supabase/functions/exchange-sync-all/index.ts
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
-import ccxt from 'https://esm.sh/ccxt@4.3.40' // 安定バージョンに固定
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
-import { decode } from "https://deno.land/std@0.177.0/encoding/base64.ts";
 
 const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 
-// --- 共通ヘルパー (workerと重複するが、簡潔さのため各ファイルに保持) ---
-async function getKey() {
-  const b64 = Deno.env.get("EDGE_KMS_KEY");
-  if (!b64) throw new Error("EDGE_KMS_KEY secret is not set.");
-  const raw = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
-  return await crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["decrypt"]);
-}
-
-async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> {
-  const parts = blob.split(":");
-  if (parts.length !== 3 || parts[0] !== 'v1') throw new Error("Invalid encrypted blob format.");
-  const iv = decode(parts[1]);
-  const ct = decode(parts[2]);
-  const key = await getKey();
-  const decryptedData = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
-  return JSON.parse(new TextDecoder().decode(decryptedData));
-}
-
-// ★★★【司令塔(Commander)ロジック】★★★
-// 取引履歴の「取得」は行わず、「調査すべき市場リスト」の作成に特化
+// ★★★【新しい司令塔(Commander)ロジック】★★★
+// フロントエンドからの入力に頼らず、ユーザーに紐づく全ての取引所の同期を開始する
 Deno.serve(async (req) => {
     if (req.method === 'OPTIONS') {
         return new Response('ok', { headers: corsHeaders });
@@ -35,87 +15,54 @@ Deno.serve(async (req) => {
         // --- ユーザー認証 ---
         const supabaseAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
         const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(req.headers.get('Authorization')!.replace('Bearer ', ''));
-        if (userError || !user) throw new Error('User not found.');
-        
-        // [FIX] リクエストボディの解析をより安全に行う
-        const body = await req.text();
-        if (!body) {
-            return new Response(JSON.stringify({ error: "Request body is empty. Expected a JSON object with an 'exchange' key." }), {
-                headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 
+        if (userError || !user) {
+            console.warn('[ALL] Auth error:', userError?.message);
+            return new Response(JSON.stringify({ error: 'User not found.' }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' }});
+        }
+
+        console.log(`[ALL] Received sync request for user: ${user.id}`);
+
+        // --- ユーザーに紐づく全てのAPIキー資格情報を取得 ---
+        const { data: credentials, error: credsError } = await supabaseAdmin
+            .from('exchange_api_credentials')
+            .select('id, exchange')
+            .eq('user_id', user.id);
+
+        if (credsError) throw new Error(`Failed to fetch credentials: ${credsError.message}`);
+
+        if (!credentials || credentials.length === 0) {
+            console.log(`[ALL] No credentials found for user ${user.id}. Nothing to do.`);
+            return new Response(JSON.stringify({ message: "No exchange connections found." }), {
+                headers: { ...corsHeaders, 'Content-Type': 'application/json' }
             });
         }
 
-        let payload;
-        try {
-            payload = JSON.parse(body);
-        } catch (e) {
-            console.error("[ALL - Commander] Failed to parse JSON body:", body);
-            return new Response(JSON.stringify({ error: "Invalid JSON format in request body." }), {
-                headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 
-            });
+        console.log(`[ALL] Found ${credentials.length} credentials. Invoking workers...`);
+
+        // --- 全ての資格情報に対して、'trades' と 'transfers' の同期タスクを非同期で開始 ---
+        const tasks = [];
+        for (const cred of credentials) {
+            console.log(`[ALL] -> Invoking 'trades' and 'transfers' sync for ${cred.exchange} (cred_id: ${cred.id})`);
+            tasks.push(supabaseAdmin.functions.invoke("exchange-sync-worker", { 
+                body: { credential_id: cred.id, exchange: cred.exchange, task_type: 'trades' }
+            }));
+            tasks.push(supabaseAdmin.functions.invoke("exchange-sync-worker", { 
+                body: { credential_id: cred.id, exchange: cred.exchange, task_type: 'transfers' }
+            }));
         }
-
-        const { exchange: exchangeName } = payload;
-        if (!exchangeName) {
-            return new Response(JSON.stringify({ error: "The 'exchange' key is missing from the request body." }), {
-                headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 
-            });
-        }
-
-        console.log(`[ALL - Commander] Received request for ${exchangeName}.`);
-
-        // --- APIキー取得 ---
-        const { data: conn, error: connError } = await supabaseAdmin.from('exchange_connections').select('encrypted_blob').eq('user_id', user.id).eq('exchange', exchangeName).single();
-        if (connError || !conn) throw new Error(`Connection not found for ${exchangeName}`);
-
-        const credentials = await decryptBlob(conn.encrypted_blob!);
         
-        // @ts-ignore
-        const exchangeInstance = new ccxt[exchangeName]({
-            apiKey: credentials.apiKey, secret: credentials.apiSecret, password: credentials.apiPassphrase,
-        });
+        // 非同期で実行し、全ての結果を待つ（必要に応じて）
+        await Promise.all(tasks);
 
-        await exchangeInstance.loadMarkets();
+        const successMessage = `Successfully triggered sync for ${credentials.length} exchange(s).`;
+        console.log(`[ALL] ${successMessage}`);
 
-        // --- 調査すべきアセットの洗い出し ---
-        const relevantAssets = new Set<string>();
-        const since = Date.now() - 90 * 24 * 60 * 60 * 1000;
-
-        const balance = await exchangeInstance.fetchBalance().catch(() => ({ total: {} }));
-        Object.keys(balance.total).filter(asset => balance.total[asset] > 0).forEach(asset => relevantAssets.add(asset));
-        
-        if (exchangeInstance.has['fetchDeposits']) {
-            const deposits = await exchangeInstance.fetchDeposits(undefined, since).catch(() => []);
-            deposits.forEach(d => relevantAssets.add(d.currency));
-        }
-        if (exchangeInstance.has['fetchWithdrawals']) {
-            const withdrawals = await exchangeInstance.fetchWithdrawals(undefined, since).catch(() => []);
-            withdrawals.forEach(w => relevantAssets.add(w.currency));
-        }
-
-        console.log(`[ALL - Commander] Found ${relevantAssets.size} relevant assets for ${exchangeName}.`);
-
-        // --- 市場リストの作成 ---
-        const symbolsToFetch = new Set<string>();
-        const quoteCurrencies = ['JPY', 'USDT', 'BTC', 'ETH', 'BUSD', 'USDC', 'BNB'];
-        relevantAssets.forEach(asset => {
-            quoteCurrencies.forEach(quote => {
-                if (asset === quote) return;
-                if (exchangeInstance.markets[`${asset}/${quote}`]) symbolsToFetch.add(`${asset}/${quote}`);
-                if (exchangeInstance.markets[`${quote}/${asset}`]) symbolsToFetch.add(`${quote}/${asset}`);
-            });
-        });
-        
-        const symbolList = Array.from(symbolsToFetch);
-        console.log(`[ALL - Commander] Created a plan with ${symbolList.length} symbols for ${exchangeName}.`);
-
-        // --- 作戦計画書(市場リスト)を返す ---
-        return new Response(JSON.stringify({ symbols: symbolList }), {
+        return new Response(JSON.stringify({ message: successMessage }), {
             headers: { ...corsHeaders, 'Content-Type': 'application/json' }
         });
 
     } catch (err) {
-        console.error(`[ALL - Commander CRASH]`, err);
+        console.error(`[ALL CRASH] A critical error occurred:`, err);
         return new Response(JSON.stringify({ error: err.message, stack: err.stack }), {
             headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 
         });
