@@ -1,6 +1,6 @@
 
 // src/pages/TransactionHistory.tsx
-// VERSION 11: Handles NULL values from the database gracefully.
+// VERSION 12: Added USD value to the transactions table.
 import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { supabase } from "../integrations/supabase/client";
@@ -291,6 +291,7 @@ export default function TransactionHistory() {
                                     <th className="p-2 font-semibold">Date</th>
                                     <th className="p-2 font-semibold">Description</th>
                                     <th className="p-2 font-semibold text-right">Amount</th>
+                                    <th className="p-2 font-semibold text-right">Value (USD)</th>
                                     <th className="p-2 font-semibold">Usage</th>
                                     <th className="p-2 font-semibold">Note</th>
                                 </tr>
@@ -303,6 +304,7 @@ export default function TransactionHistory() {
                                         <td className="p-2 whitespace-nowrap">{new Date(tx.date).toLocaleString()}</td>
                                         <td className="p-2 text-gray-600 dark:text-gray-400">{tx.description}</td>
                                         <td className="p-2 text-right">{formatNumber(tx.amount)} {tx.asset}</td>
+                                        <td className="p-2 text-right">{formatCurrency(tx.value_in_usd)}</td>
                                         <td className="p-2" style={{minWidth: '200px'}}>
                                             <Select 
                                                 value={editedTx?.usage ?? tx.usage ?? 'unspecified'}
@@ -327,7 +329,7 @@ export default function TransactionHistory() {
                                         </td>
                                     </tr>
                                 )}) : (
-                                    <tr><td colSpan={5} className="text-center text-gray-500 py-4">No transactions found.</td></tr>
+                                    <tr><td colSpan={6} className="text-center text-gray-500 py-4">No transactions found.</td></tr>
                                 )}
                             </tbody>
                         </table>
