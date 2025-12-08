@@ -22,7 +22,7 @@ aggregated_transactions AS (
 )
 SELECT
     a.user_id,
-    a.asset, -- Front-end expects 'asset'
+    a.asset,
     (a.total_bought_amount + a.total_deposited - a.total_sold_amount - a.total_withdrawn) AS current_amount,
     (CASE WHEN a.total_bought_amount > 0 THEN a.total_buy_cost / a.total_bought_amount ELSE 0 END) AS average_buy_price,
     ((a.total_bought_amount + a.total_deposited - a.total_sold_amount - a.total_withdrawn) *
