@@ -1,160 +1,192 @@
 
-// src/pages/TransactionHistory.tsx
-import React, { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
-import { supabase } from "../integrations/supabase/client";
-import { Button } from "@/components/ui/button";
+"use client";
 
-interface Transaction {
-    ts: string;
-    tx_hash: string;
-    source: string;
-    amount: number | null;
-    asset: string | null;
-    exchange: string | null;
-    symbol: string | null;
-    value_usd: number | null;
+import { useState, useEffect, useCallback } from 'react';
+import { createClient } from '@/utils/supabase/client';
+
+// Define the types for our data for better type-checking
+type Holding = {
+  asset: string;
+  current_amount: number;
+  current_price: number;
+  current_value: number;
+  average_buy_price: number;
+  total_cost: number;
+  realized_capital_gain_loss: number;
+};
+
+type Transaction = {
+  id: string;
+  date: string;
+  description: string;
+  asset: string;
+  amount: number;
+  transaction_type: string;
+};
+
+export default function TransactionsDashboard() {
+  const supabase = createClient();
+
+  // State for holding our data
+  const [holdings, setHoldings] = useState<Holding[]>([]);
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+
+  // State for managing loading and errors
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // State specifically for the price update functionality
+  const [isUpdatingPrices, setIsUpdatingPrices] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<string | null>(null);
+  const [updateError, setUpdateError] = useState<string | null>(null);
+
+  // A single function to fetch all required data from the database
+  const fetchData = useCallback(async () => {
+    console.log("Fetching holdings and transactions data...");
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      // Fetch both v_holdings and v_all_transactions_classified concurrently
+      const [holdingsResponse, transactionsResponse] = await Promise.all([
+        supabase.from('v_holdings').select('*'),
+        supabase.from('v_all_transactions_classified').select('*').order('date', { ascending: false }).limit(100)
+      ]);
+
+      if (holdingsResponse.error) throw new Error(`Holdings Error: ${holdingsResponse.error.message}`);
+      if (transactionsResponse.error) throw new Error(`Transactions Error: ${transactionsResponse.error.message}`);
+
+      setHoldings(holdingsResponse.data as Holding[]);
+      setTransactions(transactionsResponse.data as Transaction[]);
+      console.log("Data fetched successfully.");
+
+    } catch (e: any) {
+      console.error("Data fetching failed:", e.message);
+      setError('データの読み込みに失敗しました。データベースの接続を確認してください。');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [supabase]);
+
+  // Fetch data when the component first loads
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  // Handler for the "Update Prices" button
+  const handleUpdatePrices = async () => {
+    console.log("Invoking 'update-prices' function...");
+    setIsUpdatingPrices(true);
+    setUpdateError(null);
+
+    // 1. Invoke the edge function we created
+    const { error: functionError } = await supabase.functions.invoke('update-prices');
+
+    if (functionError) {
+      console.error('Error updating prices:', functionError.message);
+      setUpdateError('価格の更新に失敗しました。');
+      setIsUpdatingPrices(false);
+    } else {
+      console.log('Price update function succeeded. Refreshing data...');
+      setLastUpdated(new Date().toLocaleTimeString());
+      
+      // 2. IMPORTANT: Re-fetch the data to show the new values
+      await fetchData(); 
+      
+      setIsUpdatingPrices(false);
+    }
+  };
+
+  if (isLoading) {
+    return <div>読み込み中...</div>;
+  }
+
+  if (error) {
+    return <div style={{ color: 'red' }}>{error}</div>;
+  }
+
+  // Helper to format numbers as currency
+  const formatCurrency = (value: number) => new Intl.NumberFormat('ja-JP', { style: 'currency', currency: 'JPY' }).format(value);
+
+
+  return (
+    <div style={{ padding: '2rem', fontFamily: 'sans-serif' }}>
+      <h1>資産ダッシュボード</h1>
+
+      {/* --- Price Update Section --- */}
+      <div style={{ margin: '2rem 0', padding: '1rem', border: '1px solid #ccc', borderRadius: '8px' }}>
+        <button onClick={handleUpdatePrices} disabled={isUpdatingPrices}>
+          {isUpdatingPrices ? '更新中...' : '資産価格を更新 (リアルタイム)'}
+        </button>
+        {lastUpdated && <p style={{ fontSize: '0.8em', color: 'gray' }}>最終更新: {lastUpdated}</p>}
+        {updateError && <p style={{ color: 'red' }}>{updateError}</p>}
+      </div>
+
+      {/* --- Holdings Table (v_holdings) --- */}
+      <h2>現在の保有資産</h2>
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <thead>
+          <tr>
+            <th style={tableHeaderStyle}>保有資産</th>
+            <th style={tableHeaderStyle}>保有量</th>
+            <th style={tableHeaderStyle}>現在価格</th>
+            <th style={tableHeaderStyle}>現在の評価額</th>
+            <th style={tableHeaderStyle}>平均取得単価</th>
+            <th style={tableHeaderStyle}>実現損益</th>
+          </tr>
+        </thead>
+        <tbody>
+          {holdings.map(h => (
+            <tr key={h.asset}>
+              <td style={tableCellStyle}>{h.asset}</td>
+              <td style={tableCellStyle}>{h.current_amount.toFixed(6)}</td>
+              <td style={tableCellStyle}>{formatCurrency(h.current_price)}</td>
+              <td style={tableCellStyle}>{formatCurrency(h.current_value)}</td>
+              <td style={tableCellStyle}>{formatCurrency(h.average_buy_price)}</td>
+              <td style={tableCellStyle}>{formatCurrency(h.realized_capital_gain_loss)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {/* --- Transactions Table (v_all_transactions_classified) --- */}
+      <h2 style={{ marginTop: '3rem' }}>全取引履歴 (直近100件)</h2>
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <thead>
+          <tr>
+            <th style={tableHeaderStyle}>日時</th>
+            <th style={tableHeaderStyle}>内容</th>
+            <th style={tableHeaderStyle}>資産</th>
+            <th style={tableHeaderStyle}>数量</th>
+            <th style={tableHeaderStyle}>種別</th>
+          </tr>
+        </thead>
+        <tbody>
+          {transactions.map(t => (
+            <tr key={t.id}>
+              <td style={tableCellStyle}>{new Date(t.date).toLocaleString()}</td>
+              <td style={tableCellStyle}>{t.description}</td>
+              <td style={tableCellStyle}>{t.asset}</td>
+              <td style={tableCellStyle}>{t.amount.toFixed(6)}</td>
+              <td style={tableCellStyle}>{t.transaction_type}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
 }
 
-export default function TransactionHistory() {
-    const [transactions, setTransactions] = useState<Transaction[]>([]);
-    const [isLoading, setIsLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
-    const [isSyncing, setIsSyncing] = useState(false);
-    const [isWalletSyncing, setIsWalletSyncing] = useState(false);
-    const [syncProgress, setSyncProgress] = useState<string[]>([]);
+// Basic styling for the tables
+const tableHeaderStyle = {
+  borderBottom: '2px solid #333',
+  padding: '8px',
+  textAlign: 'left' as const,
+  backgroundColor: '#f2f2f2'
+};
 
-    const fetchTransactions = async () => {
-        setIsLoading(true);
-        try {
-            const { data, error } = await supabase.from('v_all_transactions').select('ts, tx_hash, source, amount, asset, exchange, symbol, value_usd').order('ts', { ascending: false }).limit(100);
-            if (error) throw error;
-            setTransactions(data || []);
-        } catch (err: any) {
-            console.error("Error fetching v_all_transactions:", err);
-            setError(`Failed to load data: ${err.message}`);
-        } finally {
-            setIsLoading(false);
-        }
-    };
+const tableCellStyle = {
+  borderBottom: '1px solid #ddd',
+  padding: '8px',
+};
 
-    useEffect(() => { fetchTransactions(); }, []);
-
-    const handleSyncWallet = async () => {
-        setIsWalletSyncing(true);
-        setSyncProgress(['Starting wallet sync...']);
-        try {
-            const { data, error } = await supabase.functions.invoke('sync-wallet-transactions');
-            if (error) throw error;
-            // @ts-ignore
-            setSyncProgress(prev => [...prev, data.message || 'Wallet sync complete.', 'Refreshing list...']);
-            await fetchTransactions();
-        } catch(err: any) {
-            console.error("Wallet sync failed:", err);
-            setSyncProgress(prev => [...prev, `A critical error occurred: ${err.message}`]);
-        } finally {
-            setIsWalletSyncing(false);
-        }
-    }
-
-    // ★★★【診断用コード】★★★
-    // 原因を特定するため、処理を極限まで単純化。
-    // 'binance' という一つの取引所に対してだけ `exchange-sync-all` を呼び出し、結果を画面に表示する。
-    const handleSyncAllExchanges = async () => {
-        setIsSyncing(true);
-        setSyncProgress(['[DIAGNOSTIC MODE] Starting sync...']);
-        console.log('[DIAGNOSTIC] Attempting to invoke exchange-sync-all');
-        
-        try {
-            const testExchange = 'binance';
-            setSyncProgress(prev => [...prev, `[DIAGNOSTIC] Invoking function for a single exchange: ${testExchange}`]);
-
-            const { data, error } = await supabase.functions.invoke('exchange-sync-all', {
-                body: { exchange: testExchange },
-            });
-
-            if (error) {
-                console.error('[DIAGNOSTIC] Invocation returned an error:', error);
-                setSyncProgress(prev => [...prev, `[DIAGNOSTIC] FAILED. The function returned an error: ${error.message}`]);
-            } else {
-                console.log('[DIAGNOSTIC] Invocation returned data:', data);
-                setSyncProgress(prev => [...prev, `[DIAGNOSTIC] SUCCESS! The function returned a response.`, `Response: ${JSON.stringify(data)}`]);
-            }
-
-        } catch (catchedError: any) {
-            console.error("[DIAGNOSTIC] The entire operation failed in a catch block:", catchedError);
-            setSyncProgress(prev => [...prev, `[DIAGNOSTIC] CRITICAL FAILURE. Could not execute the invoke command: ${catchedError.message}`]);
-        } finally {
-            setIsSyncing(false);
-            setSyncProgress(prev => [...prev, "[DIAGNOSTIC MODE] Finished."]);
-        }
-    };
-    
-    const generateDescription = (tx: Transaction): string => {
-        if (tx.symbol) return tx.symbol;
-        if (tx.source === 'exchange' && tx.exchange) return `Trade on ${tx.exchange}`;
-        if (tx.source === 'wallet') return 'On-chain transaction';
-        return ''
-    }
-
-    const formatCurrency = (value: number | null) => {
-        if (value === null || typeof value === 'undefined') return '-';
-        return value.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
-    }
-
-    return (
-        <div className="p-4 md:p-6 lg:p-8">
-            <h1 className="text-3xl font-bold mb-6">Transactions</h1>
-            <section className="mb-8">
-                <h2 className="text-2xl font-semibold mb-2">Data Sync</h2>
-                <p className="text-gray-600 dark:text-gray-400 mb-4">Manually sync the latest transaction history from your connected sources.</p>
-                <div className="flex items-center space-x-4">
-                    <Button variant="outline" size="sm" onClick={handleSyncAllExchanges} disabled={isSyncing || isWalletSyncing}>{isSyncing ? 'Syncing Exchanges...' : 'Sync Exchanges'}</Button>
-                    <Button variant="outline" size="sm" onClick={handleSyncWallet} disabled={isWalletSyncing || isSyncing}>{isWalletSyncing ? 'Syncing Wallet...' : 'Sync Wallet'}</Button>
-                     <Link to="/vce" className="text-sm font-medium text-blue-600 hover:underline">Manage API Keys</Link>
-                </div>
-                {syncProgress.length > 0 && (
-                    <div className="mt-4 p-4 bg-gray-100 dark:bg-gray-800 rounded-lg text-sm font-mono">
-                        <h3 className="font-semibold mb-2">Sync Progress</h3>
-                        <div className="whitespace-pre-wrap max-h-60 overflow-y-auto">{syncProgress.join('\n')}</div>
-                    </div>
-                )}
-            </section>
-            <section>
-                <h2 className="text-2xl font-semibold mb-4">All Transactions</h2>
-                {isLoading ? <p>Loading transactions...</p> : error ? <p className="text-red-500 font-mono">{error}</p> : (
-                    <div className="w-full overflow-x-auto">
-                         <table className="min-w-full text-sm text-left">
-                            <thead className="font-mono text-gray-500">
-                                <tr>
-                                    <th className="p-2 font-semibold">Date</th>
-                                    <th className="p-2 font-semibold">Source</th>
-                                    <th className="p-2 font-semibold">Description</th>
-                                    <th className="p-2 font-semibold text-right">Amount</th>
-                                    <th className="p-2 font-semibold text-right">Value (USD)</th>
-                                    <th className="p-2 font-semibold text-right">Asset</th>
-                                </tr>
-                            </thead>
-                            <tbody className="font-mono">
-                                {transactions.length > 0 ? transactions.map((tx) => (
-                                    <tr key={tx.tx_hash} className="border-b border-gray-200 dark:border-gray-700">
-                                        <td className="p-2 whitespace-nowrap">{new Date(tx.ts).toLocaleString()}</td>
-                                        <td className="p-2 whitespace-nowrap">{tx.source}</td>
-                                        <td className="p-2 text-gray-600 dark:text-gray-400">{generateDescription(tx)}</td>
-                                        <td className="p-2 text-right">{tx.amount?.toFixed(8) ?? ''}</td>
-                                        <td className="p-2 text-right">{formatCurrency(tx.value_usd)}</td>
-                                        <td className="p-2 text-right text-gray-600 dark:text-gray-400">{tx.asset || ''}</td>
-                                    </tr>
-                                )) : (
-                                    <tr>
-                                        <td colSpan={6} className="text-center text-gray-500 py-4">No transactions found.</td>
-                                    </tr>
-                                )}
-                            </tbody>
-                        </table>
-                    </div>
-                )}
-            </section>
-        </div>
-    );
-}
