@@ -13,59 +13,41 @@ Deno.serve(async (req) => {
     }
 
     try {
-        // --- [START] ROBUST BODY HANDLING ---
-        let credentialIdsToSync: string[] | null = null;
-        const bodyText = await req.text();
-        if (bodyText) {
-            try {
-                const body = JSON.parse(bodyText);
-                if (body && Array.isArray(body.credential_ids)) {
-                    credentialIdsToSync = body.credential_ids;
-                }
-            } catch (e) {
-                console.log("Malformed JSON body found, proceeding to sync all credentials for user.");
-            }
-        } else {
-            console.log("No body found, proceeding to sync all credentials for user.");
-        }
-        // --- [END] ROBUST BODY HANDLING ---
+        // This function no longer requires a request body.
 
+        // Get the Supabase client with the user's access token.
         const supabase = createClient(
             Deno.env.get('SUPABASE_URL')!,
             Deno.env.get('SUPABASE_ANON_KEY')!,
             { global: { headers: { Authorization: req.headers.get('Authorization')! } } }
         );
 
+        // Get the user from the access token.
         const { data: { user } } = await supabase.auth.getUser();
         if (!user) throw new Error('User not authenticated');
         
-        console.log(`User ${user.id} authenticated. Plan: ${credentialIdsToSync ? `Sync specific IDs` : 'Sync all'}`);
+        console.log(`User ${user.id} authenticated. Preparing to sync all credentials.`);
 
+        // Use the admin client to fetch all credentials for the user.
         const adminSupabase = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
 
-        let query = adminSupabase
+        const { data: credentials, error: credsError } = await adminSupabase
             .from('exchange_api_credentials')
             .select('id, exchange')
             .eq('user_id', user.id);
 
-        if (credentialIdsToSync && credentialIdsToSync.length > 0) {
-            query = query.in('id', credentialIdsToSync);
-        }
-
-        const { data: credentials, error: credsError } = await query;
-
         if (credsError) throw credsError;
 
         if (!credentials || credentials.length === 0) {
-            return new Response(JSON.stringify({ message: 'No matching exchange credentials found to sync.' }), {
+            return new Response(JSON.stringify({ message: 'No exchange credentials found to sync.' }), {
                 headers: { ...corsHeaders, 'Content-Type': 'application/json' },
                 status: 200
             });
         }
         
-        console.log(`Found ${credentials.length} credentials. Invoking workers for trades and transfers.`);
+        console.log(`Found ${credentials.length} credentials. Invoking workers for trades and transfers for each.`);
 
-        // For each credential, invoke a worker for 'trades' and another for 'transfers'
+        // For each credential, invoke a worker for 'trades' and another for 'transfers'.
         const invocationPromises = credentials.flatMap(cred => {
             const tasks = ['trades', 'transfers'];
             return tasks.map(task_type => 
@@ -79,6 +61,7 @@ Deno.serve(async (req) => {
             );
         });
 
+        // Wait for all invocations to be triggered (don't wait for them to complete).
         await Promise.all(invocationPromises);
 
         console.log("All worker invocations have been successfully triggered.");
@@ -86,12 +69,12 @@ Deno.serve(async (req) => {
         const totalInvocations = credentials.length * 2;
         return new Response(JSON.stringify({ message: `Sync triggered for ${totalInvocations} tasks across ${credentials.length} exchanges.` }), {
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-            status: 202, 
+            status: 202, // 202 Accepted: The request has been accepted for processing, but the processing has not been completed.
         });
 
     } catch (err) {
-        console.error(`[ALL-COMMANDER-CRASH] Plan building failed:`, err);
-        return new Response(JSON.stringify({ error: err.message }), {
+        console.error(`[ORCHESTRATOR-CRASH] Failed to trigger sync tasks:`, err);
+        return new Response(JSON.stringify({ error: err.message, stack: err.stack }), {
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
             status: 500,
         });
