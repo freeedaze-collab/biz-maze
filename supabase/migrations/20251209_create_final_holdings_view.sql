@@ -7,26 +7,29 @@ DROP VIEW IF EXISTS public.v_holdings;
 CREATE OR REPLACE VIEW public.v_holdings AS
 WITH
 -- Step 1: Define all transactions in a CTE to ensure this view is self-contained.
+-- This avoids any dependency on other views that might be out of sync during migration.
 all_transactions_cte AS (
-    -- On-chain Transactions
+    -- On-chain Transactions from wallet_transactions
     SELECT
         t.user_id,
+        t.direction AS type, -- 'IN' or 'OUT'
         (t.value_wei / 1e18) AS amount,
         COALESCE(t.asset_symbol, 'ETH') AS asset, -- Base asset
         NULL AS quote_asset, -- No quote asset for on-chain tx
-        NULL AS price,
-        t.direction AS type -- 'IN' or 'OUT'
+        NULL AS price
     FROM
         public.wallet_transactions t
+
     UNION ALL
-    -- Exchange Trades
+
+    -- Exchange Trades from exchange_trades
     SELECT
         et.user_id,
+        et.side AS type, -- 'buy' or 'sell'
         et.amount,
         split_part(et.symbol, '/', 1) AS asset,      -- Base asset (e.g., BTC)
         split_part(et.symbol, '/', 2) AS quote_asset, -- Quote asset (e.g., USD)
-        et.price,
-        et.side AS type -- 'buy' or 'sell'
+        et.price
     FROM
         public.exchange_trades et
 ),
@@ -44,7 +47,7 @@ aggregated_transactions AS (
         SUM(CASE WHEN type = 'IN' THEN amount ELSE 0 END) AS total_deposited,
         SUM(CASE WHEN type = 'OUT' THEN amount ELSE 0 END) AS total_withdrawn
     FROM
-        all_transactions_cte -- Use the CTE defined above
+        all_transactions_cte -- Use the self-contained CTE defined above
     GROUP BY
         user_id, asset
 )
