@@ -1,6 +1,6 @@
 
 // src/pages/TransactionHistory.tsx
-// VERSION 10: Complete rewrite of save logic to use UPDATE instead of UPSERT for robustness.
+// VERSION 11: Handles NULL values from the database gracefully.
 import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { supabase } from "../integrations/supabase/client";
@@ -213,8 +213,11 @@ export default function TransactionHistory() {
     };
 
     // --- Formatting & Style Helpers ---
-    const formatCurrency = (value: number | null) => value?.toLocaleString('en-US', { style: 'currency', currency: 'USD' }) ?? 'N/A';
-    const formatNumber = (value: number | null) => value?.toFixed(6) ?? '-';
+    const formatCurrency = (value: number | null | undefined) => {
+        const numericValue = value ?? 0;
+        return numericValue.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+    };
+    const formatNumber = (value: number | null | undefined) => (value ?? 0).toFixed(6);
     const getPnlClass = (pnl: number | null) => (pnl ?? 0) === 0 ? 'text-gray-500' : pnl > 0 ? 'text-green-500' : 'text-red-500';
 
     // --- Render Method ---
