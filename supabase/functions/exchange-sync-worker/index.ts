@@ -5,120 +5,164 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { decode } from "https://deno.land/std@0.177.0/encoding/base64.ts";
 
 const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
-const NINETY_DAYS_AGO = Date.now() - 90 * 24 * 60 * 60 * 1000;
 
-// --- Helper Functions (Unchanged) ---
-async function getKey() {
-  const b64 = Deno.env.get("EDGE_KMS_KEY");
-  if (!b64) throw new Error("EDGE_KMS_KEY secret is not set.");
-  const raw = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
-  return await crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["decrypt"]);
-}
+async function getKey() { return (await crypto.subtle.importKey("raw", Uint8Array.from(atob(Deno.env.get("EDGE_KMS_KEY")!), c => c.charCodeAt(0)), "AES-GCM", false, ["decrypt"])) }
+async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> { const p = blob.split(":"); const k = await getKey(); const d = await crypto.subtle.decrypt({ name: "AES-GCM", iv: decode(p[1]) }, k, decode(p[2])); return JSON.parse(new TextDecoder().decode(d)) }
 
-async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> {
-  const parts = blob.split(":");
-  if (parts.length !== 3 || parts[0] !== 'v1') throw new Error("Invalid encrypted blob format.");
-  const iv = decode(parts[1]);
-  const ct = decode(parts[2]);
-  const key = await getKey();
-  const decryptedData = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
-  return JSON.parse(new TextDecoder().decode(decryptedData));
-}
-
-// ★ MINIMAL CHANGE 3: Add 'connection_id' to the record transformer.
-function transformRecord(record: any, userId: string, exchange: string, connection_id: number) { 
-    const recordId = record.id || record.txid;
-    if (!recordId) return null;
-
-    const side = record.side || record.type; 
-    const symbol = record.symbol || record.currency;
-    const price = record.price ?? 0;
-    const fee_cost = record.fee?.cost;
-    const fee_currency = record.fee?.currency;
-
-    if (!symbol || !side || !record.amount || !record.timestamp) return null;
-
-    return {
-        user_id: userId,
-        exchange: exchange,
-        exchange_connection_id: connection_id, // This is the only new field.
-        trade_id: String(recordId),
-        symbol: symbol,
-        side: side,
-        price: price,
-        amount: record.amount,
-        fee: fee_cost,
-        fee_asset: fee_currency,
-        ts: new Date(record.timestamp).toISOString(),
-        raw_data: record,
-    };
-}
-
-// This worker fetches data based on a specific task type (e.g., 'trades')
-// IT MAINTAINS ALL ORIGINAL LOGIC.
 Deno.serve(async (req) => {
-    if (req.method === 'OPTIONS') {
-        return new Response('ok', { headers: corsHeaders });
-    }
+    if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
     try {
-        // ★ MINIMAL CHANGE 1: Expect 'connection_id' in the payload.
-        const { connection_id, exchange: exchangeName, task_type } = await req.json();
-        if (!connection_id || !exchangeName || !task_type) {
-            throw new Error('connection_id, exchange, and task_type are required.');
-        }
-
         const supabaseAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
         const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(req.headers.get('Authorization')!.replace('Bearer ', ''));
         if (userError || !user) throw new Error('User not found.');
 
-        const { data: conn, error: connError } = await supabaseAdmin.from('exchange_connections').select('encrypted_blob').eq('id', connection_id).single();
-        if (connError || !conn) throw new Error(`Connection not found for id: ${connection_id}`);
+        const { exchange: exchangeName, task_type, symbol } = await req.json();
+        if (!exchangeName || !task_type) throw new Error('exchange and task_type are required.');
+        console.log(`[WORKER] Starting task: ${task_type} for ${exchangeName} ${symbol ? `on ${symbol}`: ''}`);
+
+        // ★ MODIFICATION 1: Select 'id' along with 'encrypted_blob'
+        const { data: conn, error: connError } = await supabaseAdmin.from('exchange_connections').select('id, encrypted_blob').eq('user_id', user.id).eq('exchange', exchangeName).single();
+        if (connError || !conn) throw new Error(`Connection not found for ${exchangeName}`);
         
         const credentials = await decryptBlob(conn.encrypted_blob!);
         
-        // @ts-ignore
-        const exchangeInstance = new ccxt[exchangeName]({ apiKey: credentials.apiKey, secret: credentials.apiSecret, password: credentials.apiPassphrase });
+        const exchangeInstance = new ccxt[exchangeName]({
+            apiKey: credentials.apiKey, 
+            secret: credentials.apiSecret, 
+            password: credentials.apiPassphrase,
+            options: { 'defaultType': 'spot' },
+            adjustForTimeDifference: true,
+        });
 
         let records: any[] = [];
-        // --- This entire logic block is UNCHANGED ---
-        if (task_type === 'trades') {
-            console.log(`[WORKER] Fetching TRADES for ${exchangeName} (conn: ${connection_id})`);
-            records = await exchangeInstance.fetchMyTrades(undefined, NINETY_DAYS_AGO);
-        } else if (task_type === 'transfers') {
-            console.log(`[WORKER] Fetching TRANSFERS for ${exchangeName} (conn: ${connection_id})`);
-            // Note: Assuming fetchDeposits, fetchWithdrawals, or a similar method exists.
-            // This part of the logic is preserved exactly as it was.
-            const deposits = await exchangeInstance.fetchDeposits(undefined, NINETY_DAYS_AGO);
-            const withdrawals = await exchangeInstance.fetchWithdrawals(undefined, NINETY_DAYS_AGO);
-            records = [...deposits, ...withdrawals];
-        } else {
-            throw new Error(`Unknown task_type: ${task_type}`);
+        const since = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).getTime();
+        const limit = 500;
+
+        try {
+            if (task_type === 'trade') {
+                if (!symbol) throw new Error('Symbol is required for trade task.');
+                records = await exchangeInstance.fetchMyTrades(symbol, since, limit);
+            } else if (task_type === 'fiat') {
+                const buys = await exchangeInstance.sapiGetFiatPayments({ transactionType: '0', beginTime: since }).then(r => r.data || []);
+                const sells = await exchangeInstance.sapiGetFiatPayments({ transactionType: '1', beginTime: since }).then(r => r.data || []);
+                records = [
+                    ...buys.map(b => ({...b, transactionType: '0'})),
+                    ...sells.map(s => ({...s, transactionType: '1'}))
+                ];
+            } else if (task_type === 'simple-earn') {
+                const subscriptions = await exchangeInstance.sapiGetSimpleEarnFlexibleHistorySubscriptionRecord({ beginTime: since }).then(r => r.rows || []);
+                const redemptions = await exchangeInstance.sapiGetSimpleEarnFlexibleHistoryRedemptionRecord({ beginTime: since }).then(r => r.rows || []);
+                records = [...subscriptions, ...redemptions];
+            } else if (task_type === 'deposits') {
+                records = await exchangeInstance.fetchDeposits(undefined, since, limit);
+            } else if (task_type === 'withdrawals') {
+                records = await exchangeInstance.fetchWithdrawals(undefined, since, limit);
+            } else if (task_type === 'convert') {
+                records = await exchangeInstance.fetchConvertTradeHistory(undefined, since, limit);
+            } else if (task_type === 'transfer') {
+                records = await exchangeInstance.fetchTransfers(undefined, since, limit);
+            }
+        } catch(e) {
+            console.warn(`[WORKER] API call failed for task ${task_type}. Error: ${e.message}`);
         }
-        // --- End of UNCHANGED logic block ---
 
         if (!records || records.length === 0) {
-            return new Response(JSON.stringify({ message: `Sync complete for ${task_type}. No new records.` }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+            return new Response(JSON.stringify({ message: "No new records for this category.", savedCount: 0 }), { headers: corsHeaders });
         }
 
-        // ★ MINIMAL CHANGE 2: Pass the 'connection_id' to the transformer.
-        const transformed = records.map(r => transformRecord(r, user.id, exchangeName, connection_id)).filter(r => r !== null);
-        
-        if (transformed.length === 0) {
-             return new Response(JSON.stringify({ message: `Sync complete for ${task_type}. Nothing to save.` }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+        console.log(`[WORKER] Found ${records.length} records for task: ${task_type}`);
+
+        const intermediateRecords = records.map(r => {
+            let payment_amount: number | string | null = null;
+            let rec: any = {};
+
+            if (task_type === 'fiat') {
+                const isBuy = r.transactionType === '0';
+                payment_amount = parseFloat(isBuy ? r.sourceAmount : r.obtainAmount);
+                rec = {
+                    id: r.orderNo,
+                    symbol: `${r.cryptoCurrency}/${r.fiatCurrency}`,
+                    side: isBuy ? 'buy' : 'sell',
+                    price: parseFloat(r.price),
+                    amount: parseFloat(isBuy ? r.obtainAmount : r.sourceAmount),
+                    fee: parseFloat(r.totalFee),
+                    ts: r.createTime
+                };
+            } else if (task_type === 'simple-earn') {
+                const isSubscription = !!r.purchaseId;
+                payment_amount = parseFloat(r.amount);
+                rec = {
+                    id: r.purchaseId || r.redeemId,
+                    symbol: r.asset,
+                    side: isSubscription ? 'earn_subscribe' : 'earn_redeem',
+                    price: 1, 
+                    amount: parseFloat(r.amount),
+                    fee: 0,
+                    ts: r.time
+                };
+            } else {
+                payment_amount = r.cost;
+                rec = { 
+                    id: r.id || r.txid, 
+                    symbol: r.symbol || r.currency, 
+                    side: r.side || r.type, 
+                    price: r.price, 
+                    amount: r.amount, 
+                    fee: r.fee?.cost, 
+                    ts: r.timestamp 
+                };
+            }
+
+            let value_usd: number | null = null;
+            if (rec.symbol && rec.price != null && rec.amount != null) {
+                const quoteCurrency = rec.symbol.split('/')[1];
+                if (quoteCurrency === 'USD' || quoteCurrency === 'USDT') {
+                    value_usd = rec.price * rec.amount;
+                }
+            }
+
+            return {
+                user_id: user.id, 
+                exchange: exchangeName, 
+                // ★ MODIFICATION 2: Add the connection ID to the record to be saved
+                exchange_connection_id: conn.id,
+                trade_id: rec.id ? String(rec.id) : null,
+                symbol: rec.symbol, 
+                side: rec.side, 
+                price: rec.price ?? 0, 
+                amount: rec.amount ?? 0, 
+                fee: rec.fee ?? 0, 
+                fee_currency: payment_amount ? String(payment_amount) : null, 
+                ts: rec.ts, 
+                value_usd: value_usd,
+                raw_data: r,
+            };
+        });
+
+        const recordsToSave = intermediateRecords.filter(r => {
+            const isValidDate = r.ts && !isNaN(new Date(parseInt(String(r.ts), 10)).getTime());
+            const isValid = r.trade_id && r.symbol && isValidDate;
+            if (!isValid) {
+                console.warn(`[WORKER] Filtering out invalid record due to missing id/symbol or invalid timestamp. Data:`, r.raw_data);
+            }
+            return isValid;
+        }).map(r => {
+            return { ...r, ts: new Date(parseInt(String(r.ts), 10)).toISOString() };
+        });
+
+        if (recordsToSave.length === 0) {
+            return new Response(JSON.stringify({ message: "Fetched records were not in a savable format.", savedCount: 0 }), { headers: corsHeaders });
         }
 
-        // The upsert remains the same.
-        const { data, error } = await supabaseAdmin.from('exchange_trades').upsert(transformed, { onConflict: 'user_id,exchange,trade_id' }).select();
+        const { error: dbError, data: savedData } = await supabaseAdmin.from('exchange_trades').upsert(recordsToSave, { onConflict: 'user_id,exchange,trade_id' }).select();
+        if (dbError) throw dbError;
 
-        if (error) {
-            console.error(`[WORKER-CRASH] DB Upsert Failed for ${task_type}:`, error);
-            throw error;
-        }
-
-        return new Response(JSON.stringify({ message: `Sync succeeded for ${task_type}.`, savedCount: data?.length ?? 0 }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+        console.log(`[WORKER] VICTORY! Successfully saved ${savedData.length} records for task ${task_type}.`);
+        return new Response(JSON.stringify({ message: `Saved ${savedData.length} records.`, savedCount: savedData.length }), { headers: corsHeaders });
 
     } catch (err) {
-        return new Response(JSON.stringify({ error: err.message }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 });
+        console.error(`[WORK-CRASH] Unhandled exception for ${req.method} ${req.url}:`, err);
+        return new Response(JSON.stringify({ error: err.message, stack: err.stack }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 });
     }
 });
