@@ -1,178 +1,101 @@
+
 // supabase/functions/exchange-sync-all/index.ts
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
 import ccxt from 'https://esm.sh/ccxt@4.3.40'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
-import { decode } from "https://deno.land/std@0.177.0/encoding/base64.ts";
 
 const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 
-async function getKey() {
-  const b64 = Deno.env.get("EDGE_KMS_KEY");
-  if (!b64) throw new Error("EDGE_KMS_KEY secret is not set.");
-  const raw = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
-  return await crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["decrypt"]);
-}
-
-async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: string; apiPassphrase?: string }> {
-  const parts = blob.split(":");
-  if (parts.length !== 3 || parts[0] !== 'v1') throw new Error("Invalid encrypted blob format.");
-  const iv = decode(parts[1]);
-  const ct = decode(parts[2]);
-  const key = await getKey();
-  const decryptedData = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
-  return JSON.parse(new TextDecoder().decode(decryptedData));
-}
-
-// ★ MODIFICATION 1: Add 'connectionId' parameter to the function
-function transformRecord(record: any, userId: string, exchange: string, connectionId: number) {
-  const recordId = record.id || record.txid;
-  if (!recordId) {
-    console.warn("[TRANSFORM-WARN] Record is missing a unique ID. Skipping:", record);
-    return null;
-  }
-
-  const side = record.side || record.type;
-  const symbol = record.symbol || record.currency;
-  const price = record.price ?? 0;
-  const fee_cost = record.fee?.cost;
-  const fee_currency = record.fee?.currency;
-
-  if (!symbol || !side || !record.amount || !record.timestamp) {
-      console.warn(`[TRANSFORM-WARN] Record is missing required fields (symbol, side, amount, or timestamp). Skipping:`, record);
-      return null;
-  }
-
-  return {
-    user_id: userId,
-    exchange: exchange,
-    // ★ MODIFICATION 2: Add the new connection ID field to the returned object
-    exchange_connection_id: connectionId,
-    trade_id: String(recordId),
-    symbol: symbol,
-    side: side,
-    price: price,
-    amount: record.amount,
-    fee: fee_cost,
-    fee_asset: fee_currency,
-    ts: new Date(record.timestamp).toISOString(),
-    raw_data: record,
-  };
-}
-
-
+// ★★★【最終改修：ユーザー指摘の完全反映】★★★
+// fiat(法定通貨購入)タスクに加え、bn-flexのような収益プロダクトの申込/償還を
+// 取得するための `simple-earn` タスクを司令部の作戦計画に追加する。
 Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders });
-  }
+    if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
-  try {
-    const supabaseAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
-    const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(req.headers.get('Authorization')!.replace('Bearer ', ''));
-    if (userError || !user) throw new Error('User not found.');
+    try {
+        const authorization = req.headers.get('Authorization');
+        if (!authorization) throw new Error('Authorization header is missing.');
 
-    const { data: connections, error: connError } = await supabaseAdmin.from('exchange_connections').select('id, exchange, encrypted_blob').eq('user_id', user.id);
-    if (connError) throw connError;
-    if (!connections || connections.length === 0) {
-      return new Response(JSON.stringify({ message: "No exchange connections found.", totalSaved: 0 }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-    }
+        const supabaseAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+        const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(authorization.replace('Bearer ', ''));
+        if (userError || !user) throw new Error('User not found.');
 
-    let allRecordsToUpsert: any[] = [];
-    const since = Date.now() - 90 * 24 * 60 * 60 * 1000;
+        const { exchange: exchangeName } = await req.json();
+        if (!exchangeName) throw new Error('Exchange name is required.');
+        console.log(`[ALL-COMMANDER] Received plan request for: ${exchangeName}`);
 
-    for (const conn of connections) {
-      console.log(`[LOG] Processing ${conn.exchange}...`);
-      if (!conn.encrypted_blob) { console.warn(`[WARN] Skipping ${conn.exchange} due to missing blob.`); continue; }
-      
-      const credentials = await decryptBlob(conn.encrypted_blob);
-      let allExchangeRecords: any[] = [];
-      
-      // @ts-ignore
-      const exchangeInstance = new ccxt[conn.exchange]({
-        apiKey: credentials.apiKey,
-        secret: credentials.apiSecret,
-        password: credentials.apiPassphrase,
-        options: { 'defaultType': 'spot' },
-      });
-      
-      try {
-        console.log(`[LOG] ${conn.exchange}: Fetching trades...`);
-        if (exchangeInstance.has['fetchMyTrades']) {
-            await exchangeInstance.loadMarkets();
-            const balance = await exchangeInstance.fetchBalance();
-            const heldAssets = Object.keys(balance.total).filter(asset => balance.total[asset] > 0);
-            const symbolsToFetch = new Set<string>();
-            
-            for (const asset of heldAssets) {
-                const potentialPairs = [`${asset}/JPY`, `${asset}/USDT`, `${asset}/BTC`, `${asset}/ETH`];
-                for (const pair of potentialPairs) {
-                    if (exchangeInstance.markets[pair]) symbolsToFetch.add(pair);
-                }
-            }
+        const tasksToDispatch: any[] = [];
 
-            console.log(`[LOG] Symbols to fetch trades for:`, Array.from(symbolsToFetch));
-            for (const symbol of symbolsToFetch) {
-              try {
-                const trades = await exchangeInstance.fetchMyTrades(symbol, since);
-                if (trades.length > 0) {
-                  console.log(`[LOG] ${conn.exchange}: Found ${trades.length} trades for ${symbol}.`);
-                  allExchangeRecords.push(...trades);
-                }
-              } catch (e) {
-                console.warn(`[WARN] Could not fetch trades for symbol ${symbol}: ${e.message}`);
-              }
+        // 1.【特殊任務の計画】
+        const publicExchangeInstance = new ccxt[exchangeName](); 
+        if (publicExchangeInstance.has['fetchDeposits']) tasksToDispatch.push({ task_type: 'deposits' });
+        if (publicExchangeInstance.has['fetchWithdrawals']) tasksToDispatch.push({ task_type: 'withdrawals' });
+        if (exchangeName === 'binance') {
+            tasksToDispatch.push({ task_type: 'fiat' });
+            //【最重要修正】シンプルアーン（bn-flexなど）用のタスクを追加
+            tasksToDispatch.push({ task_type: 'simple-earn'}); 
+            if (publicExchangeInstance.has['fetchConvertTradeHistory']) {
+                tasksToDispatch.push({ task_type: 'convert' });
             }
         }
-      } catch (e) { console.error(`[ERROR] ${conn.exchange}: Failed during trade fetching process.`, e.message); }
+        console.log(`[ALL-COMMANDER] Planned special tasks: ${tasksToDispatch.map(t=>t.task_type).join(', ')}`);
 
-      if (exchangeInstance.has['fetchDeposits']) {
-        try {
-            console.log(`[LOG] ${conn.exchange}: Fetching deposits...`);
-            const deposits = await exchangeInstance.fetchDeposits(undefined, since);
-            if (deposits.length > 0) {
-                console.log(`[LOG] ${conn.exchange}: Found ${deposits.length} deposits.`);
-                allExchangeRecords.push(...deposits);
+        // 2.【市場取引の計画】
+        console.log(`[ALL-COMMANDER] Finding relevant assets from internal database...`);
+        const { data: pastTrades, error: dbError } = await supabaseAdmin.from('exchange_trades').select('symbol').eq('user_id', user.id).eq('exchange', exchangeName);
+        if (dbError) throw new Error(`Failed to fetch past trades from DB: ${dbError.message}`);
+
+        const relevantAssets = new Set<string>();
+        if(pastTrades) {
+            pastTrades.forEach(trade => {
+                const assets = trade.symbol.split('/');
+                if(assets.length === 2) {
+                    relevantAssets.add(assets[0]);
+                    relevantAssets.add(assets[1]);
+                }
+            });
+        }
+
+        if (relevantAssets.size === 0) {
+            console.log(`[ALL-COMMANDER] No past trades found. Adding default major assets to scan.`);
+            ['BTC', 'ETH', 'USDT', 'JPY'].forEach(a => relevantAssets.add(a));
+        }
+
+        console.log(`[ALL-COMMANDER] Found ${relevantAssets.size} relevant assets. Planning market scan...`);
+
+        await publicExchangeInstance.loadMarkets();
+        const symbolsToFetch = new Set<string>();
+        const majorCurrencies = ['USDT', 'BTC', 'ETH', 'JPY', 'BUSD'];
+
+        for (const asset of relevantAssets) {
+            for (const currency of majorCurrencies) {
+                if (publicExchangeInstance.markets[`${asset}/${currency}`]) symbolsToFetch.add(`${asset}/${currency}`);
+                if (publicExchangeInstance.markets[`${currency}/${asset}`]) symbolsToFetch.add(`${currency}/${asset}`);
             }
-        } catch (e) { console.warn(`[WARN] ${conn.exchange}: Could not fetch deposits.`, e.message); }
-      }
+        }
+        tasksToDispatch.push(...Array.from(symbolsToFetch).map(symbol => ({ task_type: 'trade', symbol: symbol })));
 
-      if (exchangeInstance.has['fetchWithdrawals']) {
-        try {
-            console.log(`[LOG] ${conn.exchange}: Fetching withdrawals...`);
-            const withdrawals = await exchangeInstance.fetchWithdrawals(undefined, since);
-            if (withdrawals.length > 0) {
-                console.log(`[LOG] ${conn.exchange}: Found ${withdrawals.length} withdrawals.`);
-                allExchangeRecords.push(...withdrawals);
-            }
-        } catch (e) { console.warn(`[WARN] ${conn.exchange}: Could not fetch withdrawals.`, e.message); }
-      }
-      
-      console.log(`[LOG] Found a total of ${allExchangeRecords.length} records for ${conn.exchange}.`);
-      if (allExchangeRecords.length > 0) {
-        // ★ MODIFICATION 3: Pass 'conn.id' to the transform function
-        const transformed = allExchangeRecords.map(r => transformRecord(r, user.id, conn.exchange, conn.id)).filter(r => r !== null);
-        allRecordsToUpsert.push(...transformed);
-      }
+        // 3.【司令部から工作員へ】
+        if (tasksToDispatch.length === 0) {
+            console.log(`[ALL-COMMANDER] No tasks to dispatch.`);
+            return new Response(JSON.stringify({ message: `No tasks to dispatch.` }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+        }
+        
+        console.log(`[ALL-COMMANDER] Dispatching a total of ${tasksToDispatch.length} tasks to workers...`);
+        const allInvocations = tasksToDispatch.map(task => 
+            supabaseAdmin.functions.invoke('exchange-sync-worker', {
+                headers: { 'Authorization': authorization },
+                body: { exchange: exchangeName, ...task }
+            })
+        );
+
+        await Promise.allSettled(allInvocations);
+
+        console.log(`[ALL-COMMANDER] All ${tasksToDispatch.length} tasks have been dispatched.`);
+        return new Response(JSON.stringify({ message: `Successfully dispatched ${tasksToDispatch.length} tasks.` }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+
+    } catch (err) {
+        console.error("[ALL-COMMANDER-CRASH] Plan building failed:", err);
+        return new Response(JSON.stringify({ error: err.message, stack: err.stack }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 });
     }
-    
-    let totalSavedCount = 0;
-    if (allRecordsToUpsert.length > 0) {
-      console.log(`[LOG] Upserting ${allRecordsToUpsert.length} records to the database...`);
-      const { data, error } = await supabaseAdmin.from('exchange_trades').upsert(allRecordsToUpsert, { onConflict: 'user_id,exchange,trade_id' }).select();
-      
-      if (error) {
-          console.error("[CRASH] DATABASE UPSERT FAILED:", error);
-          throw error;
-      }
-      totalSavedCount = data?.length ?? 0;
-      console.log(`[LOG] VICTORY! Successfully upserted ${totalSavedCount} records.`);
-    } else {
-      console.log("[LOG] No new records found across all exchanges to save.");
-    }
-
-    return new Response(JSON.stringify({ message: 'Sync complete.', totalSaved: totalSavedCount }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-
-  } catch (err) {
-    console.error(`[CRASH] A critical error occurred in the function:`, err);
-    return new Response(JSON.stringify({ error: err.message, stack: err.stack }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 });
-  }
 });
