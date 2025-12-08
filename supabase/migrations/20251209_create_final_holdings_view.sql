@@ -31,27 +31,24 @@ current_prices (asset, price_jpy) AS (
 SELECT
     a.user_id,
     a.asset,
-    -- Existing columns
+    -- (保有量)
     (a.total_bought_amount + a.total_deposited - a.total_sold_amount - a.total_withdrawn) AS current_amount,
+    -- (1資産あたりの平均取得価格)
     (CASE WHEN a.total_bought_amount > 0 THEN a.total_buy_cost / a.total_bought_amount ELSE 0 END) AS average_buy_price,
+    -- (保有資産の取得総額)
     ((a.total_bought_amount + a.total_deposited - a.total_sold_amount - a.total_withdrawn) *
      (CASE WHEN a.total_bought_amount > 0 THEN a.total_buy_cost / a.total_bought_amount ELSE 0 END)) AS total_cost,
+    -- (確定済みの売却損益)
     (a.total_sell_proceeds - (CASE WHEN a.total_bought_amount > 0 THEN (a.total_buy_cost / a.total_bought_amount) * a.total_sold_amount ELSE 0 END)) AS realized_pnl,
-
-    -- ============== NEW COLUMNS ==============
+    -- (現在の単価)
     p.price_jpy AS current_price,
-
-    -- Unrealized PnL = (Current Value of holdings) - (Acquisition Cost of holdings)
-    -- This shows the profit/loss on the assets you currently hold.
+    -- (評価損益)
     ( (a.total_bought_amount + a.total_deposited - a.total_sold_amount - a.total_withdrawn) * p.price_jpy ) -
     ( (a.total_bought_amount + a.total_deposited - a.total_sold_amount - a.total_withdrawn) *
       (CASE WHEN a.total_bought_amount > 0 THEN a.total_buy_cost / a.total_bought_amount ELSE 0 END)
     ) AS unrealized_pnl
-    -- =========================================
 FROM
     aggregated_transactions a
--- Join the aggregated data with our static price list
 LEFT JOIN current_prices p ON a.asset = p.asset
 WHERE
-    -- Filter out assets with zero or negligible holdings
     (a.total_bought_amount + a.total_deposited - a.total_sold_amount - a.total_withdrawn) > 1e-9;
