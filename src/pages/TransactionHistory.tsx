@@ -1,6 +1,6 @@
 
 // src/pages/TransactionHistory.tsx
-// VERSION 12: Added USD value to the transactions table.
+// VERSION 14: Correctly aliases v_holdings columns to match the frontend interface based on user feedback.
 import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { supabase } from "../integrations/supabase/client";
@@ -83,11 +83,19 @@ export default function TransactionHistory() {
             const { data: { user } } = await supabase.auth.getUser();
             if (!user) throw new Error("User not authenticated");
 
-            const selectColumns = 'id, user_id, reference_id, date, source, chain, description, amount, asset, price, value_in_usd, type, usage, note';
+            const holdingsSelect = `
+                asset,
+                currentAmount:current_amount,
+                currentPrice:current_price,
+                currentValueUsd:current_value_usd,
+                averageBuyPrice:average_buy_price,
+                capitalGain:capital_gain
+            `;
+            const transactionsSelect = 'id, user_id, reference_id, date, source, chain, description, amount, asset, price, value_in_usd, type, usage, note';
 
             const [holdingsRes, transactionsRes] = await Promise.all([
-                supabase.from('v_holdings').select('*').eq('user_id', user.id),
-                supabase.from('all_transactions').select(selectColumns).eq('user_id', user.id).order('date', { ascending: false }).limit(100)
+                supabase.from('v_holdings').select(holdingsSelect).eq('user_id', user.id),
+                supabase.from('all_transactions').select(transactionsSelect).eq('user_id', user.id).order('date', { ascending: false }).limit(100)
             ]);
 
             if (holdingsRes.error) throw new Error(`Holdings Error: ${holdingsRes.error.message}`);
