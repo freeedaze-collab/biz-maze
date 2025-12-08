@@ -1,6 +1,6 @@
 -- supabase/migrations/20240523120000_consolidated_views_rebuild.sql
--- PURPOSE: Implements a strict calculation for value_in_usd, removing the fallback to old values.
--- VERSION: 16
+-- PURPOSE: Implements a strict calculation for value_in_usd and adds a capital_gain column.
+-- VERSION: 17
 
 -- Step 1: Safely drop views in reverse order of dependency.
 DROP VIEW IF EXISTS public.v_holdings CASCADE;
@@ -88,7 +88,7 @@ END as transaction_type
 FROM public.all_transactions t;
 
 -- =================================================================
--- VIEW 3: v_holdings (No changes needed)
+-- VIEW 3: v_holdings (Added capital_gain column)
 -- =================================================================
 CREATE OR REPLACE VIEW public.v_holdings AS
 WITH base_calcs AS (
@@ -106,7 +106,8 @@ SELECT
     (b.total_inflow_amount - b.total_outflow_amount) as current_amount,
     COALESCE((SELECT ap.current_price FROM public.asset_prices ap WHERE ap.asset = b.asset), 0) as current_price,
     (b.total_inflow_amount - b.total_outflow_amount) * COALESCE((SELECT ap.current_price FROM public.asset_prices ap WHERE ap.asset = b.asset), 0) AS current_value_usd,
-    (CASE WHEN b.total_quantity_of_priced_inflows > 0 THEN b.total_cost_for_priced_inflows / b.total_quantity_of_priced_inflows ELSE 0 END) as average_buy_price
+    (CASE WHEN b.total_quantity_of_priced_inflows > 0 THEN b.total_cost_for_priced_inflows / b.total_quantity_of_priced_inflows ELSE 0 END) as average_buy_price,
+    -- Capital Gain Calculation as requested: (Acquisition Cost) - (Current Value)
+    ((b.total_inflow_amount - b.total_outflow_amount) * (CASE WHEN b.total_quantity_of_priced_inflows > 0 THEN b.total_cost_for_priced_inflows / b.total_quantity_of_priced_inflows ELSE 0 END)) - ((b.total_inflow_amount - b.total_outflow_amount) * COALESCE((SELECT ap.current_price FROM public.asset_prices ap WHERE ap.asset = b.asset), 0)) as capital_gain
 FROM base_calcs b
 WHERE (b.total_inflow_amount - b.total_outflow_amount) > 0.000001;
-
