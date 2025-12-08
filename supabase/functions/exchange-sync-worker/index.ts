@@ -170,7 +170,6 @@ async function syncTransfersForCredential(supabase: SupabaseClient, cred: any) {
     return { inserted: transfersToInsert.length, skipped: allTransfers.length - transfersToInsert.length };
 }
 
-
 Deno.serve(async (req) => {
     if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
@@ -183,15 +182,33 @@ Deno.serve(async (req) => {
         console.log(`[WORKER] Starting task: ${task_type} for ${exchange}`);
 
         const supabaseAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
-        
-        const { data: cred, error: credError } = await supabaseAdmin
+
+        // Step 1: Look up the credential details from exchange_api_credentials
+        const { data: credInfo, error: credError } = await supabaseAdmin
             .from('exchange_api_credentials')
-            .select('user_id, exchange, id, encrypted_blob')
+            .select('user_id, id, exchange')
             .eq('id', credential_id)
             .single();
 
-        if (credError) throw new Error(`Credential lookup failed: ${credError.message}`);
-        if (!cred) throw new Error(`Credential not found for ID: ${credential_id}`);
+        if (credError) throw new Error(`Credential lookup failed in exchange_api_credentials: ${credError.message}`);
+        if (!credInfo) throw new Error(`Credential not found in exchange_api_credentials for ID: ${credential_id}`);
+
+        // Step 2: Fetch the encrypted blob from the correct table, exchange_connections
+        const { data: conn, error: connError } = await supabaseAdmin
+            .from('exchange_connections')
+            .select('encrypted_blob')
+            .eq('user_id', credInfo.user_id)
+            .eq('exchange', credInfo.exchange)
+            .single();
+
+        if (connError) throw new Error(`Connection lookup failed in exchange_connections: ${connError.message}`);
+        if (!conn || !conn.encrypted_blob) throw new Error(`Encrypted blob not found in exchange_connections for user ${credInfo.user_id} and exchange ${credInfo.exchange}`);
+
+        // Step 3: Combine the information to form the final credential object
+        const cred = {
+            ...credInfo,
+            encrypted_blob: conn.encrypted_blob
+        };
 
         let result;
         switch (task_type) {
