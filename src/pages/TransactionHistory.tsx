@@ -1,4 +1,6 @@
+
 // src/pages/TransactionHistory.tsx
+// FINAL VERSION: Connects to the new `all_transactions` and `v_holdings` views, and displays realized P&L.
 import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { supabase } from "../integrations/supabase/client";
@@ -6,25 +8,28 @@ import { Button } from "@/components/ui/button";
 
 // --- Data Structures Aligned with Database Views ---
 
-// Based on v_holdings
+// Based on the latest v_holdings view
 interface Holding {
     asset: string;
     current_amount: number;
     current_price: number;
     current_value: number;
     average_buy_price: number;
-    realized_capital_gain_loss: number;
+    realized_capital_gain_loss: number; // This is the realized P&L
 }
 
-// Based on v_all_transactions_classified
+// Based on the new all_transactions view
 interface Transaction {
-    ctx_id: string;
-    ts: string;
+    id: string;
+    date: string;
     source: string;
     description: string;
     amount: number;
     asset: string;
-    transaction_type: string;
+    quote_asset: string;
+    price: number;
+    value_in_usd: number;
+    type: string;
 }
 
 // --- Main Component ---
@@ -46,9 +51,10 @@ export default function TransactionHistory() {
         setError(null);
         setSyncMessage(null);
         try {
+            // Fetch from the definitive views: v_holdings and the new all_transactions
             const [holdingsRes, transactionsRes] = await Promise.all([
                 supabase.from('v_holdings').select('*'),
-                supabase.from('v_all_transactions_classified').select('*').order('ts', { ascending: false }).limit(100)
+                supabase.from('all_transactions').select('*').order('date', { ascending: false }).limit(100)
             ]);
 
             if (holdingsRes.error) throw new Error(`Holdings Error: ${holdingsRes.error.message}`);
@@ -71,14 +77,14 @@ export default function TransactionHistory() {
 
     // --- Action Handlers ---
 
-    const handleSync = async (syncFunction: 'sync-wallet-transactions' | 'exchange-sync-all', syncType: string) => {
+    const handleSync = async (syncFunction: 'sync-wallet-transactions' | 'exchange-sync-all' | 'sync-historical-exchange-rates', syncType: string) => {
         setIsSyncing(true);
         setSyncMessage(`Syncing ${syncType}...`);
         try {
             const { error } = await supabase.functions.invoke(syncFunction);
             if (error) throw error;
             setSyncMessage(`${syncType} sync complete. Refreshing all data...`);
-            await fetchAllData(); // Refresh both holdings and transactions
+            await fetchAllData();
             setSyncMessage(`${syncType} data refreshed successfully.`);
         } catch (err: any) {
             console.error(`${syncType} sync failed:`, err);
@@ -91,18 +97,20 @@ export default function TransactionHistory() {
     const handleUpdatePrices = async () => {
         setIsUpdatingPrices(true);
         setError(null);
-        setSyncMessage('Updating asset prices...');
+        setSyncMessage('Updating asset prices (USD)...');
         try {
+            // First, sync exchange rates
+            await supabase.functions.invoke('sync-historical-exchange-rates');
+            setSyncMessage('Exchange rates synced. Updating asset prices...');
+
+            // Then, update crypto prices
             const { error } = await supabase.functions.invoke('update-prices');
             if (error) throw error;
-            setSyncMessage('Prices updated. Refreshing portfolio...');
-            
-            // Only refetch holdings, as prices don't affect transaction history
-            const { data, error: fetchError } = await supabase.from('v_holdings').select('*');
-            if(fetchError) throw fetchError;
-            setHoldings(data || []);
+            setSyncMessage('Prices updated. Refreshing all data...');
 
-            setSyncMessage('Portfolio refreshed with latest prices.');
+            // Finally, refetch everything to reflect all changes
+            await fetchAllData();
+            setSyncMessage('Portfolio and transactions refreshed with latest prices.');
 
         } catch (err: any) {
             console.error("Price update failed:", err);
@@ -128,25 +136,19 @@ export default function TransactionHistory() {
         return pnl > 0 ? 'text-green-500' : 'text-red-500';
     };
 
-
     // --- Render Method ---
     return (
         <div className="p-4 md:p-6 lg:p-8">
             <h1 className="text-3xl font-bold mb-6">Transactions & Portfolio</h1>
             
-            {/* --- Actions Section --- */}
             <section className="mb-8">
                 <h2 className="text-2xl font-semibold mb-2">Actions</h2>
-                <p className="text-gray-600 dark:text-gray-400 mb-4">Update asset prices or manually sync transaction history.</p>
                 <div className="flex items-center space-x-4">
                     <Button variant="outline" size="sm" onClick={handleUpdatePrices} disabled={isUpdatingPrices || isSyncing}>
-                        {isUpdatingPrices ? 'Updating Prices...' : 'Update Asset Prices'}
+                        {isUpdatingPrices ? 'Updating...' : 'Update Prices & Rates'}
                     </Button>
                     <Button variant="outline" size="sm" onClick={() => handleSync('exchange-sync-all', 'Exchanges')} disabled={isSyncing || isUpdatingPrices}>
                         {isSyncing ? 'Syncing...' : 'Sync Exchanges'}
-                    </Button>
-                    <Button variant="outline" size="sm" onClick={() => handleSync('sync-wallet-transactions', 'Wallet')} disabled={isSyncing || isUpdatingPrices}>
-                        {isSyncing ? 'Syncing...' : 'Sync Wallet'}
                     </Button>
                      <Link to="/management/exchange-services" className="text-sm font-medium text-blue-600 hover:underline">Manage API Keys</Link>
                 </div>
@@ -158,7 +160,6 @@ export default function TransactionHistory() {
                 )}
             </section>
 
-            {/* --- Portfolio Summary Section (v_holdings) --- */}
             <section className="mb-8">
                 <h2 className="text-2xl font-semibold mb-4">Portfolio Summary</h2>
                 {isLoading ? <p>Loading portfolio...</p> : (
@@ -168,10 +169,10 @@ export default function TransactionHistory() {
                                 <tr>
                                     <th className="p-2 font-semibold">Asset</th>
                                     <th className="p-2 font-semibold text-right">Amount</th>
-                                    <th className="p-2 font-semibold text-right">Avg. Buy Price</th>
-                                    <th className="p-2 font-semibold text-right">Current Price</th>
-                                    <th className="p-2 font-semibold text-right">Current Value</th>
-                                    <th className="p-2 font-semibold text-right">Realized P&L</th>
+                                    <th className="p-2 font-semibold text-right">Avg. Buy Price (USD)</th>
+                                    <th className="p-2 font-semibold text-right">Current Price (USD)</th>
+                                    <th className="p-2 font-semibold text-right">Current Value (USD)</th>
+                                    <th className="p-2 font-semibold text-right">Realized P&L (USD)</th>
                                 </tr>
                             </thead>
                             <tbody className="font-mono">
@@ -197,7 +198,6 @@ export default function TransactionHistory() {
                 )}
             </section>
 
-            {/* --- All Transactions Section (v_all_transactions_classified) --- */}
             <section>
                 <h2 className="text-2xl font-semibold mb-4">All Transactions</h2>
                 {isLoading ? <p>Loading transactions...</p> : (
@@ -208,20 +208,20 @@ export default function TransactionHistory() {
                                     <th className="p-2 font-semibold">Date</th>
                                     <th className="p-2 font-semibold">Source</th>
                                     <th className="p-2 font-semibold">Description</th>
-                                    <th className="p-2 font-semibold">Asset</th>
                                     <th className="p-2 font-semibold text-right">Amount</th>
+                                    <th className="p-2 font-semibold text-right">Value (USD)</th>
                                     <th className="p-2 font-semibold">Type</th>
                                 </tr>
                             </thead>
                             <tbody className="font-mono">
                                 {transactions.length > 0 ? transactions.map((tx) => (
-                                    <tr key={tx.ctx_id} className="border-b border-gray-200 dark:border-gray-700">
-                                        <td className="p-2 whitespace-nowrap">{new Date(tx.ts).toLocaleString()}</td>
+                                    <tr key={tx.id} className="border-b border-gray-200 dark:border-gray-700">
+                                        <td className="p-2 whitespace-nowrap">{new Date(tx.date).toLocaleString()}</td>
                                         <td className="p-2 whitespace-nowrap">{tx.source}</td>
                                         <td className="p-2 text-gray-600 dark:text-gray-400">{tx.description}</td>
-                                        <td className="p-2 text-right text-gray-600 dark:text-gray-400">{tx.asset}</td>
-                                        <td className="p-2 text-right">{formatNumber(tx.amount)}</td>
-                                        <td className="p-2 font-semibold">{tx.transaction_type}</td>
+                                        <td className="p-2 text-right">{formatNumber(tx.amount)} {tx.asset}</td>
+                                        <td className="p-2 text-right">{formatCurrency(tx.value_in_usd)}</td>
+                                        <td className="p-2 font-semibold">{tx.type}</td>
                                     </tr>
                                 )) : (
                                     <tr>
