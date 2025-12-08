@@ -1,22 +1,22 @@
 
 // src/pages/TransactionHistory.tsx
 // FINAL VERSION: Connects to the new `all_transactions` and `v_holdings` views, and displays realized P&L.
-// VERSION 2: Corrects property names to match the database view schema.
+// VERSION 3: Corrects property names from snake_case to camelCase to match supabase-js v2 response.
 import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { supabase } from "../integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 
-// --- Data Structures Aligned with Database Views ---
+// --- Data Structures Aligned with Database Views (using camelCase) ---
 
 // Based on the latest v_holdings view (v17)
 interface Holding {
     asset: string;
-    current_amount: number;
-    current_price: number;
-    current_value_usd: number; // CORRECTED: Was current_value
-    average_buy_price: number;
-    capital_gain: number;       // CORRECTED: Was realized_capital_gain_loss
+    currentAmount: number;
+    currentPrice: number;
+    currentValueUsd: number;
+    averageBuyPrice: number;
+    capitalGain: number;
 }
 
 // Based on the new all_transactions view
@@ -27,9 +27,9 @@ interface Transaction {
     description: string;
     amount: number;
     asset: string;
-    quote_asset: string;
+    quoteAsset: string;
     price: number;
-    value_in_usd: number;
+    valueInUsd: number;
     type: string;
 }
 
@@ -53,6 +53,7 @@ export default function TransactionHistory() {
         setSyncMessage(null);
         try {
             // Fetch from the definitive views: v_holdings and all_transactions
+            // supabase-js v2 automatically converts snake_case to camelCase
             const [holdingsRes, transactionsRes] = await Promise.all([
                 supabase.from('v_holdings').select('*'),
                 supabase.from('all_transactions').select('*').order('date', { ascending: false }).limit(100)
@@ -100,16 +101,13 @@ export default function TransactionHistory() {
         setError(null);
         setSyncMessage('Updating asset prices (USD)...');
         try {
-            // First, sync exchange rates
             await supabase.functions.invoke('sync-historical-exchange-rates');
             setSyncMessage('Exchange rates synced. Updating asset prices...');
 
-            // Then, update crypto prices
             const { error } = await supabase.functions.invoke('update-prices');
             if (error) throw error;
             setSyncMessage('Prices updated. Refreshing all data...');
 
-            // Finally, refetch everything to reflect all changes
             await fetchAllData();
             setSyncMessage('Portfolio and transactions refreshed with latest prices.');
 
@@ -173,19 +171,19 @@ export default function TransactionHistory() {
                                     <th className="p-2 font-semibold text-right">Avg. Buy Price (USD)</th>
                                     <th className="p-2 font-semibold text-right">Current Price (USD)</th>
                                     <th className="p-2 font-semibold text-right">Current Value (USD)</th>
-                                    <th className="p-2 font-semibold text-right">Realized P&L (USD)</th>
+                                    <th className="p-2 font-semibold text-right">Unrealized P&L (USD)</th>
                                 </tr>
                             </thead>
                             <tbody className="font-mono">
                                 {holdings.length > 0 ? holdings.map((h) => (
                                     <tr key={h.asset} className="border-b border-gray-200 dark:border-gray-700">
                                         <td className="p-2 font-bold whitespace-nowrap">{h.asset}</td>
-                                        <td className="p-2 text-right whitespace-nowrap">{formatNumber(h.current_amount)}</td>
-                                        <td className="p-2 text-right whitespace-nowrap">{formatCurrency(h.average_buy_price)}</td>
-                                        <td className="p-2 text-right whitespace-nowrap">{formatCurrency(h.current_price)}</td>
-                                        <td className="p-2 text-right whitespace-nowrap font-semibold">{formatCurrency(h.current_value_usd)}</td> 
-                                        <td className={`p-2 text-right whitespace-nowrap ${getPnlClass(h.capital_gain)}`}>
-                                            {formatCurrency(h.capital_gain)}
+                                        <td className="p-2 text-right whitespace-nowrap">{formatNumber(h.currentAmount)}</td>
+                                        <td className="p-2 text-right whitespace-nowrap">{formatCurrency(h.averageBuyPrice)}</td>
+                                        <td className="p-2 text-right whitespace-nowrap">{formatCurrency(h.currentPrice)}</td>
+                                        <td className="p-2 text-right whitespace-nowrap font-semibold">{formatCurrency(h.currentValueUsd)}</td> 
+                                        <td className={`p-2 text-right whitespace-nowrap ${getPnlClass(h.capitalGain)}`}>
+                                            {formatCurrency(h.capitalGain)}
                                         </td>
                                     </tr>
                                 )) : (
@@ -221,7 +219,7 @@ export default function TransactionHistory() {
                                         <td className="p-2 whitespace-nowrap">{tx.source}</td>
                                         <td className="p-2 text-gray-600 dark:text-gray-400">{tx.description}</td>
                                         <td className="p-2 text-right">{formatNumber(tx.amount)} {tx.asset}</td>
-                                        <td className="p-2 text-right">{formatCurrency(tx.value_in_usd)}</td>
+                                        <td className="p-2 text-right">{formatCurrency(tx.valueInUsd)}</td>
                                         <td className="p-2 font-semibold">{tx.type}</td>
                                     </tr>
                                 )) : (
