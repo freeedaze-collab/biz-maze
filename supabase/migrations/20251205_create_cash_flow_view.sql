@@ -1,4 +1,3 @@
-
 -- supabase/migrations/20251205_create_cash_flow_view.sql
 -- PURPOSE: Creates the view for the Cash Flow Statement.
 
