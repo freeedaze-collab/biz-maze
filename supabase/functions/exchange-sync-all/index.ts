@@ -1,7 +1,7 @@
 
 // supabase/functions/exchange-sync-all/index.ts
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
-import ccxt from 'https://esm.sh/ccxt@4.3.40' // 安定バージョンに固定
+import ccxt from 'https://esm.sh/ccxt@4.3.40' //【最重要】バグのない安定バージョンに固定
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { decode } from "https://deno.land/std@0.177.0/encoding/base64.ts";
 
@@ -24,31 +24,37 @@ async function decryptBlob(blob: string): Promise<{ apiKey: string; apiSecret: s
   return JSON.parse(new TextDecoder().decode(decryptedData));
 }
 
+// ccxtのレコードをDBスキーマに正確にマッピングする関数
 function transformRecord(record: any, userId: string, exchange: string) {
   const recordId = record.id || record.txid;
   if (!recordId) {
     console.warn("[TRANSFORM-WARN] Record is missing a unique ID. Skipping:", record);
-    return null;
+    return null; // IDがないレコードは処理不能なのでスキップ
   }
-  const side = record.side || record.type;
-  const symbol = record.symbol || record.currency;
-  const price = record.price ?? 0;
+
+  // レコードタイプに応じて各フィールドを正規化
+  const side = record.side || record.type; // 'buy'/'sell' または 'deposit'/'withdrawal'
+  const symbol = record.symbol || record.currency; // トレードならsymbol, 入出金ならcurrency
+  const price = record.price ?? 0; // 入出金には価格がない場合があるため、nullなら0を設定
   const fee_cost = record.fee?.cost;
   const fee_currency = record.fee?.currency;
+
+  // 必須カラムがnullでないか最終チェック
   if (!symbol || !side || !record.amount || !record.timestamp) {
-      console.warn(`[TRANSFORM-WARN] Record is missing required fields. Skipping:`, record);
+      console.warn(`[TRANSFORM-WARN] Record is missing required fields (symbol, side, amount, or timestamp). Skipping:`, record);
       return null;
   }
+
   return {
     user_id: userId,
     exchange: exchange,
-    trade_id: String(recordId),
+    trade_id: String(recordId), // UNIQUE制約 (user_id, exchange, trade_id) のため
     symbol: symbol,
     side: side,
     price: price,
     amount: record.amount,
     fee: fee_cost,
-    fee_asset: fee_currency,
+    fee_asset: fee_currency, // スキーマに合わせて復活
     ts: new Date(record.timestamp).toISOString(),
     raw_data: record,
   };
@@ -86,70 +92,63 @@ Deno.serve(async (req) => {
         apiKey: credentials.apiKey,
         secret: credentials.apiSecret,
         password: credentials.apiPassphrase,
-        options: { 'defaultType': 'spot' },
+        options: { 'defaultType': 'spot' }, // 現物取引を明示
       });
       
-      await exchangeInstance.loadMarkets();
+      // 1. トレードの取得 (より安定した方法)
+      try {
+        console.log(`[LOG] ${conn.exchange}: Fetching trades...`);
+        if (exchangeInstance.has['fetchMyTrades']) {
+            await exchangeInstance.loadMarkets();
+            const balance = await exchangeInstance.fetchBalance();
+            const heldAssets = Object.keys(balance.total).filter(asset => balance.total[asset] > 0);
+            const symbolsToFetch = new Set<string>();
+            
+            // JPY, USDT, BTC, ETHとのペアを探索
+            for (const asset of heldAssets) {
+                const potentialPairs = [`${asset}/JPY`, `${asset}/USDT`, `${asset}/BTC`, `${asset}/ETH`];
+                for (const pair of potentialPairs) {
+                    if (exchangeInstance.markets[pair]) symbolsToFetch.add(pair);
+                }
+            }
 
-      // ★★★【最終・完全版ロジック】★★★
+            console.log(`[LOG] Symbols to fetch trades for:`, Array.from(symbolsToFetch));
+            for (const symbol of symbolsToFetch) {
+              try {
+                const trades = await exchangeInstance.fetchMyTrades(symbol, since);
+                if (trades.length > 0) {
+                  console.log(`[LOG] ${conn.exchange}: Found ${trades.length} trades for ${symbol}.`);
+                  allExchangeRecords.push(...trades);
+                }
+              } catch (e) {
+                console.warn(`[WARN] Could not fetch trades for symbol ${symbol}: ${e.message}`);
+              }
+            }
+        }
+      } catch (e) { console.error(`[ERROR] ${conn.exchange}: Failed during trade fetching process.`, e.message); }
 
-      // 1. アセットの網羅的洗い出し (残高＋入出金履歴)
-      const relevantAssets = new Set<string>();
-      console.log(`[LOG] ${conn.exchange}: Discovering relevant assets...`);
-
-      // 1a. 残高からアセットを追加
-      const balance = await exchangeInstance.fetchBalance().catch(() => ({ total: {} }));
-      Object.keys(balance.total).filter(asset => balance.total[asset] > 0).forEach(asset => relevantAssets.add(asset));
-      console.log(`[LOG] Found ${relevantAssets.size} assets from balance.`);
-
-      // 1b. 入金履歴からアセットを追加 (ここで取得した入金は後で保存する)
-      let deposits: any[] = [];
+      // 2. 入金の取得
       if (exchangeInstance.has['fetchDeposits']) {
         try {
-            deposits = await exchangeInstance.fetchDeposits(undefined, since);
-            deposits.forEach(d => relevantAssets.add(d.currency));
-            allExchangeRecords.push(...deposits);
-            console.log(`[LOG] Found ${deposits.length} deposits & added their assets.`);
+            console.log(`[LOG] ${conn.exchange}: Fetching deposits...`);
+            const deposits = await exchangeInstance.fetchDeposits(undefined, since);
+            if (deposits.length > 0) {
+                console.log(`[LOG] ${conn.exchange}: Found ${deposits.length} deposits.`);
+                allExchangeRecords.push(...deposits);
+            }
         } catch (e) { console.warn(`[WARN] ${conn.exchange}: Could not fetch deposits.`, e.message); }
       }
 
-      // 1c. 出金履歴からアセットを追加 (ここで取得した出金は後で保存する)
-      let withdrawals: any[] = [];
+      // 3. 出金の取得
       if (exchangeInstance.has['fetchWithdrawals']) {
         try {
-            withdrawals = await exchangeInstance.fetchWithdrawals(undefined, since);
-            withdrawals.forEach(w => relevantAssets.add(w.currency));
-            allExchangeRecords.push(...withdrawals);
-            console.log(`[LOG] Found ${withdrawals.length} withdrawals & added their assets.`);
+            console.log(`[LOG] ${conn.exchange}: Fetching withdrawals...`);
+            const withdrawals = await exchangeInstance.fetchWithdrawals(undefined, since);
+            if (withdrawals.length > 0) {
+                console.log(`[LOG] ${conn.exchange}: Found ${withdrawals.length} withdrawals.`);
+                allExchangeRecords.push(...withdrawals);
+            }
         } catch (e) { console.warn(`[WARN] ${conn.exchange}: Could not fetch withdrawals.`, e.message); }
-      }
-      console.log(`[LOG] Total unique relevant assets: ${relevantAssets.size}`);
-      
-      // 2. 網羅的な市場リストの作成
-      const symbolsToFetch = new Set<string>();
-      const quoteCurrencies = ['JPY', 'USDT', 'BTC', 'ETH', 'BUSD', 'USDC', 'BNB'];
-      relevantAssets.forEach(asset => {
-        quoteCurrencies.forEach(quote => {
-          if (asset === quote) return;
-          const pair1 = `${asset}/${quote}`;
-          if (exchangeInstance.markets[pair1]) symbolsToFetch.add(pair1);
-          const pair2 = `${quote}/${asset}`;
-          if (exchangeInstance.markets[pair2]) symbolsToFetch.add(pair2);
-        });
-      });
-
-      // 3. 売買履歴の取得
-      console.log(`[LOG] Symbols to fetch trades for:`, Array.from(symbolsToFetch));
-      for (const symbol of symbolsToFetch) {
-        try {
-          const trades = await exchangeInstance.fetchMyTrades(symbol, since);
-          if (trades.length > 0) {
-            console.log(`[LOG] ${conn.exchange}: Found ${trades.length} trades for ${symbol}.`);
-            allExchangeRecords.push(...trades);
-          }
-        } catch (e) {
-          console.warn(`[WARN] Could not fetch trades for symbol ${symbol}: ${e.message}`);
-        }
       }
       
       console.log(`[LOG] Found a total of ${allExchangeRecords.length} records for ${conn.exchange}.`);
