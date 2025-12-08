@@ -24,8 +24,8 @@ FROM public.wallet_transactions t
 UNION ALL
 -- Exchange Trades (with corrected amount logic)
 SELECT
-    et.trade_id::text, et.user_id, et.trade_id::text, et.ts, 
-    'Exchange: ' || et.side || ' ' || et.amount::text || ' ' || et.symbol || ' @ ' || et.price::text, 
+    et.trade_id::text, et.user_id, et.trade_id::text, et.ts,
+    'Exchange: ' || et.side || ' ' || et.amount::text || ' ' || et.symbol || ' @ ' || et.price::text,
     CASE
         WHEN et.side = 'buy' THEN et.amount
         WHEN et.side = 'sell' AND et.price IS NOT NULL AND et.price > 0 THEN et.amount / et.price
