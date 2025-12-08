@@ -109,3 +109,4 @@ SELECT
     (CASE WHEN b.total_quantity_of_priced_inflows > 0 THEN b.total_cost_for_priced_inflows / b.total_quantity_of_priced_inflows ELSE 0 END) as average_buy_price
 FROM base_calcs b
 WHERE (b.total_inflow_amount - b.total_outflow_amount) > 0.000001;
+
