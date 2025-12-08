@@ -32,16 +32,32 @@ Deno.serve(async (req) => {
     }
 
     try {
-        // --- ユーザー認証とAPIキー取得 ---
+        // --- ユーザー認証 ---
         const supabaseAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
         const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(req.headers.get('Authorization')!.replace('Bearer ', ''));
         if (userError || !user) throw new Error('User not found.');
         
-        const { exchange: exchangeName } = await req.json();
-        if (!exchangeName) throw new Error("Exchange is required.");
+        // [FIX] リクエストボディが空、または不正な場合に安全にエラーを返す
+        let payload;
+        try {
+            payload = await req.json();
+        } catch (e) {
+            console.error("[ALL - Commander] Failed to parse JSON body:", e.message);
+            return new Response(JSON.stringify({ error: "Invalid request body. Expected a JSON object with an 'exchange' key." }), {
+                headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 
+            });
+        }
+
+        const { exchange: exchangeName } = payload;
+        if (!exchangeName) {
+            return new Response(JSON.stringify({ error: "The 'exchange' key is missing from the request body." }), {
+                headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 
+            });
+        }
 
         console.log(`[ALL - Commander] Received request for ${exchangeName}.`);
 
+        // --- APIキー取得 ---
         const { data: conn, error: connError } = await supabaseAdmin.from('exchange_connections').select('encrypted_blob').eq('user_id', user.id).eq('exchange', exchangeName).single();
         if (connError || !conn) throw new Error(`Connection not found for ${exchangeName}`);
 
