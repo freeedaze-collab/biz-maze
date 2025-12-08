@@ -1,5 +1,8 @@
+
 // @ts-nocheck
 import { Link } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { supabase } from "@/lib/supabaseClient";
 import {
   Card,
   CardContent,
@@ -16,7 +19,41 @@ import {
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 
+const fetchHoldings = async () => {
+  const { data, error } = await supabase.from("v_holdings").select("*");
+  if (error) {
+    throw new Error(error.message);
+  }
+  return data;
+};
+
+const fetchTransactions = async () => {
+  const { data, error } = await supabase.from("v_all_transactions").select("*");
+  if (error) {
+    throw new Error(error.message);
+  }
+  return data;
+};
+
 const TransactionHistoryScreen1 = () => {
+  const {
+    data: holdings,
+    isLoading: isLoadingHoldings,
+    error: errorHoldings,
+  } = useQuery({
+    queryKey: ["holdings"],
+    queryFn: fetchHoldings,
+  });
+
+  const {
+    data: transactions,
+    isLoading: isLoadingTransactions,
+    error: errorTransactions,
+  } = useQuery({
+    queryKey: ["transactions"],
+    queryFn: fetchTransactions,
+  });
+
   return (
     <div className="min-h-screen bg-background">
       <div className="container mx-auto p-6">
@@ -75,14 +112,32 @@ const TransactionHistoryScreen1 = () => {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  <TableRow>
-                    <TableCell
-                      colSpan={5}
-                      className="text-center text-muted-foreground"
-                    >
-                      Holdings data will be displayed here.
-                    </TableCell>
-                  </TableRow>
+                  {isLoadingHoldings ? (
+                    <TableRow>
+                      <TableCell colSpan={5} className="text-center">
+                        Loading...
+                      </TableCell>
+                    </TableRow>
+                  ) : errorHoldings ? (
+                    <TableRow>
+                      <TableCell
+                        colSpan={5}
+                        className="text-center text-red-500"
+                      >
+                        Error: {errorHoldings.message}
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    holdings?.map((holding) => (
+                      <TableRow key={holding.asset}>
+                        <TableCell>{holding.asset}</TableCell>
+                        <TableCell>{holding.current_amount}</TableCell>
+                        <TableCell>{holding.average_buy_price}</TableCell>
+                        <TableCell>{holding.total_cost}</TableCell>
+                        <TableCell>{holding.realized_pnl}</TableCell>
+                      </TableRow>
+                    ))
+                  )}
                 </TableBody>
               </Table>
             </CardContent>
@@ -104,41 +159,32 @@ const TransactionHistoryScreen1 = () => {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  <TableRow>
-                    <TableCell>2025/12/7 23:01:13</TableCell>
-                    <TableCell>exchange</TableCell>
-                    <TableCell>BTC/JPY</TableCell>
-                    <TableCell>1200</TableCell>
-                    <TableCell>BTC</TableCell>
-                  </TableRow>
-                  <TableRow>
-                    <TableCell>2025/11/27 1:42:47</TableCell>
-                    <TableCell>wallet</TableCell>
-                    <TableCell>ETH</TableCell>
-                    <TableCell>0.0018</TableCell>
-                    <TableCell>ETH</TableCell>
-                  </TableRow>
-                  <TableRow>
-                    <TableCell>2025/11/27 1:42:13</TableCell>
-                    <TableCell>exchange</TableCell>
-                    <TableCell>ETH</TableCell>
-                    <TableCell>0.0018</TableCell>
-                    <TableCell>ETH</TableCell>
-                  </TableRow>
-                  <TableRow>
-                    <TableCell>2025/11/27 1:39:04</TableCell>
-                    <TableCell>exchange</TableCell>
-                    <TableCell>ETH/JPY</TableCell>
-                    <TableCell>0.00210254</TableCell>
-                    <TableCell>ETH</TableCell>
-                  </TableRow>
-                  <TableRow>
-                    <TableCell>2025/11/26 23:08:48</TableCell>
-                    <TableCell>exchange</TableCell>
-                    <TableCell>BTC/JPY</TableCell>
-                    <TableCell>0.00021387</TableCell>
-                    <TableCell>BTC</TableCell>
-                  </TableRow>
+                  {isLoadingTransactions ? (
+                    <TableRow>
+                      <TableCell colSpan={5} className="text-center">
+                        Loading...
+                      </TableCell>
+                    </TableRow>
+                  ) : errorTransactions ? (
+                    <TableRow>
+                      <TableCell
+                        colSpan={5}
+                        className="text-center text-red-500"
+                      >
+                        Error: {errorTransactions.message}
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    transactions?.map((tx) => (
+                      <TableRow key={tx.ctx_id}>
+                        <TableCell>{new Date(tx.ts).toLocaleString()}</TableCell>
+                        <TableCell>{tx.source}</TableCell>
+                        <TableCell>{tx.symbol}</TableCell>
+                        <TableCell>{tx.amount}</TableCell>
+                        <TableCell>{tx.asset}</TableCell>
+                      </TableRow>
+                    ))
+                  )}
                 </TableBody>
               </Table>
             </CardContent>
