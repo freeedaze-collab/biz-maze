@@ -1,6 +1,6 @@
 
 // src/pages/TransactionHistory.tsx
-// VERSION 9: Fixes column name mismatch for 'value_in_usd'.
+// VERSION 10: Complete rewrite of save logic to use UPDATE instead of UPSERT for robustness.
 import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { supabase } from "../integrations/supabase/client";
@@ -83,7 +83,6 @@ export default function TransactionHistory() {
             const { data: { user } } = await supabase.auth.getUser();
             if (!user) throw new Error("User not authenticated");
 
-            // Fetch all columns, ensuring they all exist in the view
             const selectColumns = 'id, user_id, reference_id, date, source, chain, description, amount, asset, price, value_in_usd, type, usage, note';
 
             const [holdingsRes, transactionsRes] = await Promise.all([
@@ -118,49 +117,48 @@ export default function TransactionHistory() {
         setError(null);
         setSyncMessage("Saving changes...");
 
-        const updates = Object.entries(editedTransactions);
-        if (updates.length === 0) {
+        const editedEntries = Object.entries(editedTransactions);
+        if (editedEntries.length === 0) {
             setSyncMessage("No changes to save.");
             setIsSaving(false);
             return;
         }
 
         try {
-            const exchangeUpdates: any[] = [];
-            const walletUpdates: any[] = [];
-
-            updates.forEach(([viewId, changes]) => {
+            const updatePromises = editedEntries.map(([viewId, changes]) => {
                 const originalTx = transactions.find(t => t.id === viewId);
-                if (!originalTx) return;
+                if (!originalTx) {
+                    console.warn(`Original transaction not found for view ID: ${viewId}`);
+                    return Promise.resolve({ error: { message: `Original transaction for ${viewId} not found.` } });
+                }
+
+                const updatePayload = {
+                    usage: changes.usage !== undefined ? changes.usage : originalTx.usage,
+                    note: changes.note !== undefined ? changes.note : originalTx.note,
+                };
 
                 if (originalTx.source === 'exchange') {
-                    exchangeUpdates.push({
-                        user_id: originalTx.user_id,
-                        exchange: originalTx.chain, 
-                        trade_id: originalTx.reference_id, 
-                        ...changes
-                    });
+                    return supabase
+                        .from('exchange_trades')
+                        .update(updatePayload)
+                        .eq('trade_id', originalTx.reference_id)
+                        .eq('user_id', originalTx.user_id); 
                 } else if (originalTx.source === 'on-chain') {
-                    walletUpdates.push({
-                        id: originalTx.reference_id, 
-                        user_id: originalTx.user_id, 
-                        ...changes
-                    });
+                    return supabase
+                        .from('wallet_transactions')
+                        .update(updatePayload)
+                        .eq('id', originalTx.reference_id)
+                        .eq('user_id', originalTx.user_id);
                 }
+                return Promise.resolve({ error: null });
             });
-            
-            const results = await Promise.all([
-                exchangeUpdates.length > 0 
-                    ? supabase.from('exchange_trades').upsert(exchangeUpdates, { onConflict: 'user_id,exchange,trade_id' }) 
-                    : Promise.resolve({ error: null }),
-                walletUpdates.length > 0 
-                    ? supabase.from('wallet_transactions').upsert(walletUpdates, { onConflict: 'id' }) 
-                    : Promise.resolve({ error: null }),
-            ]);
 
-            const [exchangeResult, walletResult] = results;
-            if (exchangeResult.error) throw new Error(`Exchange update failed: ${exchangeResult.error.message}`);
-            if (walletResult.error) throw new Error(`Wallet update failed: ${walletResult.error.message}`);
+            const results = await Promise.all(updatePromises);
+
+            const firstError = results.find(res => res && res.error);
+            if (firstError) {
+                throw new Error(`An update failed: ${firstError.error.message}`);
+            }
 
             setSyncMessage("Changes saved successfully. Refreshing data...");
             await fetchAllData();
@@ -173,7 +171,6 @@ export default function TransactionHistory() {
             setIsSaving(false);
         }
     };
-
 
     const handleSync = async (syncFunction: 'sync-wallet-transactions' | 'exchange-sync-all' | 'sync-historical-exchange-rates', syncType: string) => {
         setIsSyncing(true);
