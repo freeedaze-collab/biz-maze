@@ -1,121 +1,238 @@
 
 // src/pages/Accounting.tsx
-// VERSION 2: Fetches data directly from the new database views instead of invoking a function.
-import { useEffect, useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+// VERSION 3: Adds the Cash Flow Statement.
+import React, { useState, useEffect, useCallback } from 'react';
+import { supabase } from "../integrations/supabase/client";
+import { useAuth } from '../hooks/useAuth';
 
-// --- Type Definitions for Financial Statements from DB Views ---
-type PLAccount = { account: string; balance: number; }
-type BSAccount = { account: string; balance: number; }
+// --- Helper Functions & Components ---
 
-interface FinancialStatements {
-    profitAndLoss: PLAccount[];
-    balanceSheet: BSAccount[];
+const formatCurrency = (value: number | null | undefined) => {
+    if (value == null) return 'N/A';
+    return value.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+};
+
+interface FinancialCardProps {
+    title: string;
+    items: { label: string; value: number | null | undefined }[];
+    totalLabel: string;
+    totalValue: number;
+    isLoading: boolean;
 }
 
-// --- Helper Components ---
-const formatCurrency = (value: number) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value);
-
-const StatementCard: React.FC<{ title: string; data: { account: string; balance: number }[]; totalLabel?: string; totalValue?: number; }> = ({ title, data, totalLabel, totalValue }) => (
-    <Card>
-        <CardHeader>
-            <CardTitle>{title}</CardTitle>
-        </CardHeader>
-        <CardContent>
-            <Table>
-                <TableHeader>
-                    <TableRow>
-                        <TableHead>Account</TableHead>
-                        <TableHead className="text-right">Balance</TableHead>
-                    </TableRow>
-                </TableHeader>
-                <TableBody>
-                    {data.map((item, index) => (
-                        <TableRow key={index}>
-                            <TableCell className="font-medium">{item.account}</TableCell>
-                            <TableCell className="text-right">{formatCurrency(item.balance)}</TableCell>
-                        </TableRow>
-                    ))}
-                    {totalLabel && totalValue !== undefined && (
-                        <TableRow className="font-bold border-t-2">
-                            <TableCell>{totalLabel}</TableCell>
-                            <TableCell className="text-right">{formatCurrency(totalValue)}</TableCell>
-                        </TableRow>
-                    )}
-                </TableBody>
-            </Table>
-        </CardContent>
-    </Card>
+const FinancialCard: React.FC<FinancialCardProps> = ({ title, items, totalLabel, totalValue, isLoading }) => (
+    <div className="bg-white dark:bg-gray-800 shadow-lg rounded-lg p-6 w-full">
+        <h3 className="text-xl font-bold mb-4 text-gray-800 dark:text-gray-200">{title}</h3>
+        {isLoading ? <p className="text-gray-500 dark:text-gray-400">Loading...</p> : (
+            <div className="font-mono">
+                {items.map((item, index) => (
+                    <div key={index} className="flex justify-between py-2 border-b border-gray-200 dark:border-gray-700">
+                        <span className="text-gray-600 dark:text-gray-300">{item.label}</span>
+                        <span className="text-gray-800 dark:text-gray-100">{formatCurrency(item.value)}</span>
+                    </div>
+                ))}
+                <div className="flex justify-between py-3 mt-2 font-bold">
+                    <span className="text-gray-800 dark:text-gray-100">{totalLabel}</span>
+                    <span className="text-gray-900 dark:text-white">{formatCurrency(totalValue)}</span>
+                </div>
+            </div>
+        )}
+    </div>
 );
 
+// --- Main Accounting Page Component ---
 
-// --- Main Accounting Component ---
 export default function Accounting() {
-    const [statements, setStatements] = useState<FinancialStatements | null>(null);
+    const { user } = useAuth();
+    const [plData, setPlData] = useState<any>(null);
+    const [bsData, setBsData] = useState<any>(null);
+    const [cfData, setCfData] = useState<any>(null); // New state for Cash Flow data
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
+    const fetchData = useCallback(async () => {
+        if (!user) return;
+        setIsLoading(true);
+        setError(null);
+
+        try {
+            const [plRes, bsRes, cfRes] = await Promise.all([
+                supabase.from('v_profit_loss_statement').select('*').eq('user_id', user.id).single(),
+                supabase.from('v_balance_sheet').select('*').eq('user_id', user.id).single(),
+                supabase.from('v_cash_flow_statement').select('*').eq('user_id', user.id).single() // Fetch CF data
+            ]);
+
+            if (plRes.error) throw new Error(`Profit & Loss Error: ${plRes.error.message}`);
+            if (bsRes.error) throw new Error(`Balance Sheet Error: ${bsRes.error.message}`);
+            if (cfRes.error) throw new Error(`Cash Flow Error: ${cfRes.error.message}`);
+
+            setPlData(plRes.data);
+            setBsData(bsRes.data);
+            setCfData(cfRes.data); // Set CF data
+
+        } catch (err: any) {
+            console.error("Failed to fetch accounting data:", err);
+            setError(err.message);
+        } finally {
+            setIsLoading(false);
+        }
+    }, [user]);
+
     useEffect(() => {
-        const fetchStatements = async () => {
-            setIsLoading(true);
-            setError(null);
+        fetchData();
+    }, [fetchData]);
 
-            try {
-                // Fetch all statements from the new views in parallel
-                const [plRes, bsRes] = await Promise.all([
-                    supabase.from('v_profit_and_loss').select('account, balance'),
-                    supabase.from('v_balance_sheet').select('account, balance')
-                ]);
 
-                if (plRes.error) throw new Error(`Profit & Loss Error: ${plRes.error.message}`);
-                if (bsRes.error) throw new Error(`Balance Sheet Error: ${bsRes.error.message}`);
+    // --- P&L Data ---    
+    const profitLossItems = [
+        { label: "Sales Revenue (IAS 2)", value: plData?.sales_revenue },
+        { label: "Consideration Revenue (IFRS 15)", value: plData?.other_revenue },
+        { label: "Cost of Goods Sold (IAS 2)", value: plData?.cost_of_sales },
+        { label: "Staking & Mining Rewards", value: plData?.staking_and_mining_rewards },
+        { label: "Unrealized Gains on Intangibles (Revaluation)", value: plData?.revaluation_gains },
+        { label: "Unrealized Losses on Intangibles (Impairment)", value: plData?.impairment_losses },
+        { label: "Realized Gains on Intangibles (Sale)", value: plData?.realized_gains_on_sale },
+        { label: "Gas & Network Fees", value: plData?.gas_fees },
+        { label: "Loss of Crypto (Unrecoverable)", value: plData?.crypto_losses },
+    ];
+    const netIncome = plData?.net_income ?? 0;
 
-                setStatements({
-                    profitAndLoss: plRes.data as PLAccount[],
-                    balanceSheet: bsRes.data as BSAccount[],
-                });
+    // --- Balance Sheet Data ---
+    const assetItems = [
+        { label: "Cash & Cash Equivalents", value: bsData?.cash },
+        { label: "Inventory (Trading Crypto)", value: bsData?.inventory },
+        { label: "Intangible Assets (Investing Crypto)", value: bsData?.intangible_assets },
+    ];
+    const totalAssets = bsData?.total_assets ?? 0;
 
-            } catch (err: any) {
-                console.error("Error fetching financial statements:", err);
-                setError(`Failed to load statements: ${err.message}. Ensure the database views (e.g., v_profit_and_loss) are created.`);
-            } finally {
-                setIsLoading(false);
-            }
-        };
+    const liabilityEquityItems = [
+        { label: "Retained Earnings", value: bsData?.retained_earnings },
+    ];
+    const totalLiabilitiesAndEquity = bsData?.total_liabilities_and_equity ?? 0;
 
-        fetchStatements();
-    }, []);
+    // --- Cash Flow Data ---
+    const operatingCfItems = [
+        { label: "Inflow from Sales (IAS 2 & IFRS 15)", value: (cfData?.cash_in_from_inventory_sales ?? 0) + (cfData?.cash_in_from_revenue ?? 0) },
+        { label: "Outflow for Inventory (IAS 2)", value: cfData?.cash_out_for_inventory },
+        { label: "Outflow for Gas Fees", value: cfData?.cash_out_for_gas_fees },
+    ];
+    const investingCfItems = [
+        { label: "Outflow for Intangible Assets", value: cfData?.cash_out_for_intangibles },
+        { label: "Inflow from Sale of Intangibles", value: cfData?.cash_in_from_intangibles },
+    ];
+    const financingCfItems = [
+        // { label: "Inflow from Capital Contribution", value: cfData?.cash_in_from_financing },
+        // { label: "Outflow to Owners", value: cfData?.cash_out_to_owners },
+    ];
 
-    const netIncome = statements?.profitAndLoss.reduce((sum, item) => sum + item.balance, 0) ?? 0;
+    const totalOperatingCF = (cfData?.cash_in_from_inventory_sales ?? 0) + (cfData?.cash_in_from_revenue ?? 0) + (cfData?.cash_out_for_inventory ?? 0) + (cfData?.cash_out_for_gas_fees ?? 0);
+    const totalInvestingCF = (cfData?.cash_out_for_intangibles ?? 0) + (cfData?.cash_in_from_intangibles ?? 0);
+    const totalFinancingCF = (cfData?.cash_in_from_financing ?? 0) + (cfData?.cash_out_to_owners ?? 0);
+    const netCashFlow = totalOperatingCF + totalInvestingCF + totalFinancingCF;
 
     return (
-        <div className="p-4 md:p-6 lg:p-8">
-            <h1 className="text-3xl font-bold mb-6">Financial Statements</h1>
+        <div className="container mx-auto p-4 md:p-6 lg:p-8 space-y-8">
+            <div className="space-y-2">
+                <h1 className="text-3xl font-bold tracking-tight">Financial Statements</h1>
+                <p className="text-muted-foreground">
+                    This page provides an overview of your entity's financial performance and position based on IFRS standards.
+                </p>
+                <button onClick={fetchData} className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400" disabled={isLoading}>
+                    {isLoading ? 'Refreshing...' : 'Refresh Data'}
+                </button>
+            </div>
 
-            {isLoading && <p>Loading financial statements...</p>}
-            {error && <div className="p-4 mb-4 text-sm text-red-700 bg-red-100 rounded-lg" role="alert">{error}</div>}
-            
-            {statements && (
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                    {/* --- Profit & Loss --- */}
-                    <StatementCard 
-                        title="Profit & Loss Statement" 
-                        data={statements.profitAndLoss} 
-                        totalLabel="Net Income" 
-                        totalValue={netIncome} 
-                    />
+            {error && <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert">Error: {error}</div>}
 
-                    {/* --- Balance Sheet --- */}
-                    <StatementCard 
-                        title="Balance Sheet" 
-                        data={statements.balanceSheet} 
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 items-start">
+                {/* P&L Card */}
+                <FinancialCard 
+                    title="Profit & Loss Statement (P&L)" 
+                    items={profitLossItems} 
+                    totalLabel="Net Income / (Loss)" 
+                    totalValue={netIncome} 
+                    isLoading={isLoading}
+                />
+
+                {/* Balance Sheet Card */}
+                <div className="space-y-8">
+                    <FinancialCard 
+                        title="Balance Sheet (Assets)" 
+                        items={assetItems} 
+                        totalLabel="Total Assets" 
+                        totalValue={totalAssets} 
+                        isLoading={isLoading}
                     />
-                    
-                    {/* Cash Flow will be added in the next step */}
+                    <FinancialCard 
+                        title="Balance Sheet (Liabilities & Equity)" 
+                        items={liabilityEquityItems} 
+                        totalLabel="Total Liabilities & Equity" 
+                        totalValue={totalLiabilitiesAndEquity} 
+                        isLoading={isLoading}
+                    />
                 </div>
-            )}
+
+                {/* Cash Flow Card */}
+                <div className="bg-white dark:bg-gray-800 shadow-lg rounded-lg p-6 w-full">
+                    <h3 className="text-xl font-bold mb-4 text-gray-800 dark:text-gray-200">Cash Flow Statement</h3>
+                    {isLoading ? <p className="text-gray-500 dark:text-gray-400">Loading...</p> : (
+                         <div className="font-mono space-y-6">
+                            {/* Operating */}
+                            <div>
+                                <h4 className="font-semibold text-lg text-gray-700 dark:text-gray-300">Operating Activities</h4>
+                                {operatingCfItems.map((item, index) => (
+                                    <div key={index} className="flex justify-between py-1 ml-4 border-b border-gray-200 dark:border-gray-700">
+                                        <span className="text-gray-600 dark:text-gray-400">{item.label}</span>
+                                        <span>{formatCurrency(item.value)}</span>
+                                    </div>
+                                ))}
+                                <div className="flex justify-between py-2 ml-4 font-semibold">
+                                    <span>Net Cash from Operating Activities</span>
+                                    <span>{formatCurrency(totalOperatingCF)}</span>
+                                </div>
+                            </div>
+
+                            {/* Investing */}
+                             <div>
+                                <h4 className="font-semibold text-lg text-gray-700 dark:text-gray-300">Investing Activities</h4>
+                                {investingCfItems.map((item, index) => (
+                                    <div key={index} className="flex justify-between py-1 ml-4 border-b border-gray-200 dark:border-gray-700">
+                                        <span className="text-gray-600 dark:text-gray-400">{item.label}</span>
+                                        <span>{formatCurrency(item.value)}</span>
+                                    </div>
+                                ))}
+                                 <div className="flex justify-between py-2 ml-4 font-semibold">
+                                    <span>Net Cash from Investing Activities</span>
+                                    <span>{formatCurrency(totalInvestingCF)}</span>
+                                </div>
+                            </div>
+
+                            {/* Financing - Render only if items exist */}
+                            {financingCfItems.length > 0 && (
+                                <div>
+                                    <h4 className="font-semibold text-lg text-gray-700 dark:text-gray-300">Financing Activities</h4>
+                                    {financingCfItems.map((item, index) => (
+                                        <div key={index} className="flex justify-between py-1 ml-4 border-b border-gray-200 dark:border-gray-700">
+                                            <span className="text-gray-600 dark:text-gray-400">{item.label}</span>
+                                            <span>{formatCurrency(item.value)}</span>
+                                        </div>
+                                    ))}
+                                    <div className="flex justify-between py-2 ml-4 font-semibold">
+                                        <span>Net Cash from Financing Activities</span>
+                                        <span>{formatCurrency(totalFinancingCF)}</span>
+                                    </div>
+                                </div>
+                            )}
+
+                             {/* Net Change in Cash */}
+                             <div className="flex justify-between pt-4 border-t-2 border-gray-300 dark:border-gray-600 font-bold text-lg">
+                                <span>Net Increase/(Decrease) in Cash</span>
+                                <span>{formatCurrency(netCashFlow)}</span>
+                            </div>
+                         </div>
+                    )}
+                </div>
+            </div>
         </div>
     );
 }
