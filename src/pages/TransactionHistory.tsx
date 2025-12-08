@@ -1,6 +1,5 @@
-
 // src/pages/TransactionHistory.tsx
-// VERSION 14: Correctly aliases v_holdings columns to match the frontend interface based on user feedback.
+// VERSION 15: Fixes portfolio summary displaying zeros by correctly mapping snake_case database columns to camelCase frontend properties.
 import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { supabase } from "../integrations/supabase/client";
@@ -83,14 +82,8 @@ export default function TransactionHistory() {
             const { data: { user } } = await supabase.auth.getUser();
             if (!user) throw new Error("User not authenticated");
 
-            const holdingsSelect = `
-                asset,
-                currentAmount:current_amount,
-                currentPrice:current_price,
-                currentValueUsd:current_value_usd,
-                averageBuyPrice:average_buy_price,
-                capitalGain:capital_gain
-            `;
+            // CORRECTED: Select raw snake_case columns. Transformation to camelCase will happen after fetch.
+            const holdingsSelect = 'asset, current_amount, current_price, current_value_usd, average_buy_price, capital_gain';
             const transactionsSelect = 'id, user_id, reference_id, date, source, chain, description, amount, asset, price, value_in_usd, type, usage, note';
 
             const [holdingsRes, transactionsRes] = await Promise.all([
@@ -101,7 +94,17 @@ export default function TransactionHistory() {
             if (holdingsRes.error) throw new Error(`Holdings Error: ${holdingsRes.error.message}`);
             if (transactionsRes.error) throw new Error(`Transactions Error: ${transactionsRes.error.message}`);
             
-            setHoldings(holdingsRes.data || []);
+            // CORRECTED: Manually map snake_case from DB to camelCase for the UI to prevent display errors.
+            const mappedHoldings = (holdingsRes.data || []).map(h => ({
+                asset: h.asset,
+                currentAmount: h.current_amount,
+                currentPrice: h.current_price,
+                currentValueUsd: h.current_value_usd,
+                averageBuyPrice: h.average_buy_price,
+                capitalGain: h.capital_gain,
+            }));
+
+            setHoldings(mappedHoldings);
             setTransactions(transactionsRes.data as Transaction[] || []);
         } catch (err: any) {
             console.error("Error fetching data:", err);
@@ -146,16 +149,19 @@ export default function TransactionHistory() {
                 };
 
                 if (originalTx.source === 'exchange') {
+                    // For exchange trades, reference_id is the trade_id
+                    const tradeId = originalTx.reference_id;
                     return supabase
                         .from('exchange_trades')
                         .update(updatePayload)
-                        .eq('trade_id', originalTx.reference_id)
+                        .eq('trade_id', tradeId)
                         .eq('user_id', originalTx.user_id); 
                 } else if (originalTx.source === 'on-chain') {
+                    // For on-chain tx, the view's `id` is the table's `id`
                     return supabase
                         .from('wallet_transactions')
                         .update(updatePayload)
-                        .eq('id', originalTx.reference_id)
+                        .eq('id', viewId) 
                         .eq('user_id', originalTx.user_id);
                 }
                 return Promise.resolve({ error: null });
