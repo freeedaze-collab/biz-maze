@@ -22,19 +22,19 @@ interface FinancialCardProps {
 }
 
 const FinancialCard: React.FC<FinancialCardProps> = ({ title, items, totalLabel, totalValue, isLoading }) => (
-    <div className="bg-white dark:bg-gray-800 shadow-lg rounded-lg p-6 w-full">
-        <h3 className="text-xl font-bold mb-4 text-gray-800 dark:text-gray-200">{title}</h3>
-        {isLoading ? <p className="text-gray-500 dark:text-gray-400">Loading...</p> : (
+    <div className="surface-card p-6 w-full">
+        <h3 className="text-xl font-bold mb-4 text-slate-900">{title}</h3>
+        {isLoading ? <p className="text-muted-foreground">Loading...</p> : (
             <div className="font-mono">
                 {items.map((item, index) => (
-                    <div key={index} className="flex justify-between py-2 border-b border-gray-200 dark:border-gray-700">
-                        <span className="text-gray-600 dark:text-gray-300">{item.label}</span>
-                        <span className="text-gray-800 dark:text-gray-100">{formatCurrency(item.value)}</span>
+                    <div key={index} className="flex justify-between py-2 border-b border-border/60">
+                        <span className="text-slate-600">{item.label}</span>
+                        <span className="text-slate-800">{formatCurrency(item.value)}</span>
                     </div>
                 ))}
                 <div className="flex justify-between py-3 mt-2 font-bold">
-                    <span className="text-gray-800 dark:text-gray-100">{totalLabel}</span>
-                    <span className="text-gray-900 dark:text-white">{formatCurrency(totalValue)}</span>
+                    <span className="text-slate-800">{totalLabel}</span>
+                    <span className="text-slate-900">{formatCurrency(totalValue)}</span>
                 </div>
             </div>
         )}
@@ -138,13 +138,16 @@ export default function Accounting() {
             description="IFRS-aligned reporting for profit & loss, balance sheet, and cash flow—updated from your synced activity."
         >
             <div className="space-y-6">
-                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                    <div className="space-y-1">
-                        <p className="text-sm text-muted-foreground">Refresh to capture the latest synced exchanges and wallets.</p>
+                <div className="feature-banner">
+                    <div className="flex flex-col gap-1">
+                        <p className="section-title">Reporting</p>
+                        <p className="text-sm text-slate-600">Refresh to capture the latest synced exchanges and wallets.</p>
                     </div>
-                    <button onClick={fetchData} className="px-4 py-2 bg-primary text-primary-foreground rounded-md shadow-sm hover:shadow-md transition" disabled={isLoading}>
-                        {isLoading ? 'Refreshing...' : 'Refresh Data'}
-                    </button>
+                    <div className="flex items-center gap-3">
+                        <button onClick={fetchData} className="px-4 py-2 bg-primary text-primary-foreground rounded-md shadow-sm hover:shadow-md transition" disabled={isLoading}>
+                            {isLoading ? 'Refreshing...' : 'Refresh Data'}
+                        </button>
+                    </div>
                 </div>
 
                 {error && <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg" role="alert">Error: {error}</div>}
@@ -178,16 +181,16 @@ export default function Accounting() {
                     </div>
 
                     {/* Cash Flow Card */}
-                    <div className="bg-white dark:bg-gray-800 shadow-lg rounded-lg p-6 w-full border border-border/70">
-                        <h3 className="text-xl font-bold mb-4 text-gray-800 dark:text-gray-200">Cash Flow Statement</h3>
-                        {isLoading ? <p className="text-gray-500 dark:text-gray-400">Loading...</p> : (
+                    <div className="surface-card p-6 w-full">
+                        <h3 className="text-xl font-bold mb-4 text-slate-900">Cash Flow Statement</h3>
+                        {isLoading ? <p className="text-muted-foreground">Loading...</p> : (
                              <div className="font-mono space-y-6">
                                 {/* Operating */}
                                 <div>
-                                    <h4 className="font-semibold text-lg text-gray-700 dark:text-gray-300">Operating Activities</h4>
+                                    <h4 className="font-semibold text-lg text-slate-700">Operating Activities</h4>
                                     {operatingCfItems.map((item, index) => (
-                                        <div key={index} className="flex justify-between py-1 ml-4 border-b border-gray-200 dark:border-gray-700">
-                                            <span className="text-gray-600 dark:text-gray-400">{item.label}</span>
+                                        <div key={index} className="flex justify-between py-1 ml-4 border-b border-border/60">
+                                            <span className="text-slate-600">{item.label}</span>
                                             <span>{formatCurrency(item.value)}</span>
                                         </div>
                                     ))}
@@ -199,10 +202,10 @@ export default function Accounting() {
 
                                 {/* Investing */}
                                  <div>
-                                    <h4 className="font-semibold text-lg text-gray-700 dark:text-gray-300">Investing Activities</h4>
+                                    <h4 className="font-semibold text-lg text-slate-700">Investing Activities</h4>
                                     {investingCfItems.map((item, index) => (
-                                        <div key={index} className="flex justify-between py-1 ml-4 border-b border-gray-200 dark:border-gray-700">
-                                            <span className="text-gray-600 dark:text-gray-400">{item.label}</span>
+                                        <div key={index} className="flex justify-between py-1 ml-4 border-b border-border/60">
+                                            <span className="text-slate-600">{item.label}</span>
                                             <span>{formatCurrency(item.value)}</span>
                                         </div>
                                     ))}
@@ -215,10 +218,10 @@ export default function Accounting() {
                                 {/* Financing - Render only if items exist */}
                                 {financingCfItems.length > 0 && (
                                     <div>
-                                        <h4 className="font-semibold text-lg text-gray-700 dark:text-gray-300">Financing Activities</h4>
+                                        <h4 className="font-semibold text-lg text-slate-700">Financing Activities</h4>
                                         {financingCfItems.map((item, index) => (
-                                            <div key={index} className="flex justify-between py-1 ml-4 border-b border-gray-200 dark:border-gray-700">
-                                                <span className="text-gray-600 dark:text-gray-400">{item.label}</span>
+                                            <div key={index} className="flex justify-between py-1 ml-4 border-b border-border/60">
+                                                <span className="text-slate-600">{item.label}</span>
                                                 <span>{formatCurrency(item.value)}</span>
                                             </div>
                                         ))}

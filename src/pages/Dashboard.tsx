@@ -106,24 +106,22 @@ export default function Dashboard() {
       title="Dashboard"
       description="See everything linked to your account and jump into the workflows you need."
       heroContent={
-        <div className="rounded-2xl bg-white/80 border border-border/70 shadow-sm px-5 py-4 text-left min-w-[220px]">
+        <div className="surface-card px-5 py-4 text-left min-w-[220px]">
           <p className="text-xs uppercase tracking-wide text-muted-foreground">Account owner</p>
           <p className="text-lg font-semibold text-slate-900">{displayName}</p>
           <p className="text-sm text-muted-foreground">{user?.email}</p>
         </div>
       }
     >
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+      <div className="tile-grid">
         {tiles.map(({ label, description, icon: Icon, href, status }) => {
           const isComing = status === "coming";
           const content = (
             <div
-              className={
-                "h-full rounded-2xl border border-border/80 bg-white/80 shadow-sm p-4 flex flex-col gap-2 transition hover:-translate-y-1 hover:shadow-md"
-              }
+              className={cn("tile h-full", isComing && "coming-soon")}
             >
               <div className="flex items-start gap-3">
-                <div className="rounded-xl bg-muted p-2 text-slate-600">
+                <div className="icon-swatch">
                   <Icon className="h-5 w-5" />
                 </div>
                 <div className="flex-1">
@@ -156,7 +154,7 @@ export default function Dashboard() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="rounded-2xl border border-border/80 bg-white/80 shadow-sm p-6">
+        <div className="surface-card p-6">
           <div className="flex items-center justify-between mb-4">
             <div>
               <p className="text-xs uppercase tracking-[0.2em] text-primary font-semibold">Account hub</p>
@@ -167,7 +165,7 @@ export default function Dashboard() {
             </Button>
           </div>
 
-          <Accordion type="single" collapsible className="space-y-3">
+            <Accordion type="single" collapsible className="space-y-3">
             <AccordionItem value="profile" className="border border-border rounded-xl px-4">
               <AccordionTrigger>Profile</AccordionTrigger>
               <AccordionContent className="space-y-3">
@@ -206,7 +204,7 @@ export default function Dashboard() {
           </Accordion>
         </div>
 
-        <div className="rounded-2xl border border-border/80 bg-white/80 shadow-sm p-6 space-y-4">
+        <div className="surface-card p-6 space-y-4">
           <p className="text-xs uppercase tracking-[0.2em] text-primary font-semibold">What to do next</p>
           <div className="space-y-3 text-sm text-muted-foreground">
             <p>

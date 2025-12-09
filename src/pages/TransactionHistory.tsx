@@ -236,7 +236,7 @@ export default function TransactionHistory() {
             description="Keep your exchanges, wallets, and ledger notes perfectly aligned before exporting to accounting."
         >
             <div className="space-y-8">
-                <section className="rounded-2xl border border-border/70 bg-white/80 shadow-sm p-5">
+                <section className="surface-card p-5">
                     <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                         <div>
                             <h2 className="text-xl font-semibold">Actions</h2>
@@ -265,13 +265,13 @@ export default function TransactionHistory() {
                     )}
                 </section>
 
-                <section className="rounded-2xl border border-border/70 bg-white/80 shadow-sm p-5">
+                <section className="surface-card p-5">
                     <div className="flex items-center justify-between mb-4">
                         <h2 className="text-2xl font-semibold">Portfolio Summary</h2>
                         <span className="text-xs uppercase tracking-[0.2em] text-primary font-semibold">Holdings</span>
                     </div>
                     {isLoading ? <p>Loading portfolio...</p> : (
-                        <div className="w-full overflow-x-auto">
+                        <div className="table-shell">
                              <table className="min-w-full text-sm text-left">
                                 <thead className="font-mono text-gray-500">
                                     <tr>
@@ -302,13 +302,13 @@ export default function TransactionHistory() {
                     )}
                 </section>
 
-                <section className="rounded-2xl border border-border/70 bg-white/80 shadow-sm p-5">
+                <section className="surface-card p-5">
                     <div className="flex items-center justify-between mb-4">
                         <h2 className="text-2xl font-semibold">All Transactions</h2>
                         <span className="text-xs uppercase tracking-[0.2em] text-primary font-semibold">Ledger</span>
                     </div>
                     {isLoading ? <p>Loading transactions...</p> : (
-                        <div className="w-full overflow-x-auto">
+                        <div className="table-shell">
                              <table className="min-w-full text-sm text-left">
                                 <thead className="font-mono text-gray-500">
                                     <tr>
