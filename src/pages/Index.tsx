@@ -14,9 +14,9 @@ export default function Index() {
           <h1 className="text-4xl md:text-5xl font-extrabold leading-tight text-slate-900">
             Make crypto accounting and compliance feel effortless.
           </h1>
-          <p className="text-lg text-slate-600 max-w-2xl">
-            Reconcile wallets, exchanges, and payments in one clear workspace. Stay investor-ready with automated
-            statements and real-time portfolio health.
+          <p className="text-lg text-slate-600 max-w-2xl mx-auto leading-relaxed">
+            Reconcile wallets, exchanges, and payments in one vibrant workspace. Keep investors confident with automated
+            statements and live portfolio health.
           </p>
 
           <div className="hero-actions">

@@ -80,12 +80,12 @@ export function AppPageLayout({ title, description, children, heroContent }: App
 
       <main className="page-container">
         <section className="page-hero">
-          <div className="hero-text space-y-2">
+          <div className="hero-text space-y-3 text-center mx-auto max-w-3xl">
             <p className="section-title">Secure fintech workspace</p>
             <h1>{title}</h1>
-            {description && <p className="max-w-2xl">{description}</p>}
+            {description && <p className="max-w-2xl mx-auto text-lg leading-relaxed">{description}</p>}
           </div>
-          {heroContent && <div className="surface-plain p-4">{heroContent}</div>}
+          {heroContent && <div className="surface-plain glow-card p-4 text-center">{heroContent}</div>}
         </section>
 
         <div className="space-y-6">{children}</div>
