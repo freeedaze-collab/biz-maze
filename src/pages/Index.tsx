@@ -5,60 +5,52 @@ import { Link } from "react-router-dom";
 
 export default function Index() {
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-gradient-to-b from-sky-50 via-white to-slate-50 text-slate-900">
       {/* Hero Section */}
-      <section className="px-6 py-24 text-center max-w-4xl mx-auto">
-        <h1 className="text-5xl font-extrabold tracking-tight mb-6">
-          Simplify Your Crypto Business Accounting
-        </h1>
-        <p className="text-xl text-muted-foreground mb-10">
-          Automated bookkeeping, tax handling, and wallet tracking — built for Web3 founders.
-        </p>
+      <section className="px-6 py-24 max-w-6xl mx-auto flex flex-col gap-12 lg:flex-row lg:items-center">
+        <div className="flex-1 space-y-6">
+          <p className="text-sm font-semibold uppercase tracking-[0.25em] text-primary">Web3 finance OS</p>
+          <h1 className="text-4xl md:text-5xl font-extrabold tracking-tight leading-tight">
+            Make crypto accounting and compliance feel effortless.
+          </h1>
+          <p className="text-lg text-muted-foreground max-w-2xl">
+            Reconcile wallets, exchanges, and payments in one clear workspace. Stay investor-ready with
+            automated statements and real-time portfolio health.
+          </p>
 
-        <div className="flex justify-center gap-4">
-          {/* ⬇️ 修正：/auth/login → /signup */}
-          <Button asChild size="lg">
-            <Link to="/signup">Get Started</Link>
-          </Button>
+          <div className="flex flex-wrap gap-4">
+            <Button asChild size="lg">
+              <Link to="/signup">Create account</Link>
+            </Button>
 
-          <Button asChild variant="outline" size="lg">
-            <Link to="/auth/login">Sign In</Link>
-          </Button>
+            <Button asChild variant="outline" size="lg">
+              <Link to="/auth/login">Sign in</Link>
+            </Button>
+          </div>
         </div>
 
-        <div className="mt-4">
-          {/* ⬇️ 修正：/auth/register → /signup */}
-          <Link to="/signup" className="text-sm text-muted-foreground underline">
-            Create a free account →
-          </Link>
-        </div>
-      </section>
-
-      {/* Feature Highlights */}
-      <section className="px-6 py-20 bg-muted/40">
-        <div className="max-w-5xl mx-auto grid md:grid-cols-3 gap-10 text-left">
-          <div>
-            <Sparkles className="h-8 w-8 text-primary mb-3" />
-            <h3 className="text-xl font-bold mb-2">Automated Accounting</h3>
-            <p className="text-muted-foreground">
-              Turn wallet transactions into ledger entries with smart classification.
+        <div className="flex-1 grid grid-cols-2 gap-4">
+          <div className="rounded-2xl bg-white/80 border border-border/70 shadow-md p-4">
+            <Sparkles className="h-6 w-6 text-primary mb-2" />
+            <p className="font-semibold">Autopilot bookkeeping</p>
+            <p className="text-sm text-muted-foreground">
+              Smart classification of trades, transfers, and staking income.
             </p>
           </div>
-
-          <div>
-            <CheckCircle2 className="h-8 w-8 text-primary mb-3" />
-            <h3 className="text-xl font-bold mb-2">Crypto Tax Handling</h3>
-            <p className="text-muted-foreground">
-              Localized tax calculation, P/L and balance sheet ready for filing.
-            </p>
+          <div className="rounded-2xl bg-white/80 border border-border/70 shadow-md p-4">
+            <CheckCircle2 className="h-6 w-6 text-primary mb-2" />
+            <p className="font-semibold">Audit-ready tax packs</p>
+            <p className="text-sm text-muted-foreground">Profit & loss, cash flow, and filings-ready exports.</p>
           </div>
-
-          <div>
-            <Sparkles className="h-8 w-8 text-primary mb-3" />
-            <h3 className="text-xl font-bold mb-2">Multi-Wallet Support</h3>
-            <p className="text-muted-foreground">
-              Connect multiple Web3 wallets and sync transactions in one click.
-            </p>
+          <div className="rounded-2xl bg-white/80 border border-border/70 shadow-md p-4">
+            <Sparkles className="h-6 w-6 text-primary mb-2" />
+            <p className="font-semibold">Wallet + exchange sync</p>
+            <p className="text-sm text-muted-foreground">Securely connect Web3 wallets and read-only APIs.</p>
+          </div>
+          <div className="rounded-2xl bg-white/80 border border-border/70 shadow-md p-4">
+            <CheckCircle2 className="h-6 w-6 text-primary mb-2" />
+            <p className="font-semibold">Collaboration ready</p>
+            <p className="text-sm text-muted-foreground">Share reliable numbers with finance, founders, and auditors.</p>
           </div>
         </div>
       </section>

@@ -2,6 +2,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/integrations/supabase/client'
 import { useUser } from '@/hooks/useUser'
+import AppPageLayout from '@/components/layout/AppPageLayout'
 
 export default function Profile() {
   const { user, loading: userLoading } = useUser()
@@ -103,73 +104,76 @@ export default function Profile() {
   if (!user?.id) return <div className="p-4 text-red-500">User not found.</div>
 
   return (
-    <div className="p-6 max-w-xl mx-auto">
-      <h1 className="text-2xl font-bold mb-4">Edit Profile</h1>
+    <AppPageLayout
+      title="Edit Profile"
+      description="Update jurisdiction, entity details, and personal settings to keep filings accurate."
+    >
+      <div className="max-w-xl space-y-4 bg-white/80 border border-border/70 rounded-2xl p-6 shadow-sm">
+        <label className="block text-sm font-medium">Country</label>
+        <select className="w-full border p-2 rounded" value={country} onChange={(e) => setCountry(e.target.value)}>
+          <option value="">Select</option>
+          <option value="japan">Japan</option>
+          <option value="usa">United States</option>
+        </select>
 
-      <label className="block mb-2">Country</label>
-      <select className="w-full border p-2 mb-4" value={country} onChange={(e) => setCountry(e.target.value)}>
-        <option value="">Select</option>
-        <option value="japan">Japan</option>
-        <option value="usa">United States</option>
-      </select>
+        <label className="block text-sm font-medium">User Type</label>
+        <select className="w-full border p-2 rounded" value={userType} onChange={(e) => setUserType(e.target.value)}>
+          <option value="">Select</option>
+          <option value="individual">Individual</option>
+          <option value="corporate">Corporation</option>
+        </select>
 
-      <label className="block mb-2">User Type</label>
-      <select className="w-full border p-2 mb-4" value={userType} onChange={(e) => setUserType(e.target.value)}>
-        <option value="">Select</option>
-        <option value="individual">Individual</option>
-        <option value="corporate">Corporation</option>
-      </select>
+        {showIncomeBracket && (
+          <>
+            <label className="block text-sm font-medium">Taxable Income (Japan)</label>
+            <select className="w-full border p-2 rounded" value={incomeBracket} onChange={(e) => setIncomeBracket(e.target.value)}>
+              <option value="">Select</option>
+              <option value="under800">Under 8M JPY</option>
+              <option value="over800">8M JPY or more</option>
+            </select>
+          </>
+        )}
 
-      {showIncomeBracket && (
-        <>
-          <label className="block mb-2">Taxable Income (Japan)</label>
-          <select className="w-full border p-2 mb-4" value={incomeBracket} onChange={(e) => setIncomeBracket(e.target.value)}>
-            <option value="">Select</option>
-            <option value="under800">Under 8M JPY</option>
-            <option value="over800">8M JPY or more</option>
-          </select>
-        </>
-      )}
+        {showUsCorpExtras && (
+          <>
+            <label className="block text-sm font-medium">Corporation Type (US)</label>
+            <select className="w-full border p-2 rounded" value={entityType} onChange={(e) => setEntityType(e.target.value)}>
+              <option value="">Select</option>
+              <option value="C-Corp">C Corporation</option>
+              <option value="S-Corp">S Corporation</option>
+              <option value="LLC">Limited Liability Company</option>
+              <option value="Partnership">Partnership</option>
+              <option value="PC/PA">Professional Corporation / Association</option>
+              <option value="PBC">Public Benefit Corporation</option>
+            </select>
 
-      {showUsCorpExtras && (
-        <>
-          <label className="block mb-2">Corporation Type (US)</label>
-          <select className="w-full border p-2 mb-4" value={entityType} onChange={(e) => setEntityType(e.target.value)}>
-            <option value="">Select</option>
-            <option value="C-Corp">C Corporation</option>
-            <option value="S-Corp">S Corporation</option>
-            <option value="LLC">Limited Liability Company</option>
-            <option value="Partnership">Partnership</option>
-            <option value="PC/PA">Professional Corporation / Association</option>
-            <option value="PBC">Public Benefit Corporation</option>
-          </select>
+            <label className="block text-sm font-medium">State of Incorporation</label>
+            <select className="w-full border p-2 rounded" value={stateOfIncorp} onChange={(e) => setStateOfIncorp(e.target.value)}>
+              <option value="">Select</option>
+              {[
+                'Alabama','Alaska','Arizona','Arkansas','California','Colorado',
+                'Connecticut','Delaware','Florida','Georgia','Hawaii','Idaho',
+                'Illinois','Indiana','Iowa','Kansas','Kentucky','Louisiana',
+                'Maine','Maryland','Massachusetts','Michigan','Minnesota',
+                'Mississippi','Missouri','Montana','Nebraska','Nevada',
+                'New Hampshire','New Jersey','New Mexico','New York',
+                'North Carolina','North Dakota','Ohio','Oklahoma','Oregon',
+                'Pennsylvania','Rhode Island','South Carolina','South Dakota',
+                'Tennessee','Texas','Utah','Vermont','Virginia','Washington',
+                'West Virginia','Wisconsin','Wyoming','District of Columbia'
+              ].map((state) => (
+                <option key={state} value={state}>{state}</option>
+              ))}
+            </select>
+          </>
+        )}
 
-          <label className="block mb-2">State of Incorporation</label>
-          <select className="w-full border p-2 mb-4" value={stateOfIncorp} onChange={(e) => setStateOfIncorp(e.target.value)}>
-            <option value="">Select</option>
-            {[
-              'Alabama','Alaska','Arizona','Arkansas','California','Colorado',
-              'Connecticut','Delaware','Florida','Georgia','Hawaii','Idaho',
-              'Illinois','Indiana','Iowa','Kansas','Kentucky','Louisiana',
-              'Maine','Maryland','Massachusetts','Michigan','Minnesota',
-              'Mississippi','Missouri','Montana','Nebraska','Nevada',
-              'New Hampshire','New Jersey','New Mexico','New York',
-              'North Carolina','North Dakota','Ohio','Oklahoma','Oregon',
-              'Pennsylvania','Rhode Island','South Carolina','South Dakota',
-              'Tennessee','Texas','Utah','Vermont','Virginia','Washington',
-              'West Virginia','Wisconsin','Wyoming','District of Columbia'
-            ].map((state) => (
-              <option key={state} value={state}>{state}</option>
-            ))}
-          </select>
-        </>
-      )}
+        <button className="bg-primary text-primary-foreground px-4 py-2 rounded shadow-sm" onClick={handleSave} disabled={loading}>
+          Save
+        </button>
 
-      <button className="bg-blue-600 text-white px-4 py-2 rounded" onClick={handleSave} disabled={loading}>
-        Save
-      </button>
-
-      {message && <div className="mt-4">{message}</div>}
-    </div>
+        {message && <div className="mt-4 text-sm text-muted-foreground">{message}</div>}
+      </div>
+    </AppPageLayout>
   )
 }
