@@ -4,6 +4,9 @@ import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
 import { isAddress, toHex, recoverMessageAddress } from "viem";
 import { createWCProvider, WCProvider } from "@/lib/walletconnect";
+import { AppLayout } from "@/components/AppLayout";
+import { Link } from "react-router-dom";
+import { Wallet, CheckCircle } from "lucide-react";
 
 type WalletRow = {
   id: number;
@@ -52,10 +55,8 @@ export default function WalletSelection() {
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
-  // ---- 共通：nonce取得（GET）
   const getNonce = async (token?: string) => {
     const r = await fetch(FN_URL, {
       method: "GET",
@@ -67,11 +68,9 @@ export default function WalletSelection() {
         `Nonce failed. status=${r.status}, body=${JSON.stringify(body)}`
       );
     }
-    // サーバは nonce を “素の文字列” として返す → これを message としてそのまま署名する
     return body.nonce as string;
   };
 
-  // ---- 共通：verify（POST）
   const postVerify = async (
     payload: { address: string; signature: string; message: string },
     token?: string
@@ -93,7 +92,6 @@ export default function WalletSelection() {
     return body;
   };
 
-  // ---- MetaMask（拡張機能）
   const handleLinkWithMetaMask = async () => {
     try {
       if (!user?.id) { alert("Please login again."); return; }
@@ -120,14 +118,12 @@ export default function WalletSelection() {
 
       const message = await getNonce(token);
 
-      // ★ hex で personal_sign（順序は [hexMessage, account]）
       const hexMsg = toHex(message);
       const signature = await (window as any).ethereum.request({
         method: "personal_sign",
         params: [hexMsg, current],
       });
 
-      // 署名直後のローカル recover 検証
       const recovered = await recoverMessageAddress({ message, signature });
       if (recovered.toLowerCase() !== current.toLowerCase()) {
         throw new Error(`Local recover mismatch: ${recovered} != ${current}`);
@@ -145,7 +141,6 @@ export default function WalletSelection() {
     }
   };
 
-  // ---- WalletConnect（モバイル／拡張機能なし）
   const handleLinkWithWalletConnect = async () => {
     let provider: WCProvider | null = null;
     try {
@@ -162,7 +157,6 @@ export default function WalletSelection() {
 
       provider = await createWCProvider();
 
-      // ユーザー操作中にモーダルを開く
       if (typeof provider.connect === "function") {
         await provider.connect();
       } else {
@@ -182,14 +176,12 @@ export default function WalletSelection() {
 
       const message = await getNonce(token);
 
-      // ★ hex で personal_sign（順序は [hexMessage, account]）
       const hexMsg = toHex(message);
       const signature = (await provider.request({
         method: "personal_sign",
         params: [hexMsg, current],
       })) as string;
 
-      // 署名直後のローカル recover 検証
       const recovered = await recoverMessageAddress({ message, signature });
       if (recovered.toLowerCase() !== current.toLowerCase()) {
         throw new Error(`Local recover mismatch: ${recovered} != ${current}`);
@@ -209,68 +201,76 @@ export default function WalletSelection() {
   };
 
   return (
-    <div className="max-w-3xl mx-auto p-6 space-y-6">
-      <h1 className="text-3xl font-bold">Wallets</h1>
-      <p className="text-sm text-muted-foreground">
-        あなたのアカウントに紐づくウォレットのみ表示されます。新規連携は
-        <strong>アドレス入力 → 署名 → 完了</strong>の順です。
-      </p>
-
-      <div className="border rounded-xl p-4 space-y-3">
-        <label className="text-sm font-medium">Wallet Address</label>
-        <div className="flex items-center gap-2">
-          <input
-            className="flex-1 border rounded px-3 py-2"
-            placeholder="0x..."
-            value={addressInput}
-            onChange={(e) => setAddressInput(e.target.value)}
-            autoComplete="off"
-          />
-          <button
-            className="px-3 py-2 rounded bg-blue-600 text-white disabled:opacity-50"
-            onClick={handleLinkWithMetaMask}
-            disabled={linking !== null}
-            title="Sign with MetaMask"
-          >
-            {linking === "mm" ? "Linking..." : "Link (MetaMask)"}
-          </button>
-          <button
-            className="px-3 py-2 rounded border disabled:opacity-50"
-            onClick={handleLinkWithWalletConnect}
-            disabled={linking !== null}
-            title="Sign with WalletConnect (mobile / no extension)"
-          >
-            {linking === "wc" ? "Linking..." : "Link (WalletConnect)"}
-          </button>
+    <AppLayout
+      title="Wallets"
+      subtitle="English-only copy, softer layout, and the same signature flow."
+    >
+      <div className="space-y-6">
+        <div className="rounded-xl border p-4 bg-gradient-to-r from-white via-white to-indigo-50 shadow-sm space-y-2">
+          <div className="flex items-center gap-2 text-slate-800 font-semibold">
+            <Wallet className="h-5 w-5" /> Link a wallet
+          </div>
+          <p className="text-sm text-slate-600">
+            Enter your address, sign the nonce, and we will verify ownership. Works with MetaMask (desktop) or WalletConnect (mobile).
+          </p>
+          <div className="flex items-center gap-2">
+            <input
+              className="flex-1 border rounded px-3 py-2"
+              placeholder="0x..."
+              value={addressInput}
+              onChange={(e) => setAddressInput(e.target.value)}
+              autoComplete="off"
+            />
+            <button
+              className="px-3 py-2 rounded bg-indigo-600 text-white disabled:opacity-50"
+              onClick={handleLinkWithMetaMask}
+              disabled={linking !== null}
+              title="Sign with MetaMask"
+            >
+              {linking === "mm" ? "Linking..." : "Link (MetaMask)"}
+            </button>
+            <button
+              className="px-3 py-2 rounded border disabled:opacity-50"
+              onClick={handleLinkWithWalletConnect}
+              disabled={linking !== null}
+              title="Sign with WalletConnect (mobile / no extension)"
+            >
+              {linking === "wc" ? "Linking..." : "Link (WalletConnect)"}
+            </button>
+          </div>
+          <p className="text-xs text-slate-500">
+            The signed message is a nonce issued by the server. The input address must match the signer.
+          </p>
+          {alreadyLinked && (
+            <p className="text-xs text-green-700">This address is already linked.</p>
+          )}
         </div>
-        <p className="text-xs text-muted-foreground">
-          署名メッセージはサーバ発行の <code>nonce</code>（素の文字列）です。
-          入力アドレスと署名者のアドレスは<strong>必ず同じ</strong>にしてください。
-        </p>
-        {alreadyLinked && (
-          <p className="text-xs text-green-700">This address is already linked.</p>
-        )}
-      </div>
 
-      <div className="border rounded-xl p-4">
-        <div className="font-semibold mb-2">Linked wallets (DB)</div>
-        {loading ? (
-          <div>Loading...</div>
-        ) : rows.length === 0 ? (
-          <div className="text-sm text-muted-foreground">No linked wallets yet.</div>
-        ) : (
-          <ul className="space-y-2">
-            {rows.map((w) => (
-              <li key={w.id} className="border rounded p-3">
-                <div className="font-mono break-all">{w.address}</div>
-                <div className="text-xs text-muted-foreground">
-                  {w.verified ? "verified" : "unverified"} • {w.created_at ?? "—"}
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
+        <div className="rounded-xl border p-4 bg-white shadow-sm">
+          <div className="flex items-center gap-2 font-semibold text-slate-800 mb-2">
+            <CheckCircle className="h-5 w-5" /> Linked wallets (database)
+          </div>
+          {loading ? (
+            <div>Loading...</div>
+          ) : rows.length === 0 ? (
+            <div className="text-sm text-muted-foreground">No linked wallets yet.</div>
+          ) : (
+            <ul className="space-y-2">
+              {rows.map((w) => (
+                <li key={w.id} className="border rounded p-3">
+                  <div className="font-mono break-all">{w.address}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {w.verified ? "verified" : "unverified"} • {w.created_at ?? "—"}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="text-xs text-slate-500 mt-3">
+            Need to view transactions? Go to <Link to="/transactions" className="underline">Transaction History</Link> after linking.
+          </p>
+        </div>
       </div>
-    </div>
+    </AppLayout>
   );
 }

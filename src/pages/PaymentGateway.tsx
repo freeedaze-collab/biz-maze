@@ -1,15 +1,16 @@
 // src/pages/PaymentGateway.tsx
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
+import { AppLayout } from "@/components/AppLayout";
+import { CreditCard } from "lucide-react";
 
 type Merchant = {
   id?: string;
   user_id?: string;
   store_name: string | null;
   default_currency: string | null;
-  allowed_networks: string[] | null; // e.g., ["Polygon","Ethereum"]
+  allowed_networks: string[] | null;
   webhook_secret: string | null;
   webhook_url: string | null;
   created_at?: string;
@@ -119,140 +120,135 @@ export default function PaymentGateway() {
   if (loading) return <div className="p-6">Loading merchant settings...</div>;
 
   return (
-    <div className="max-w-3xl mx-auto p-6 space-y-8">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Payment Gateway</h1>
-        <Link to="/dashboard" className="text-sm underline text-muted-foreground">Back to Dashboard</Link>
-      </div>
-
-      <form onSubmit={onSave} className="space-y-4 border rounded-xl p-4">
-        <h2 className="font-semibold">Merchant settings</h2>
-
-        <div>
-          <label className="block text-sm mb-1">Store name</label>
-          <input
-            className="w-full border rounded px-3 py-2"
-            value={merchant.store_name ?? ""}
-            onChange={(e) => setMerchant((m) => ({ ...m, store_name: e.target.value }))}
-            placeholder="My Crypto Shop"
-            required
-          />
+    <AppLayout
+      title="Payment Gateway"
+      subtitle="Friendlier layout with the same merchant and checkout setup."
+    >
+      <div className="space-y-6">
+        <div className="flex items-center gap-2 text-slate-700">
+          <CreditCard className="h-5 w-5" />
+          <span className="text-sm">Use the links below to keep your EC integration ready.</span>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          <div>
-            <label className="block text-sm mb-1">Default currency</label>
-            <select
-              className="w-full border rounded px-3 py-2"
-              value={merchant.default_currency ?? "USD"}
-              onChange={(e) => setMerchant((m) => ({ ...m, default_currency: e.target.value }))}
-            >
-              <option>USD</option>
-              <option>JPY</option>
-              <option>EUR</option>
-              <option>PHP</option>
-            </select>
-          </div>
+        <form onSubmit={onSave} className="space-y-4 border rounded-xl p-4 bg-white shadow-sm">
+          <h2 className="font-semibold">Merchant settings</h2>
 
-          <div className="md:col-span-2">
-            <label className="block text-sm mb-1">Allowed networks / assets</label>
-            <select
-              className="w-full border rounded px-3 py-2"
-              multiple
-              value={merchant.allowed_networks ?? ["Polygon"]}
-              onChange={(e) => {
-                const vals = Array.from(e.target.selectedOptions).map((o) => o.value);
-                setMerchant((m) => ({ ...m, allowed_networks: vals }));
-              }}
-            >
-              {/* 既存 + 追加（BTC / USDC / JPYC） */}
-              <option>Polygon</option>
-              <option>Ethereum</option>
-              <option>Arbitrum</option>
-              <option>Base</option>
-              <option>BTC</option>
-              <option>USDC</option>
-              <option>JPYC</option>
-            </select>
-            <p className="text-xs text-muted-foreground mt-1">Hold Ctrl/Cmd to select multiple.</p>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <div>
-            <label className="block text-sm mb-1">Webhook secret (verify incoming)</label>
+            <label className="block text-sm mb-1">Store name</label>
             <input
               className="w-full border rounded px-3 py-2"
-              value={merchant.webhook_secret ?? ""}
-              onChange={(e) => setMerchant((m) => ({ ...m, webhook_secret: e.target.value }))}
-              placeholder="e.g. whsec_***"
+              value={merchant.store_name ?? ""}
+              onChange={(e) => setMerchant((m) => ({ ...m, store_name: e.target.value }))}
+              placeholder="My Crypto Shop"
+              required
             />
           </div>
-          <div>
-            <label className="block text-sm mb-1">Your Webhook URL (on your EC)</label>
-            <input
-              className="w-full border rounded px-3 py-2"
-              value={merchant.webhook_url ?? ""}
-              onChange={(e) => setMerchant((m) => ({ ...m, webhook_url: e.target.value }))}
-              placeholder="https://your-ec.example.com/api/crypto-webhook"
-            />
-          </div>
-        </div>
 
-        <div className="flex items-center gap-3">
-          <button type="submit" disabled={!canSave || saving} className="bg-blue-600 text-white px-4 py-2 rounded disabled:opacity-60">
-            {saving ? "Saving..." : "Save settings"}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div>
+              <label className="block text-sm mb-1">Default currency</label>
+              <select
+                className="w-full border rounded px-3 py-2"
+                value={merchant.default_currency ?? "USD"}
+                onChange={(e) => setMerchant((m) => ({ ...m, default_currency: e.target.value }))}
+              >
+                <option>USD</option>
+                <option>JPY</option>
+                <option>EUR</option>
+                <option>PHP</option>
+              </select>
+            </div>
+
+            <div className="md:col-span-2">
+              <label className="block text-sm mb-1">Allowed networks / assets</label>
+              <select
+                className="w-full border rounded px-3 py-2"
+                multiple
+                value={merchant.allowed_networks ?? ["Polygon"]}
+                onChange={(e) => {
+                  const vals = Array.from(e.target.selectedOptions).map((o) => o.value);
+                  setMerchant((m) => ({ ...m, allowed_networks: vals }));
+                }}
+              >
+                <option>Polygon</option>
+                <option>Ethereum</option>
+                <option>Arbitrum</option>
+                <option>Base</option>
+                <option>BTC</option>
+                <option>USDC</option>
+                <option>JPYC</option>
+              </select>
+              <p className="text-xs text-muted-foreground mt-1">Hold Ctrl/Cmd to select multiple.</p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-sm mb-1">Webhook secret (verify incoming)</label>
+              <input
+                className="w-full border rounded px-3 py-2"
+                value={merchant.webhook_secret ?? ""}
+                onChange={(e) => setMerchant((m) => ({ ...m, webhook_secret: e.target.value }))}
+                placeholder="e.g. whsec_***"
+              />
+            </div>
+            <div>
+              <label className="block text-sm mb-1">Your Webhook URL (on your EC)</label>
+              <input
+                className="w-full border rounded px-3 py-2"
+                value={merchant.webhook_url ?? ""}
+                onChange={(e) => setMerchant((m) => ({ ...m, webhook_url: e.target.value }))}
+                placeholder="https://your-ec.example.com/api/crypto-webhook"
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <button type="submit" disabled={!canSave || saving} className="bg-indigo-600 text-white px-4 py-2 rounded disabled:opacity-60">
+              {saving ? "Saving..." : "Save settings"}
+            </button>
+            {msg && <div className="text-green-700 text-sm">{msg}</div>}
+            {err && <div className="text-red-600 text-sm">{err}</div>}
+          </div>
+        </form>
+
+        <form onSubmit={onCreateLink} className="space-y-4 border rounded-xl p-4 bg-white shadow-sm">
+          <h2 className="font-semibold">Create test payment link</h2>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div className="md:col-span-2">
+              <label className="block text-sm mb-1">Description</label>
+              <input
+                className="w-full border rounded px-3 py-2"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="Sample order #1234"
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-sm mb-1">Amount ({merchant.default_currency})</label>
+              <input
+                className="w-full border rounded px-3 py-2"
+                type="number"
+                min={0}
+                step="any"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                placeholder="100"
+                required
+              />
+            </div>
+          </div>
+
+          <button type="submit" disabled={!canCreateLink} className="bg-indigo-600 text-white px-4 py-2 rounded disabled:opacity-60">
+            Create draft link
           </button>
-          {msg && <div className="text-green-700 text-sm">{msg}</div>}
-          {err && <div className="text-red-600 text-sm">{err}</div>}
-        </div>
-      </form>
+        </form>
 
-      <form onSubmit={onCreateLink} className="space-y-4 border rounded-xl p-4">
-        <h2 className="font-semibold">Create test payment link</h2>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          <div className="md:col-span-2">
-            <label className="block text-sm mb-1">Description</label>
-            <input
-              className="w-full border rounded px-3 py-2"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="Sample order #1234"
-              required
-            />
-          </div>
-          <div>
-            <label className="block text-sm mb-1">Amount ({merchant.default_currency})</label>
-            <input
-              className="w-full border rounded px-3 py-2"
-              type="number"
-              min={0}
-              step="any"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-              placeholder="100"
-              required
-            />
-          </div>
+        <div className="text-xs text-slate-500">
+          Need EC integration examples? See the docs under Payment Gateway on the dashboard.
         </div>
-
-        <button type="submit" disabled={!canCreateLink} className="bg-blue-600 text-white px-4 py-2 rounded disabled:opacity-60">
-          Create draft link
-        </button>
-      </form>
-
-      <section className="border rounded-xl p-4 space-y-2">
-        <h3 className="font-semibold">How to integrate</h3>
-        <ol className="list-decimal ml-5 space-y-1 text-sm">
-          <li>Add the currency to your product/price table (if applicable) and expose it in the checkout form.</li>
-          <li>At server side, build a pricing map for <code>BTC / USDC / JPYC</code> and convert to quote currency at payment time.</li>
-          <li>For on-chain payments, generate a unique deposit address (or memo/tag) per invoice and watch for confirmations.</li>
-          <li>Mark the invoice paid when the expected amount (after fees) is confirmed.</li>
-        </ol>
-        <div className="text-xs text-muted-foreground">
-          * Place images under <code>public/gateway/</code> (e.g., <code>checkout.png</code>, <code>onchain-flow.png</code>) and reference them here.
-        </div>
-      </section>
-    </div>
+      </div>
+    </AppLayout>
   );
 }
