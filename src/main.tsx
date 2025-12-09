@@ -1,42 +1,42 @@
 // src/main.tsx
-import React from 'react'
-import ReactDOM from 'react-dom/client'
-import { BrowserRouter, HashRouter } from 'react-router-dom'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { WagmiProvider } from 'wagmi'
-import { wagmiConfig } from './config/wagmi'
-import { AuthProvider } from './hooks/useAuth'
-import { supabase } from "./integrations/supabase/client";
-import App from './App'
+import React from "react";
+import ReactDOM from "react-dom/client";
+import App from "./App";
+import "./index.css";
+import "./styles/feel-theme.css";
 
-/**
- * Preview/CDN でも落ちないための自動フォールバック:
- *  - default: BrowserRouter
- *  - preview--*.lovable.app / file:// / VITE_FORCE_HASH="1" は HashRouter
- */
-function shouldUseHashRouter(): boolean {
-  const force = import.meta.env.VITE_FORCE_HASH === '1'
-  const host = typeof window !== 'undefined' ? window.location.hostname : ''
-  const isPreview = host.startsWith('preview--')
-  const isFile = typeof window !== 'undefined' && window.location.protocol === 'file:'
-  return force || isPreview || isFile
-}
-const Router = shouldUseHashRouter() ? HashRouter : BrowserRouter
-const qc = new QueryClient()
+// Supabase standard client (keep as-is in your project)
+import { supabase } from "@/integrations/supabase/client";
 
-window.supabase = supabase;
+// wagmi / query / router
+import { WagmiProvider } from "wagmi";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { createHashRouter, createBrowserRouter, RouterProvider } from "react-router-dom";
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
+// ❗ 実体は src/config/wagmi.ts
+import { wagmiConfig } from "@/config/wagmi";
+import { AuthProvider } from "@/hooks/useAuth";
+
+const qc = new QueryClient();
+
+// 静的プレビュー（preview--）では HashRouter、本番でリライト可なら BrowserRouter
+const useHash =
+  typeof window !== "undefined" &&
+  (window.location.host.startsWith("preview--") ||
+    import.meta.env.VITE_FORCE_HASH === "1");
+
+const router = useHash
+  ? createHashRouter([{ path: "/*", element: <App /> }])
+  : createBrowserRouter([{ path: "/*", element: <App /> }]);
+
+ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    {/* ✅ あなたの順序に統一 */}
     <AuthProvider>
       <WagmiProvider config={wagmiConfig}>
         <QueryClientProvider client={qc}>
-          <Router>
-            <App />
-          </Router>
+          <RouterProvider router={router} />
         </QueryClientProvider>
       </WagmiProvider>
     </AuthProvider>
   </React.StrictMode>
-)
+);

@@ -1,154 +1,227 @@
-// @ts-nocheck
-// src/pages/Dashboard.tsx
-import { Link } from "react-router-dom";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useEffect, useMemo, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
+import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/useAuth";
+import {
+  BarChart3,
+  Calculator,
+  CreditCard,
+  FileLock,
+  PiggyBank,
+  ShieldCheck,
+  Wallet2,
+  Waypoints,
+} from "lucide-react";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Button } from "@/components/ui/button";
-import { ArrowLeftRight, FileText, Calculator, History, DollarSign, User, Wallet, TrendingUp } from "lucide-react";
+import AppPageLayout from "@/components/layout/AppPageLayout";
+import { cn } from "@/lib/utils";
+
+interface TileConfig {
+  label: string;
+  description: string;
+  icon: any;
+  href?: string;
+  status?: "live" | "coming";
+}
 
 export default function Dashboard() {
-  const quickActions = [
+  const { user } = useAuth();
+  const nav = useNavigate();
+  const [walletCount, setWalletCount] = useState<number | null>(null);
+  const [exchangeCount, setExchangeCount] = useState<number | null>(null);
+
+  const displayName = useMemo(
+    () => user?.user_metadata?.name || user?.email || (user ? `User ${user.id.slice(0, 6)}` : ""),
+    [user]
+  );
+
+  useEffect(() => {
+    const loadCounts = async () => {
+      if (!user?.id) return;
+      const [{ count: wallets }, { count: exchanges }] = await Promise.all([
+        supabase.from("wallets").select("id", { count: "exact", head: true }).eq("user_id", user.id),
+        supabase.from("exchange_connections").select("id", { count: "exact", head: true }).eq("user_id", user.id),
+      ]);
+      setWalletCount(wallets ?? 0);
+      setExchangeCount(exchanges ?? 0);
+    };
+
+    loadCounts();
+  }, [user?.id]);
+
+  const onSignOut = async () => {
+    await supabase.auth.signOut();
+    nav("/", { replace: true });
+  };
+
+  const tiles: TileConfig[] = [
     {
-      icon: ArrowLeftRight,
-      title: "Send Money",
-      description: "Start manual transfer flow and confirm the payment.",
-      link: "/transfer/start",
-      variant: "default" as const,
-      color: "bg-primary/10 text-primary group-hover:bg-primary/20",
+      label: "Transaction history",
+      description: "Review synced trades, transfers, and ledger notes.",
+      icon: Waypoints,
+      href: "/transactions",
+      status: "live",
     },
     {
-      icon: FileText,
-      title: "Create Invoice",
-      description: "Prepare an invoice (save company/client, add line items).",
-      link: "/invoice/new",
-      variant: "secondary" as const,
-      color: "bg-success/10 text-success group-hover:bg-success/20",
+      label: "Accounting",
+      description: "Statements for P&L, balance sheet, and cash flow.",
+      icon: BarChart3,
+      href: "/accounting",
+      status: "live",
     },
     {
+      label: "Payment",
+      description: "Collect payments and reconcile instantly.",
+      icon: CreditCard,
+      status: "coming",
+    },
+    {
+      label: "Tax calculator",
+      description: "Keep ahead of filing deadlines and estimates.",
       icon: Calculator,
-      title: "Accounting / Tax",
-      description: "Generate journal entries, P/L, trial balance and US tax estimate.",
-      link: "/accounting",
-      variant: "secondary" as const,
-      color: "bg-accent/10 text-accent group-hover:bg-accent/20",
+      status: "coming",
     },
     {
-      icon: History,
-      title: "Transactions",
-      description: "View synchronized on-chain history.",
-      link: "/transactions",
-      variant: "secondary" as const,
-      color: "bg-warning/10 text-warning group-hover:bg-warning/20",
+      label: "Security",
+      description: "Permissions, approvals, and audit trails.",
+      icon: ShieldCheck,
+      status: "coming",
     },
     {
-      icon: DollarSign,
-      title: "Pricing",
-      description: "Check your plan and metered fees.",
-      link: "/pricing",
-      variant: "secondary" as const,
-      color: "bg-secondary/10 text-secondary-foreground group-hover:bg-secondary/20",
+      label: "Payment Gateway",
+      description: "Host checkouts and share pay links.",
+      icon: FileLock,
+      status: "coming",
     },
     {
-      icon: User,
-      title: "Profile",
-      description: "Update country and entity type.",
-      link: "/profile",
-      variant: "secondary" as const,
-      color: "bg-muted text-muted-foreground group-hover:bg-muted/80",
+      label: "Get Investment",
+      description: "Fundraise with clean financials and insights.",
+      icon: PiggyBank,
+      status: "coming",
     },
   ];
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5">
-      <div className="mx-auto max-w-7xl p-6 space-y-8">
-        {/* Hero Section */}
-        <div className="relative overflow-hidden rounded-xl bg-gradient-to-br from-primary/90 via-accent to-primary p-4 md:p-6 text-primary-foreground shadow-glow animate-fade-in">
-          <div className="relative z-10">
-            <div className="flex items-center gap-2 mb-2">
-              <div className="p-1.5 rounded-lg bg-white/20">
-                <Wallet className="h-5 w-5" />
+    <AppPageLayout
+      title="Dashboard"
+      description="See everything linked to your account and jump into the workflows you need."
+      heroContent={
+        <div className="surface-card px-5 py-4 text-left min-w-[220px]">
+          <p className="text-xs uppercase tracking-wide text-muted-foreground">Account owner</p>
+          <p className="text-lg font-semibold text-slate-900">{displayName}</p>
+          <p className="text-sm text-muted-foreground">{user?.email}</p>
+        </div>
+      }
+    >
+      <div className="tile-grid">
+        {tiles.map(({ label, description, icon: Icon, href, status }) => {
+          const isComing = status === "coming";
+          const content = (
+            <div
+              className={cn("tile h-full", isComing && "coming-soon")}
+            >
+              <div className="flex items-start gap-3">
+                <div className="icon-swatch">
+                  <Icon className="h-5 w-5" />
+                </div>
+                <div className="flex-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="font-semibold text-slate-900">{label}</p>
+                    {isComing && (
+                      <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Coming soon</span>
+                    )}
+                  </div>
+                  <p className="text-sm text-muted-foreground">{description}</p>
+                </div>
               </div>
-              <h1 className="text-2xl md:text-3xl font-bold">Dashboard</h1>
             </div>
-            <p className="text-sm md:text-base text-primary-foreground/90">
-              Manage your finances and track transactions
+          );
+
+          if (isComing || !href) {
+            return (
+              <div key={label} className="opacity-80">
+                {content}
+              </div>
+            );
+          }
+
+          return (
+            <Link key={label} to={href} className="h-full">
+              {content}
+            </Link>
+          );
+        })}
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="surface-card p-6">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <p className="text-xs uppercase tracking-[0.2em] text-primary font-semibold">Account hub</p>
+              <h2 className="text-xl font-bold">Profiles & Connections</h2>
+            </div>
+            <Button variant="outline" onClick={onSignOut} className="text-sm">
+              Sign out
+            </Button>
+          </div>
+
+            <Accordion type="single" collapsible className="space-y-3">
+            <AccordionItem value="profile" className="border border-border rounded-xl px-4">
+              <AccordionTrigger>Profile</AccordionTrigger>
+              <AccordionContent className="space-y-3">
+                <p className="text-sm text-muted-foreground">Manage tax residency, entity type, and compliance details.</p>
+                <Link to="/profile" className="inline-flex items-center text-primary font-semibold">
+                  Go to profile →
+                </Link>
+              </AccordionContent>
+            </AccordionItem>
+
+            <AccordionItem value="wallets" className="border border-border rounded-xl px-4">
+              <AccordionTrigger>Wallets</AccordionTrigger>
+              <AccordionContent className="space-y-3">
+                <div className="flex items-center justify-between text-sm">
+                  <p className="text-muted-foreground">Linked wallets</p>
+                  <span className="font-semibold">{walletCount ?? "–"}</span>
+                </div>
+                <Link to="/wallets" className="inline-flex items-center text-primary font-semibold">
+                  Manage wallets →
+                </Link>
+              </AccordionContent>
+            </AccordionItem>
+
+            <AccordionItem value="vce" className="border border-border rounded-xl px-4">
+              <AccordionTrigger>Virtual Custody Exchange</AccordionTrigger>
+              <AccordionContent className="space-y-3">
+                <div className="flex items-center justify-between text-sm">
+                  <p className="text-muted-foreground">Exchange connections</p>
+                  <span className="font-semibold">{exchangeCount ?? "–"}</span>
+                </div>
+                <Link to="/vce" className="inline-flex items-center text-primary font-semibold">
+                  Open VCE →
+                </Link>
+              </AccordionContent>
+            </AccordionItem>
+          </Accordion>
+        </div>
+
+        <div className="surface-card p-6 space-y-4">
+          <p className="text-xs uppercase tracking-[0.2em] text-primary font-semibold">What to do next</p>
+          <div className="space-y-3 text-sm text-muted-foreground">
+            <p>
+              • Review <Link className="text-primary font-semibold" to="/transactions">Transaction history</Link> to confirm the
+              latest sync and label usages.
+            </p>
+            <p>
+              • Download statements from <Link className="text-primary font-semibold" to="/accounting">Accounting</Link> before
+              sharing with stakeholders.
+            </p>
+            <p>
+              • Keep wallets and exchanges current so your balances stay audit-ready.
             </p>
           </div>
         </div>
-
-        {/* Quick Actions Grid */}
-        <div>
-          <h2 className="text-lg font-semibold mb-3 text-foreground">Quick Actions</h2>
-          <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-            {quickActions.map((action) => {
-              const Icon = action.icon;
-              return (
-                <Card key={action.title} className="group hover:shadow-lg transition-all duration-300 border hover:border-primary/30 hover:-translate-y-1 animate-scale-in">
-                  <CardHeader className="pb-2 pt-4">
-                    <div className="flex items-center gap-2">
-                      <div className={`p-1.5 rounded-lg transition-all ${action.color}`}>
-                        <Icon className="h-4 w-4" />
-                      </div>
-                      <CardTitle className="text-base">{action.title}</CardTitle>
-                    </div>
-                  </CardHeader>
-                  <CardContent className="space-y-2 pb-4">
-                    <p className="text-xs text-muted-foreground leading-relaxed">
-                      {action.description}
-                    </p>
-                    <Button asChild variant={action.variant} size="sm" className="w-full h-8 text-xs group-hover:shadow-md transition-shadow">
-                      <Link to={action.link}>
-                        {action.variant === "default" ? "Start Now" : "Open"}
-                      </Link>
-                    </Button>
-                  </CardContent>
-                </Card>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Stats Overview */}
-        <div className="grid gap-4 md:grid-cols-3">
-          <Card className="bg-gradient-to-br from-card to-primary/5 border-primary/20 hover:shadow-glow transition-shadow">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">Total Balance</CardTitle>
-              <div className="p-2 rounded-lg bg-primary/10">
-                <TrendingUp className="h-4 w-4 text-primary" />
-              </div>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-foreground">$0.00</div>
-              <p className="text-xs text-muted-foreground mt-1">Connect wallet to view</p>
-            </CardContent>
-          </Card>
-
-          <Card className="bg-gradient-to-br from-card to-accent/5 border-accent/20 hover:shadow-glow transition-shadow">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">Recent Transactions</CardTitle>
-              <div className="p-2 rounded-lg bg-accent/10">
-                <History className="h-4 w-4 text-accent" />
-              </div>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-foreground">0</div>
-              <p className="text-xs text-muted-foreground mt-1">Sync to load history</p>
-            </CardContent>
-          </Card>
-
-          <Card className="bg-gradient-to-br from-card to-success/5 border-success/20 hover:shadow-glow transition-shadow">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">Pending Invoices</CardTitle>
-              <div className="p-2 rounded-lg bg-success/10">
-                <FileText className="h-4 w-4 text-success" />
-              </div>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-foreground">0</div>
-              <p className="text-xs text-muted-foreground mt-1">No pending items</p>
-            </CardContent>
-          </Card>
-        </div>
       </div>
-    </div>
+    </AppPageLayout>
   );
 }

@@ -2,61 +2,111 @@ import { useState } from 'react';
 import { supabase } from '../integrations/supabase/client';
 import { useToast } from './use-toast';
 
+/**
+ * 変更点（要約）
+ * - これまでの { message, signature, address } を直接投げる方式を廃止
+ * - Edge Function の仕様（action: 'nonce' → 'verify'）に合わせてフローを統一
+ * - 署名は personal_sign（EIP-191）、サーバは hashMessage(nonce) + recoverAddress
+ * - 正常時 wallets へ upsert（Edge Function側実装済）
+ */
 export function useSIWE() {
   const [isVerifying, setIsVerifying] = useState(false);
   const { toast } = useToast();
 
-  const generateSiweMessage = (address: string, domain: string, uri: string) => {
-    const nonce = Math.random().toString(36).substring(2, 15);
-    const issuedAt = new Date().toISOString();
-    const expirationTime = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-    
-    const message = `${domain} wants you to sign in with your Ethereum account:
-${address}
-
-Sign this message to verify your wallet ownership and connect to your account.
-
-URI: ${uri}
-Version: 1
-Chain ID: 1
-Nonce: ${nonce}
-Issued At: ${issuedAt}
-Expiration Time: ${expirationTime}`;
-
-    return message;
-  };
-
-  const verifySiweSignature = async (message: string, signature: string, address: string) => {
+  // ユーザーのウォレット所有を検証し、OKなら wallets に紐づく（Edge Function 側の upsert が実行される）
+  const verifyWalletOwnership = async (address: string): Promise<boolean> => {
     setIsVerifying(true);
-    
     try {
-      const { data, error } = await supabase.functions.invoke('verify-wallet-signature', {
-        body: { message, signature, address }
-      });
-
-      if (error) {
-        throw error;
-      }
-
-      if (data?.verified) {
+      if (!address) {
         toast({
-          title: "✅ Wallet Verified",
-          description: "Your wallet ownership has been successfully verified",
-        });
-        return true;
-      } else {
-        toast({
-          title: "❌ Verification Failed",
-          description: "Could not verify wallet ownership. Please try again.",
+          title: "❌ Address Missing",
+          description: "Connect your wallet first.",
           variant: "destructive",
         });
         return false;
       }
-    } catch (error) {
-      console.error('SIWE verification error:', error);
+
+      // 1) ノンス取得（サーバに保存される）
+      const { data: nonceResp, error: nErr } = await supabase.functions.invoke('verify-wallet-signature', {
+        body: { action: 'nonce' },
+      });
+      if (nErr) {
+        console.error('nonce error:', nErr);
+        toast({
+          title: "❌ Nonce Error",
+          description: "Failed to get verification nonce.",
+          variant: "destructive",
+        });
+        return false;
+      }
+      const nonce = String(nonceResp?.nonce ?? '');
+      if (!nonce) {
+        toast({
+          title: "❌ Nonce Missing",
+          description: "Verification nonce was not issued.",
+          variant: "destructive",
+        });
+        return false;
+      }
+
+      // 2) personal_sign（EIP-191）で nonce に署名（整形しない）
+      // 既存コードは window.ethereum を直接呼んでいるスタイルなので踏襲
+      if (typeof (window as any).ethereum === 'undefined') {
+        toast({
+          title: "❌ Wallet Not Found",
+          description: "Please install/unlock your wallet extension.",
+          variant: "destructive",
+        });
+        return false;
+      }
+      // MetaMask などは params: [message, from]
+      const signature: string = await (window as any).ethereum.request({
+        method: 'personal_sign',
+        params: [nonce, address],
+      });
+
+      if (!signature) {
+        toast({
+          title: "❌ Signature Failed",
+          description: "Wallet signature was not obtained.",
+          variant: "destructive",
+        });
+        return false;
+      }
+
+      // 3) 検証実行（recover → wallets upsert → nonce クリア）
+      const { data, error } = await supabase.functions.invoke('verify-wallet-signature', {
+        body: { action: 'verify', address, signature, nonce },
+      });
+      if (error) {
+        console.error('verify error:', error);
+        toast({
+          title: "❌ Verification Error",
+          description: "Server verification failed.",
+          variant: "destructive",
+        });
+        return false;
+      }
+
+      if (data?.ok) {
+        toast({
+          title: "✅ Wallet Verified",
+          description: "Your wallet has been verified and linked.",
+        });
+        return true;
+      }
+
       toast({
-        title: "❌ Verification Error",
-        description: "An error occurred during wallet verification",
+        title: "❌ Verification Failed",
+        description: "Signature did not match the wallet address.",
+        variant: "destructive",
+      });
+      return false;
+    } catch (error) {
+      console.error('Wallet verification exception:', error);
+      toast({
+        title: "❌ Verification Exception",
+        description: "An unexpected error occurred.",
         variant: "destructive",
       });
       return false;
@@ -65,61 +115,8 @@ Expiration Time: ${expirationTime}`;
     }
   };
 
-  const requestWalletSignature = async (address: string): Promise<string | null> => {
-    try {
-      const domain = window.location.host;
-      const uri = window.location.origin;
-      const message = generateSiweMessage(address, domain, uri);
-
-      // Request signature from wallet (this would typically use web3 provider)
-      if (typeof (window as any).ethereum !== 'undefined') {
-        const signature = await (window as any).ethereum.request({
-          method: 'personal_sign',
-          params: [message, address],
-        });
-        return signature;
-      } else {
-        toast({
-          title: "❌ Wallet Not Found",
-          description: "Please ensure your wallet extension is installed and unlocked",
-          variant: "destructive",
-        });
-        return null;
-      }
-    } catch (error) {
-      console.error('Wallet signature error:', error);
-      toast({
-        title: "❌ Signature Failed",
-        description: "Failed to get wallet signature. Please try again.",
-        variant: "destructive",
-      });
-      return null;
-    }
-  };
-
-  const verifyWalletOwnership = async (address: string): Promise<boolean> => {
-    try {
-      // Generate message and request signature
-      const domain = window.location.host;
-      const uri = window.location.origin;
-      const message = generateSiweMessage(address, domain, uri);
-      
-      const signature = await requestWalletSignature(address);
-      if (!signature) return false;
-
-      // Verify the signature
-      return await verifySiweSignature(message, signature, address);
-    } catch (error) {
-      console.error('Wallet ownership verification error:', error);
-      return false;
-    }
-  };
-
   return {
     isVerifying,
     verifyWalletOwnership,
-    generateSiweMessage,
-    verifySiweSignature,
-    requestWalletSignature,
   };
 }

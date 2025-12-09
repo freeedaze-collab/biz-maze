@@ -1,227 +1,285 @@
 // src/pages/wallet/WalletSelection.tsx
-// @ts-nocheck
-import { useMemo, useState } from "react";
-import { useAccount, useBalance, useConnect, useDisconnect, useSignMessage } from "wagmi";
-import { injected } from "wagmi/connectors";
+import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
+import { isAddress, toHex, recoverMessageAddress } from "viem";
+import { createWCProvider, WCProvider } from "@/lib/walletconnect";
+import AppPageLayout from "@/components/layout/AppPageLayout";
+import { Button } from "@/components/ui/button";
 
-const isEthAddress = (v: string) => /^0x[a-fA-F0-9]{40}$/.test(v || "");
+type WalletRow = {
+  id: number;
+  user_id: string;
+  address: string;
+  created_at?: string | null;
+  verified?: boolean | null;
+};
 
-const FUNCTIONS_BASE =
-  (import.meta.env.VITE_FUNCTION_VERIFY_WALLET as string)?.replace(/\/+$/, "") ||
-  ""; // e.g. https://<project>.supabase.co/functions/v1/verify-wallet-signature
+const FN_URL = import.meta.env.VITE_FUNCTION_VERIFY_WALLET as string;
 
 export default function WalletSelection() {
   const { user } = useAuth();
 
-  // wagmi
-  const { address: connected, isConnected } = useAccount();
-  const { connect, isPending: isConnecting } = useConnect();
-  const { disconnect } = useDisconnect();
-  const { data: balance } = useBalance({ address: connected, query: { enabled: !!connected } });
-  const { signMessageAsync } = useSignMessage();
+  const [rows, setRows] = useState<WalletRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [linking, setLinking] = useState<"mm" | "wc" | null>(null);
+  const [addressInput, setAddressInput] = useState("");
 
-  // UI state
-  const [phase, setPhase] = useState<"idle" | "input" | "signing" | "linked">("idle");
-  const [inputAddress, setInputAddress] = useState("");
-  const [messageToSign, setMessageToSign] = useState<string>("");
-  const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState<string | null>(null);
-  const [showDebug, setShowDebug] = useState(false);
-  const debug: Record<string, any> = {};
+  const normalizedInput = useMemo(() => addressInput?.trim(), [addressInput]);
 
-  const valid = useMemo(() => isEthAddress(inputAddress), [inputAddress]);
-  const short = useMemo(
-    () => (connected ? `${connected.slice(0, 6)}...${connected.slice(-4)}` : "-"),
-    [connected]
-  );
+  const alreadyLinked = useMemo(() => {
+    if (!normalizedInput) return false;
+    return rows.some(
+      (r) => r.address?.toLowerCase() === normalizedInput.toLowerCase()
+    );
+  }, [rows, normalizedInput]);
 
-  // -------- helpers
-  async function bearer() {
-    const { data } = await supabase.auth.getSession();
-    return data.session?.access_token || "";
-  }
+  const load = async () => {
+    if (!user?.id) return;
+    setLoading(true);
+    const { data, error } = await supabase
+      .from("wallets")
+      .select("id,user_id,address,created_at,verified")
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: false });
 
-  function assertEnv() {
-    if (!FUNCTIONS_BASE) {
-      throw new Error("VITE_FUNCTION_VERIFY_WALLET is empty. Put the full function URL.");
+    if (error) {
+      console.error("[wallets] load error:", error);
+      setRows([]);
+    } else {
+      setRows((data as WalletRow[]) ?? []);
     }
-  }
+    setLoading(false);
+  };
 
-  // -------- flow
-  async function start() {
-    setNote(null);
-    setPhase("input");
-    setMessageToSign("");
-  }
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
 
-  async function fetchMessage(addressL: string) {
-    assertEnv();
-    const token = await bearer();
-    const url = FUNCTIONS_BASE + "?address=" + addressL; // GET returns { message }
-    const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok || !j?.message) throw new Error(j?.error || "Failed to get message");
-    return j.message as string;
-  }
-
-  async function verifyAndLink() {
-    setNote(null);
-    if (!valid) {
-      setNote("Invalid address format (0x + 40 hex).");
-      return;
+  // ---- 共通：nonce取得（GET）
+  const getNonce = async (token?: string) => {
+    const r = await fetch(FN_URL, {
+      method: "GET",
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok || !body?.nonce) {
+      throw new Error(
+        `Nonce failed. status=${r.status}, body=${JSON.stringify(body)}`
+      );
     }
+    // サーバは nonce を “素の文字列” として返す → これを message としてそのまま署名する
+    return body.nonce as string;
+  };
+
+  // ---- 共通：verify（POST）
+  const postVerify = async (
+    payload: { address: string; signature: string; message: string },
+    token?: string
+  ) => {
+    const r = await fetch(FN_URL, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ action: "verify", ...payload }),
+    });
+    const text = await r.text();
+    let body: any = null;
+    try { body = JSON.parse(text); } catch { body = text; }
+    if (!r.ok || !body?.ok) {
+      throw new Error(`Verify failed. status=${r.status}, body=${text}`);
+    }
+    return body;
+  };
+
+  // ---- MetaMask（拡張機能）
+  const handleLinkWithMetaMask = async () => {
     try {
-      setBusy(true);
-
-      // 1) connect MetaMask if needed (wagmi v2)
-      if (!isConnected) {
-        await connect({ connector: injected() });
+      if (!user?.id) { alert("Please login again."); return; }
+      if (!normalizedInput || !isAddress(normalizedInput)) {
+        alert("Please input a valid Ethereum address."); return;
       }
-      if (!connected) throw new Error("MetaMask not connected.");
+      if (alreadyLinked) { alert("This wallet is already linked."); return; }
+      if (!(window as any).ethereum) { alert("MetaMask not found."); return; }
 
-      const inputL = inputAddress.toLowerCase();
-      const signerL = connected.toLowerCase();
-      if (inputL !== signerL) throw new Error("Entered address and MetaMask account differ.");
+      const { data: sess } = await supabase.auth.getSession();
+      const token = sess?.session?.access_token;
 
-      // 2) GET message from Edge Function
-      const message = await fetchMessage(inputL);
-      setMessageToSign(message);
-      debug.message = message;
+      setLinking("mm");
 
-      // 3) Sign exactly that string
-      setPhase("signing");
-      const signature = await signMessageAsync({ message });
-      debug.sigLen = signature?.length || 0;
-
-      // 4) POST for verification
-      assertEnv();
-      const token = await bearer();
-      const r = await fetch(FUNCTIONS_BASE, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ address: inputAddress, signature, message }),
+      const [current] = await (window as any).ethereum.request({
+        method: "eth_requestAccounts",
       });
-      const j = await r.json().catch(() => ({}));
-      debug.postStatus = r.status;
-      debug.postBody = j;
+      if (!current) throw new Error("No MetaMask account. Please unlock MetaMask.");
 
-      if (!r.ok || !j?.ok) {
-        throw new Error(j?.error || "Verification failed.");
+      if (current.toLowerCase() !== normalizedInput.toLowerCase()) {
+        alert("The currently selected MetaMask account differs from the input address.");
+        return;
       }
 
-      setPhase("linked");
-      setNote("Wallet linked successfully.");
+      const message = await getNonce(token);
+
+      // ★ hex で personal_sign（順序は [hexMessage, account]）
+      const hexMsg = toHex(message);
+      const signature = await (window as any).ethereum.request({
+        method: "personal_sign",
+        params: [hexMsg, current],
+      });
+
+      // 署名直後のローカル recover 検証
+      const recovered = await recoverMessageAddress({ message, signature });
+      if (recovered.toLowerCase() !== current.toLowerCase()) {
+        throw new Error(`Local recover mismatch: ${recovered} != ${current}`);
+      }
+
+      await postVerify({ address: current, signature, message }, token);
+      setAddressInput("");
+      await load();
+      alert("Wallet linked (MetaMask).");
     } catch (e: any) {
-      setNote(e?.message || String(e));
+      console.error("[wallets] mm error:", e);
+      alert(e?.message ?? String(e));
     } finally {
-      setBusy(false);
+      setLinking(null);
     }
-  }
+  };
 
-  // ---------- UI
+  // ---- WalletConnect（モバイル／拡張機能なし）
+  const handleLinkWithWalletConnect = async () => {
+    let provider: WCProvider | null = null;
+    try {
+      if (!user?.id) { alert("Please login again."); return; }
+      if (!normalizedInput || !isAddress(normalizedInput)) {
+        alert("Please input a valid Ethereum address."); return;
+      }
+      if (alreadyLinked) { alert("This wallet is already linked."); return; }
+
+      const { data: sess } = await supabase.auth.getSession();
+      const token = sess?.session?.access_token;
+
+      setLinking("wc");
+
+      provider = await createWCProvider();
+
+      // ユーザー操作中にモーダルを開く
+      if (typeof provider.connect === "function") {
+        await provider.connect();
+      } else {
+        await provider.request({ method: "eth_requestAccounts" });
+      }
+
+      const accounts = (await provider.request({
+        method: "eth_accounts",
+      })) as string[];
+      const current = accounts?.[0];
+      if (!current) throw new Error("WalletConnect: no accounts.");
+
+      if (current.toLowerCase() !== normalizedInput.toLowerCase()) {
+        alert("Selected account differs from the input address.");
+        return;
+      }
+
+      const message = await getNonce(token);
+
+      // ★ hex で personal_sign（順序は [hexMessage, account]）
+      const hexMsg = toHex(message);
+      const signature = (await provider.request({
+        method: "personal_sign",
+        params: [hexMsg, current],
+      })) as string;
+
+      // 署名直後のローカル recover 検証
+      const recovered = await recoverMessageAddress({ message, signature });
+      if (recovered.toLowerCase() !== current.toLowerCase()) {
+        throw new Error(`Local recover mismatch: ${recovered} != ${current}`);
+      }
+
+      await postVerify({ address: current, signature, message }, token);
+      setAddressInput("");
+      await load();
+      alert("Wallet linked (WalletConnect).");
+    } catch (e: any) {
+      console.error("[wallets] wc error:", e);
+      alert(e?.message ?? String(e));
+    } finally {
+      try { await provider?.disconnect?.(); } catch {}
+      setLinking(null);
+    }
+  };
+
   return (
-    <div className="p-6 max-w-xl mx-auto">
-      <h1 className="text-3xl font-bold mb-4">Wallet Creation / Linking</h1>
-
-      <div className="border rounded-lg p-4 space-y-3">
-        <div className="text-sm text-muted-foreground">
-          Tip: After clicking “Verify &amp; Link”, MetaMask will open a signature window. Sign to
-          prove ownership.
-        </div>
-
-        <div className="grid grid-cols-2 gap-4 text-sm">
+    <AppPageLayout
+      title="Wallets"
+      description="Link wallets to your account, verify ownership, and keep your ledger in sync."
+    >
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+        <div className="border rounded-2xl p-5 bg-white/80 shadow-sm space-y-3">
           <div>
-            <div className="font-semibold">MetaMask</div>
-            <div>{isConnected ? "Connected" : isConnecting ? "Connecting..." : "Disconnected"}</div>
+            <p className="text-sm font-semibold">Add a wallet</p>
+            <p className="text-sm text-muted-foreground">Enter the address, sign the nonce, and confirm.</p>
           </div>
-          <div>
-            <div className="font-semibold">Account</div>
-            <div className="font-mono break-all">{isConnected ? connected : "-"}</div>
-          </div>
-          <div>
-            <div className="font-semibold">Short</div>
-            <div>{short}</div>
-          </div>
-          <div>
-            <div className="font-semibold">Balance</div>
-            <div>{balance ? `${balance.formatted} ${balance.symbol}` : "-"}</div>
-          </div>
-        </div>
-
-        {phase === "idle" && (
-          <button className="bg-primary text-primary-foreground px-4 py-2 rounded" onClick={start}>
-            Link Wallet
-          </button>
-        )}
-
-        {phase !== "idle" && (
-          <div className="space-y-3">
-            <div>
-              <label className="block text-sm font-semibold mb-1">Your wallet address</label>
-              <input
-                className={`w-full border rounded px-2 py-1 font-mono ${
-                  inputAddress && !valid ? "border-red-500" : ""
-                }`}
-                placeholder="0x..."
-                value={inputAddress}
-                onChange={(e) => setInputAddress(e.target.value.trim())}
-              />
-              {!valid && inputAddress && (
-                <div className="text-xs text-red-600 mt-1">
-                  Invalid address format (must be 0x + 40 hex chars).
-                </div>
-              )}
-            </div>
-
-            {!!messageToSign && (
-              <div className="text-xs break-all bg-muted/30 p-2 rounded">
-                <div className="font-semibold mb-1">Message (read-only)</div>
-                {messageToSign}
-              </div>
-            )}
-
-            <div className="flex gap-2">
-              <button
-                className="bg-green-600 text-white px-4 py-2 rounded disabled:opacity-50"
-                onClick={verifyAndLink}
-                disabled={!valid || busy}
+          <div className="flex flex-col gap-3">
+            <label className="text-sm font-medium">Wallet Address</label>
+            <input
+              className="flex-1 border rounded px-3 py-2"
+              placeholder="0x..."
+              value={addressInput}
+              onChange={(e) => setAddressInput(e.target.value)}
+              autoComplete="off"
+            />
+            <div className="flex flex-wrap gap-2">
+              <Button
+                onClick={handleLinkWithMetaMask}
+                disabled={linking !== null}
+                title="Sign with MetaMask"
               >
-                {busy ? (phase === "signing" ? "Awaiting signature..." : "Verifying...") : "Verify & Link with MetaMask"}
-              </button>
-
-              <button className="px-4 py-2 rounded border" onClick={() => disconnect()} disabled={!isConnected}>
-                Disconnect MetaMask
-              </button>
-
-              <button className="px-4 py-2 rounded border" onClick={() => setShowDebug((v) => !v)}>
-                {showDebug ? "Hide debug" : "Show debug"}
-              </button>
+                {linking === "mm" ? "Linking..." : "Link (MetaMask)"}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={handleLinkWithWalletConnect}
+                disabled={linking !== null}
+                title="Sign with WalletConnect (mobile / no extension)"
+              >
+                {linking === "wc" ? "Linking..." : "Link (WalletConnect)"}
+              </Button>
             </div>
           </div>
-        )}
+          <p className="text-xs text-muted-foreground">
+            The signing message is a server-issued nonce. Make sure the input address and signer address match exactly.
+          </p>
+          {alreadyLinked && (
+            <p className="text-xs text-green-700">This address is already linked.</p>
+          )}
+        </div>
 
-        {note && <div className="text-sm">{note}</div>}
-
-        {showDebug && (
-          <pre className="text-xs bg-muted/30 p-2 rounded overflow-auto">
-            {JSON.stringify(
-              {
-                FUNCTIONS_BASE: FUNCTIONS_BASE || "(empty)",
-                inputAddress,
-                messageToSign,
-                debug,
-              },
-              null,
-              2
-            )}
-          </pre>
-        )}
+        <div className="border rounded-2xl p-5 bg-white/80 shadow-sm">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <p className="text-sm font-semibold">Linked wallets</p>
+              <p className="text-xs text-muted-foreground">Only addresses linked to this account are shown.</p>
+            </div>
+            {loading && <span className="text-xs text-muted-foreground">Loading...</span>}
+          </div>
+          {loading ? null : rows.length === 0 ? (
+            <div className="text-sm text-muted-foreground">No linked wallets yet.</div>
+          ) : (
+            <ul className="space-y-2">
+              {rows.map((w) => (
+                <li key={w.id} className="border rounded-xl p-3 bg-white/70">
+                  <div className="font-mono break-all">{w.address}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {w.verified ? "verified" : "unverified"} • {w.created_at ?? "—"}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       </div>
-    </div>
+    </AppPageLayout>
   );
 }

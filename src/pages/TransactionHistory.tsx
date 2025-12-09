@@ -1,26 +1,66 @@
-// @ts-nocheck
+
 // src/pages/TransactionHistory.tsx
-import { useEffect, useState, useCallback } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+// VERSION 14: Correctly aliases v_holdings columns to match the frontend interface based on user feedback.
+import React, { useState, useEffect, useCallback } from 'react';
+import { Link } from 'react-router-dom';
+import { supabase } from "../integrations/supabase/client";
 import { Button } from "@/components/ui/button";
-import { supabase } from "@/integrations/supabase/client";
-import { useAuth } from "@/hooks/useAuth";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import AppPageLayout from "@/components/layout/AppPageLayout";
 
-type Row = {
-  id: number;
-  wallet_address: string | null;
-  chain_id: number | null;
-  direction: "in" | "out" | null;
-  tx_hash: string;
-  block_number: number | null;
-  occurred_at: string | null;
-  asset_symbol: string | null;
-  value_wei: string | number | null;
-  fiat_value_usd: string | number | null;
-  usage_pred?: string | null;
-  usage_conf?: string | null;
-};
 
+// --- Constants ---
+const accountingUsageOptions = [
+    { value: 'investment_acquisition_ias38', label: 'Investment Acquisition (IAS 38)' },
+    { value: 'trading_acquisition_ias2', label: 'Trading Acquisition (IAS 2)' },
+    { value: 'mining_rewards', label: 'Mining Rewards' },
+    { value: 'staking_rewards', label: 'Staking Rewards' },
+    { value: 'revenue_ifrs15', label: 'Received as Consideration (IFRS 15)' },
+    { value: 'impairment_ias38', label: 'Impairment (IAS 38)' },
+    { value: 'revaluation_increase_ias38', label: 'Revaluation Increase (IAS 38)' },
+    { value: 'revaluation_decrease_ias38', label: 'Revaluation Decrease (IAS 38)' },
+    { value: 'lcnrv_ias2', label: 'LCNRV Adjustment (IAS 2)' },
+    { value: 'fvlcs_ias2', label: 'FVLCS Adjustment (IAS 2)' },
+    { value: 'sale_ias38', label: 'Sale of Intangible Asset (IAS 38)' },
+    { value: 'sale_ias2', label: 'Sale of Inventory (IAS 2)' },
+    { value: 'crypto_to_crypto_exchange', label: 'Crypto-to-Crypto Exchange' },
+    { value: 'gas_fees', label: 'Gas / Network Fee' },
+    { value: 'loss_unrecoverable', label: 'Loss of Crypto (Unrecoverable)' },
+    { value: 'unspecified', label: 'Unspecified' },
+];
+
+// --- Data Structures ---
+interface Holding {
+    asset: string;
+    currentAmount: number;
+    currentPrice: number;
+    currentValueUsd: number;
+    averageBuyPrice: number;
+    capitalGain: number;
+}
+
+interface Transaction {
+    id: string;
+    user_id: string;
+    reference_id: string;
+    date: string;
+    source: string;
+    chain: string; // Represents the exchange or blockchain name
+    description: string;
+    amount: number;
+    asset: string;
+    price: number;
+    value_in_usd: number;
+    type: string;
+    usage: string | null;
+    note: string | null;
+}
+
+type EditedTransaction = Partial<Pick<Transaction, 'usage' | 'note'>>;
+
+
+// --- Main Component ---
 export default function TransactionHistory() {
   const { user } = useAuth();
   const [rows, setRows] = useState<Row[]>([]);
@@ -218,51 +258,125 @@ export default function TransactionHistory() {
                         <div className="font-mono text-sm font-medium mb-1 truncate group-hover:text-primary">
                           {r.tx_hash.slice(0, 12)}…{r.tx_hash.slice(-10)}
                         </div>
-                        <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                          <span>{r.occurred_at ? new Date(r.occurred_at).toLocaleString() : "-"}</span>
-                          <span>•</span>
-                          <span className="truncate">Block {r.block_number ?? "-"}</span>
+                        <div className="flex flex-wrap items-center gap-2">
+                            <Button variant="outline" size="sm" onClick={handleUpdatePrices} disabled={isUpdatingPrices || isSyncing ||isSaving}>
+                                {isUpdatingPrices ? 'Updating...' : 'Update Prices & Rates'}
+                            </Button>
+                            <Button variant="outline" size="sm" onClick={() => handleSync('exchange-sync-all', 'Exchanges')} disabled={isSyncing || isUpdatingPrices || isSaving}>
+                                {isSyncing ? 'Syncing...' : 'Sync Exchanges'}
+                            </Button>
+                            <Button size="sm" onClick={handleSaveChanges} disabled={isSaving || isSyncing || Object.keys(editedTransactions).length === 0}>
+                                {isSaving ? 'Saving...' : 'Save Changes'}
+                            </Button>
+                            <Link to="/management/exchange-services" className="text-sm font-semibold text-primary hover:underline">
+                                Manage API Keys
+                            </Link>
                         </div>
-                      </div>
-                      <div className="text-right">
-                        <div className="font-mono text-lg font-bold mb-1">
-                          {r.fiat_value_usd != null ? (
-                            <span className={r.direction === 'in' ? 'text-success' : 'text-foreground'}>${r.fiat_value_usd}</span>
-                          ) : r.value_wei != null ? (
-                            <span className="text-sm">{r.value_wei} wei</span>
-                          ) : (<span className="text-muted-foreground">-</span>)}
-                        </div>
-
-                        {/* 用途ドロップダウン */}
-                        <div className="mt-2">
-                          <select
-                            className="border rounded p-1 text-sm"
-                            value={r.usage_conf ?? r.usage_pred ?? ""}
-                            onChange={(e) => onChangeUsage(r.id, e.target.value)}
-                          >
-                            <option value="">用途を選択</option>
-                            <option value="investment">投資（無形）</option>
-                            <option value="impairment">減損</option>
-                            <option value="inventory_trader">棚卸（LCNRV）</option>
-                            <option value="inventory_broker">ブローカー特例（FVLCS）</option>
-                            <option value="ifrs15_non_cash">非現金対価</option>
-                            <option value="mining">マイニング報酬</option>
-                            <option value="staking">ステーキング報酬</option>
-                            <option value="disposal_sale">売却/除却</option>
-                          </select>
-                          {r.usage_pred && !r.usage_conf && (
-                            <div className="text-xs text-muted-foreground mt-1">予測: {r.usage_pred}</div>
-                          )}
-                        </div>
-                      </div>
                     </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-    </div>
-  );
+                    {(syncMessage || error) && (
+                        <div className="mt-4 p-4 bg-slate-50 rounded-lg text-sm font-mono border border-border/70">
+                            {syncMessage && <p>{syncMessage}</p>}
+                            {error && <p className="text-red-500">Error: {error}</p>}
+                        </div>
+                    )}
+                </section>
+
+                <section className="surface-card p-5">
+                    <div className="flex items-center justify-between mb-4">
+                        <h2 className="text-2xl font-semibold">Portfolio Summary</h2>
+                        <span className="text-xs uppercase tracking-[0.2em] text-primary font-semibold">Holdings</span>
+                    </div>
+                    {isLoading ? <p>Loading portfolio...</p> : (
+                        <div className="table-shell">
+                             <table className="min-w-full text-sm text-left">
+                                <thead className="font-mono text-gray-500">
+                                    <tr>
+                                        <th className="p-2 font-semibold">Asset</th>
+                                        <th className="p-2 font-semibold text-right">Amount</th>
+                                        <th className="p-2 font-semibold text-right">Avg. Buy Price</th>
+                                        <th className="p-2 font-semibold text-right">Current Price</th>
+                                        <th className="p-2 font-semibold text-right">Current Value</th>
+                                        <th className="p-2 font-semibold text-right">Unrealized P&L</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="font-mono">
+                                    {holdings.length > 0 ? holdings.map((h) => (
+                                        <tr key={h.asset} className="border-b border-gray-200 dark:border-gray-700">
+                                            <td className="p-2 font-bold whitespace-nowrap">{h.asset}</td>
+                                            <td className="p-2 text-right whitespace-nowrap">{formatNumber(h.currentAmount)}</td>
+                                            <td className="p-2 text-right whitespace-nowrap">{formatCurrency(h.averageBuyPrice)}</td>
+                                            <td className="p-2 text-right whitespace-nowrap">{formatCurrency(h.currentPrice)}</td>
+                                            <td className="p-2 text-right whitespace-nowrap font-semibold">{formatCurrency(h.currentValueUsd)}</td>
+                                            <td className={`p-2 text-right whitespace-nowrap ${getPnlClass(h.capitalGain)}`}>{formatCurrency(h.capitalGain)}</td>
+                                        </tr>
+                                    )) : (
+                                        <tr><td colSpan={6} className="text-center text-gray-500 py-4">No holdings found.</td></tr>
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
+                </section>
+
+                <section className="surface-card p-5">
+                    <div className="flex items-center justify-between mb-4">
+                        <h2 className="text-2xl font-semibold">All Transactions</h2>
+                        <span className="text-xs uppercase tracking-[0.2em] text-primary font-semibold">Ledger</span>
+                    </div>
+                    {isLoading ? <p>Loading transactions...</p> : (
+                        <div className="table-shell">
+                             <table className="min-w-full text-sm text-left">
+                                <thead className="font-mono text-gray-500">
+                                    <tr>
+                                        <th className="p-2 font-semibold">Date</th>
+                                        <th className="p-2 font-semibold">Description</th>
+                                        <th className="p-2 font-semibold text-right">Amount</th>
+                                        <th className="p-2 font-semibold text-right">Value (USD)</th>
+                                        <th className="p-2 font-semibold">Usage</th>
+                                        <th className="p-2 font-semibold">Note</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="font-mono">
+                                    {transactions.length > 0 ? transactions.map((tx) => {
+                                        const editedTx = editedTransactions[tx.id];
+                                        return (
+                                        <tr key={tx.id} className="border-b border-gray-200 dark:border-gray-700">
+                                            <td className="p-2 whitespace-nowrap">{new Date(tx.date).toLocaleString()}</td>
+                                            <td className="p-2 text-gray-600 dark:text-gray-400">{tx.description}</td>
+                                            <td className="p-2 text-right">{formatNumber(tx.amount)} {tx.asset}</td>
+                                            <td className="p-2 text-right">{formatCurrency(tx.value_in_usd)}</td>
+                                            <td className="p-2" style={{minWidth: '200px'}}>
+                                                <Select
+                                                    value={editedTx?.usage ?? tx.usage ?? 'unspecified'}
+                                                    onValueChange={(value) => handleInputChange(tx.id, 'usage', value)}
+                                                >
+                                                    <SelectTrigger><SelectValue/></SelectTrigger>
+                                                    <SelectContent>
+                                                        {accountingUsageOptions.map(opt =>
+                                                            <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+                                                        )}
+                                                    </SelectContent>
+                                                </Select>
+                                            </td>
+                                            <td className="p-2" style={{minWidth: '200px'}}>
+                                                <Input
+                                                    type="text"
+                                                    placeholder="Add a note..."
+                                                    value={editedTx?.note ?? tx.note ?? ''}
+                                                    onChange={(e) => handleInputChange(tx.id, 'note', e.target.value)}
+                                                    className="w-full"
+                                                />
+                                            </td>
+                                        </tr>
+                                    )}) : (
+                                        <tr><td colSpan={6} className="text-center text-gray-500 py-4">No transactions found.</td></tr>
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
+                </section>
+            </div>
+        </AppPageLayout>
+    );
 }

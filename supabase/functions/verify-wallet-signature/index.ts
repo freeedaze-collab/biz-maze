@@ -1,126 +1,134 @@
 // supabase/functions/verify-wallet-signature/index.ts
-// Deno runtime
-import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { verifyMessage, getAddress } from "npm:viem";
+// ❗ edge-runtime の import は不要（削除済）
+
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import {
+  isAddress,
+  recoverMessageAddress,
+} from "https://esm.sh/viem@2?target=deno";
 
-type Json = Record<string, unknown>;
+const cors = (origin: string | null) => ({
+  "access-control-allow-origin": origin ?? "*",
+  "access-control-allow-headers":
+    "authorization, content-type, apikey, x-client-info",
+  "access-control-allow-methods": "GET,POST,OPTIONS",
+  vary: "origin",
+});
 
-function corsHeaders(origin?: string): HeadersInit {
-  return {
-    "access-control-allow-origin": origin ?? "*",
-    "access-control-allow-headers": "authorization, x-client-info, apikey, content-type",
-    "access-control-allow-methods": "GET,POST,OPTIONS",
-    "content-type": "application/json; charset=utf-8",
-  };
-}
+Deno.serve(async (req) => {
+  const origin = req.headers.get("origin");
 
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
-
-serve(async (req) => {
-  const origin = req.headers.get("origin") ?? "*";
+  // CORS preflight
   if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders(origin) });
+    return new Response("ok", { status: 200, headers: cors(origin) });
   }
 
+  const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
+  const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+  const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+
   try {
-    // auth (user is optional for GET, required for POST)
-    const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-      global: { headers: { Authorization: req.headers.get("authorization") ?? "" } },
-    });
-
-    // ---------- GET: return message to sign (deterministic)
     if (req.method === "GET") {
-      const url = new URL(req.url);
-      const addr = (url.searchParams.get("address") || "").toLowerCase();
-      if (!/^0x[a-f0-9]{40}$/.test(addr)) {
-        return new Response(JSON.stringify({ error: "Invalid address" }), {
-          status: 400,
-          headers: corsHeaders(origin),
-        });
-      }
-      const { data: userRes } = await supabase.auth.getUser();
-      const uid = userRes.user?.id || "anonymous";
-
-      const nonce = crypto.randomUUID().replace(/-/g, ""); // 32 hex
-      const message =
-        `BizMaze Wallet Linking\n` +
-        `User: ${uid}\n` +
-        `Address: ${addr}\n` +
-        `Nonce: ${nonce}\n` +
-        `Timestamp: ${Date.now()}`;
-
-      return new Response(JSON.stringify({ message }), { headers: corsHeaders(origin) });
+      const nonce = crypto.randomUUID().replace(/-/g, "");
+      return new Response(JSON.stringify({ nonce }), {
+        status: 200,
+        headers: { "content-type": "application/json", ...cors(origin) },
+      });
     }
 
-    // ---------- POST: verify signed message
-    if (req.method === "POST") {
-      const { data: userRes } = await supabase.auth.getUser();
-      const uid = userRes.user?.id;
-      if (!uid) {
-        return new Response(JSON.stringify({ error: "Unauthorized" }), {
-          status: 401,
-          headers: corsHeaders(origin),
-        });
-      }
-
-      const { address, signature, message } = (await req.json().catch(() => ({}))) as {
-        address?: string;
-        signature?: `0x${string}`;
-        message?: string;
-      };
-
-      if (!address || !signature || !message) {
-        return new Response(JSON.stringify({ error: "Missing fields" }), {
-          status: 400,
-          headers: corsHeaders(origin),
-        });
-      }
-
-      // Normalize to checksum
-      const inputChecksum = getAddress(address);
-
-      // viem の verifyMessage は boolean を返す（EIP-191 Prefix含め内部でよしなにやってくれます）
-      const ok = await verifyMessage({
-        address: inputChecksum,
-        message,
-        signature,
+    if (req.method !== "POST") {
+      return new Response("Method Not Allowed", {
+        status: 405,
+        headers: cors(origin),
       });
+    }
 
-      if (!ok) {
-        return new Response(JSON.stringify({ ok: false, error: "Signature does not match the address" }), {
+    // Optional: Auth
+    let userId: string | null = null;
+    const authz =
+      req.headers.get("authorization") ?? req.headers.get("Authorization");
+    if (authz?.startsWith("Bearer ")) {
+      const token = authz.slice("Bearer ".length);
+      const { data: ures } = await supabase.auth.getUser(token);
+      userId = ures?.user?.id ?? null;
+    }
+
+    const body = await req.json().catch(() => ({}));
+    const action: string | undefined = body?.action;
+
+    if (action !== "verify") {
+      return new Response(JSON.stringify({ error: "Unsupported action" }), {
+        status: 400,
+        headers: { "content-type": "application/json", ...cors(origin) },
+      });
+    }
+
+    const address: string = body?.address;
+    const signature: string = body?.signature;
+    // message or nonce どちらでも受け取れるようにする
+    const message: string | undefined =
+      typeof body?.message === "string"
+        ? body.message
+        : typeof body?.nonce === "string"
+        ? body.nonce
+        : undefined;
+
+    if (!isAddress(address) || typeof signature !== "string" || typeof message !== "string") {
+      return new Response(JSON.stringify({ error: "Bad request" }), {
+        status: 400,
+        headers: { "content-type": "application/json", ...cors(origin) },
+      });
+    }
+
+    const recovered = await recoverMessageAddress({ message, signature });
+
+    console.info(
+      `verify {\n  input: "${address}",\n  recovered: "${recovered}",\n  msg8: "${message.slice(
+        0,
+        8
+      )}",\n  sigLen: ${signature.length}\n}\n`
+    );
+
+    if (recovered.toLowerCase() !== address.toLowerCase()) {
+      return new Response(
+        JSON.stringify({ ok: false, error: "Signature mismatch", recovered }),
+        {
           status: 400,
-          headers: corsHeaders(origin),
-        });
-      }
+          headers: { "content-type": "application/json", ...cors(origin) },
+        }
+      );
+    }
 
-      // ここで DB 保存（profiles.primary_wallet でも wallets テーブルでも可）
-      // 例: profiles.primary_wallet を更新
-      const update = await supabase
-        .from("profiles")
-        .update({ primary_wallet: inputChecksum })
-        .eq("user_id", uid);
-      if (update.error) {
-        return new Response(JSON.stringify({ ok: false, error: update.error.message }), {
+    if (userId) {
+      const { error } = await supabase
+        .from("wallets")
+        .upsert(
+          {
+            user_id: userId,
+            address: address.toLowerCase(),
+            verified: true,
+          },
+          { onConflict: "user_id,address" }
+        );
+      if (error) {
+        return new Response(JSON.stringify({ ok: false, error: error.message }), {
           status: 500,
-          headers: corsHeaders(origin),
+          headers: { "content-type": "application/json", ...cors(origin) },
         });
       }
-
-      return new Response(JSON.stringify({ ok: true, address: inputChecksum }), {
-        headers: corsHeaders(origin),
-      });
     }
 
-    return new Response(JSON.stringify({ error: "Method not allowed" }), {
-      status: 405,
-      headers: corsHeaders(origin),
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "content-type": "application/json", ...cors(origin) },
     });
   } catch (e) {
-    return new Response(JSON.stringify({ error: String(e?.message || e) }), {
+    console.error("verify-wallet-signature error:", e);
+    return new Response(JSON.stringify({ error: String(e?.message ?? e) }), {
       status: 500,
-      headers: corsHeaders(),
+      headers: { "content-type": "application/json", ...cors(origin) },
     });
   }
 });
