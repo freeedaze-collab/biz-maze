@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useToast } from '@/components/ui/use-toast';
 import { RefreshCw, PlusCircle, Trash2 } from 'lucide-react';
+import AppPageLayout from '@/components/layout/AppPageLayout';
 
 // --- [修正] ここからが完全なコンポーネント定義です ---
 
@@ -61,26 +62,17 @@ function ExistingConnections() {
     }
   };
 
-  if (connections.length === 0) {
-    return (
-        <Card>
-            <CardHeader>
-                <CardTitle>Your Connections</CardTitle>
-            </CardHeader>
-            <CardContent>
-                <p className="text-sm text-muted-foreground">No exchange connections found. Add one below to get started.</p>
-            </CardContent>
-        </Card>
-    );
-  }
-
   return (
-    <Card>
+    <Card className="h-full">
       <CardHeader>
         <CardTitle>Your Connections</CardTitle>
         <CardDescription>Sync trades or remove existing connections.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
+        {connections.length === 0 && (
+          <p className="text-sm text-muted-foreground">No exchange connections found. Add one below to get started.</p>
+        )}
+
         {connections.map(conn => (
           <div key={conn.id} className="flex items-center justify-between p-3 border rounded-lg bg-background">
             <div className="font-medium">
@@ -137,7 +129,7 @@ function AddNewConnectionForm() {
   };
 
   return (
-    <Card>
+    <Card className="h-full">
       <CardHeader>
         <CardTitle>Add New Connection</CardTitle>
         <CardDescription>Give your connection a unique name and provide read-only API keys.</CardDescription>
@@ -145,7 +137,7 @@ function AddNewConnectionForm() {
       <CardContent>
         <form onSubmit={handleSubmit} className="space-y-4">
           <Input placeholder="Connection Name (e.g., 'My Main Binance')" value={connectionName} onChange={e => setConnectionName(e.target.value)} required />
-          
+
           <select value={exchange} onChange={e => setExchange(e.target.value)} className="w-full p-2 border rounded-md bg-transparent">
             <option value="binance">Binance</option>
             <option value="bybit">Bybit</option>
@@ -154,11 +146,11 @@ function AddNewConnectionForm() {
 
           <Input placeholder="API Key" value={apiKey} onChange={e => setApiKey(e.target.value)} required />
           <Input placeholder="API Secret" type="password" value={apiSecret} onChange={e => setApiSecret(e.target.value)} required />
-          
+
           {exchange === "okx" && (
             <Input placeholder="API Passphrase (for OKX only)" type="password" value={passphrase} onChange={e => setPassphrase(e.target.value)} required />
           )}
-          
+
           <Button type="submit" disabled={loading} className="w-full">
             <PlusCircle className="mr-2 h-4 w-4" />
             {loading ? 'Saving...' : 'Save & Link API Keys'}
@@ -166,8 +158,7 @@ function AddNewConnectionForm() {
         </form>
          <div className='mt-6 space-y-2'>
             <p className="text-xs text-muted-foreground">
-              セキュリティ: API Key/Secret は Edge Functions 側で暗号化されて安全に保存されます。
-              取引/出金権限は絶対に付与せず、読み取り(Read-only)権限のみにしてください。
+              Security: API keys are encrypted by the Edge Function and stored safely. Please keep permissions read-only and do not enable trading or withdrawals.
             </p>
         </div>
       </CardContent>
@@ -178,16 +169,15 @@ function AddNewConnectionForm() {
 // ページ全体をレンダリングするメインコンポーネント
 export function VCEPage() {
   return (
-    <div className="container mx-auto p-4 md:p-6 lg:p-8 space-y-8">
-      <div className="space-y-2">
-        <h1 className="text-3xl font-bold tracking-tight">Exchange Connections</h1>
-        <p className="text-muted-foreground">
-          Connect your exchange accounts to automatically sync your trades and holdings.
-        </p>
+    <AppPageLayout
+      title="Virtual Custody Exchange"
+      description="Connect exchanges securely with read-only keys, keep balances in sync, and trigger updates when you need them."
+    >
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+        <ExistingConnections />
+        <AddNewConnectionForm />
       </div>
-      <ExistingConnections />
-      <AddNewConnectionForm />
-    </div>
+    </AppPageLayout>
   );
 }
 
