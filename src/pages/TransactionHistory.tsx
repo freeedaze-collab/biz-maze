@@ -1,6 +1,6 @@
 
 // src/pages/TransactionHistory.tsx
-// VERSION 14: Correctly aliases v_holdings columns to match the frontend interface based on user feedback.
+// VERSION 15: Correctly calls sync-wallet-transactions instead of sync_wallet_history.
 import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { supabase } from "../integrations/supabase/client";
@@ -181,7 +181,7 @@ export default function TransactionHistory() {
         }
     };
 
-    const handleSync = async (syncFunction: 'sync-wallet-transactions' | 'exchange-sync-all' | 'sync-historical-exchange-rates' | 'sync_wallet_history', syncType: string) => {
+    const handleSync = async (syncFunction: 'sync-wallet-transactions' | 'exchange-sync-all' | 'sync-historical-exchange-rates', syncType: string) => {
         setIsSyncing(true);
         setSyncMessage(`Syncing ${syncType}...`);
         try {
@@ -251,8 +251,8 @@ export default function TransactionHistory() {
                             <Button variant="outline" size="sm" onClick={() => handleSync('exchange-sync-all', 'Exchanges')} disabled={isSyncing || isUpdatingPrices || isSaving}>
                                 {isSyncing ? 'Syncing...' : 'Sync Exchanges'}
                             </Button>
-                            <Button variant="outline" size="sm" onClick={() => handleSync('sync_wallet_history', 'Wallet History')} disabled={isSyncing || isUpdatingPrices || isSaving}>
-                                {isSyncing ? 'Syncing...' : 'Sync Wallet History'}
+                            <Button variant="outline" size="sm" onClick={() => handleSync('sync-wallet-transactions', 'Wallet Transactions')} disabled={isSyncing || isUpdatingPrices || isSaving}>
+                                {isSyncing ? 'Syncing...' : 'Sync Wallet Transactions'}
                             </Button>
                             <Button size="sm" onClick={handleSaveChanges} disabled={isSaving || isSyncing || Object.keys(editedTransactions).length === 0}>
                                 {isSaving ? 'Saving...' : 'Save Changes'}
