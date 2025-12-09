@@ -1,204 +1,98 @@
-import { Link } from 'react-router-dom';
-import { useAuth } from '@/hooks/useAuth';
-import AppLayout from '@/components/layouts/AppLayout';
-import {
-  Accordion,
-  AccordionContent,
-  AccordionItem,
-  AccordionTrigger,
-} from '@/components/ui/accordion';
-import {
-  History,
-  FileText,
-  Calculator,
-  CreditCard,
-  Shield,
-  Landmark,
-  TrendingUp,
-  User,
-  Wallet,
-  RefreshCw,
-  ChevronRight,
-} from 'lucide-react';
-
-interface DashboardItemProps {
-  icon: React.ReactNode;
-  label: string;
-  to?: string;
-  comingSoon?: boolean;
-}
-
-function DashboardItem({ icon, label, to, comingSoon }: DashboardItemProps) {
-  if (comingSoon) {
-    return (
-      <div className="icon-button-disabled">
-        <div className="w-12 h-12 rounded-full bg-muted flex items-center justify-center">
-          {icon}
-        </div>
-        <span className="text-sm font-medium text-muted-foreground">{label}</span>
-        <span className="coming-soon-badge">Coming soon</span>
-      </div>
-    );
-  }
-
-  return (
-    <Link to={to || '#'} className="icon-button group">
-      <div className="w-12 h-12 rounded-full bg-primary/10 text-primary flex items-center justify-center group-hover:bg-primary group-hover:text-primary-foreground transition-colors">
-        {icon}
-      </div>
-      <span className="text-sm font-medium text-foreground">{label}</span>
-    </Link>
-  );
-}
+import { Link, useNavigate } from "react-router-dom";
+import { useAuth } from "@/hooks/useAuth";
+import { supabase } from "@/integrations/supabase/client";
 
 export default function Dashboard() {
   const { user } = useAuth();
+  const nav = useNavigate();
+  const displayName =
+    user?.user_metadata?.name || user?.email || (user ? `User ${user.id.slice(0, 6)}` : "");
+
+  const onSignOut = async () => {
+    await supabase.auth.signOut();
+    nav("/", { replace: true });
+  };
 
   return (
-    <AppLayout>
-      <div className="content-container">
-        {/* Header */}
-        <div className="mb-8">
-          <h1 className="text-2xl font-bold text-foreground">Dashboard</h1>
-          <p className="text-muted-foreground mt-1">Welcome back! Manage your crypto accounting.</p>
-        </div>
-
-        {/* Quick Access Icons */}
-        <div className="mb-8">
-          <h2 className="section-title">Quick Access</h2>
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
-            <DashboardItem
-              icon={<History className="w-6 h-6" />}
-              label="Transaction History"
-              to="/transactions"
-            />
-            <DashboardItem
-              icon={<FileText className="w-6 h-6" />}
-              label="Accounting"
-              to="/accounting"
-            />
-            <DashboardItem
-              icon={<Calculator className="w-6 h-6" />}
-              label="Tax Calculator"
-              comingSoon
-            />
-            <DashboardItem
-              icon={<CreditCard className="w-6 h-6" />}
-              label="Payment"
-              comingSoon
-            />
-            <DashboardItem
-              icon={<Shield className="w-6 h-6" />}
-              label="Security"
-              comingSoon
-            />
-            <DashboardItem
-              icon={<Landmark className="w-6 h-6" />}
-              label="Payment Gateway"
-              comingSoon
-            />
-            <DashboardItem
-              icon={<TrendingUp className="w-6 h-6" />}
-              label="Get Investment"
-              comingSoon
-            />
+    <div className="max-w-5xl mx-auto p-6 space-y-8">
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold">Dashboard</h1>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full border">
+            <div className="w-6 h-6 rounded-full bg-blue-600 text-white grid place-items-center text-xs">
+              {displayName?.[0]?.toUpperCase() ?? "U"}
+            </div>
+            <span className="text-sm text-muted-foreground max-w-[180px] truncate">
+              {displayName}
+            </span>
           </div>
-        </div>
-
-        {/* Account Accordions */}
-        <div className="grid md:grid-cols-3 gap-6">
-          {/* Profile Accordion */}
-          <div className="card-elevated">
-            <Accordion type="single" collapsible className="w-full">
-              <AccordionItem value="profile" className="border-none">
-                <AccordionTrigger className="px-4 py-4 hover:no-underline">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-full bg-primary/10 text-primary flex items-center justify-center">
-                      <User className="w-5 h-5" />
-                    </div>
-                    <span className="font-medium">Profile</span>
-                  </div>
-                </AccordionTrigger>
-                <AccordionContent className="px-4 pb-4">
-                  <div className="space-y-3 text-sm">
-                    <div className="flex justify-between py-2 border-b border-border">
-                      <span className="text-muted-foreground">Email</span>
-                      <span className="text-foreground">{user?.email || '-'}</span>
-                    </div>
-                    <Link
-                      to="/profile"
-                      className="flex items-center justify-between py-2 text-primary hover:underline"
-                    >
-                      <span>Edit Profile</span>
-                      <ChevronRight className="w-4 h-4" />
-                    </Link>
-                  </div>
-                </AccordionContent>
-              </AccordionItem>
-            </Accordion>
-          </div>
-
-          {/* Wallets Accordion */}
-          <div className="card-elevated">
-            <Accordion type="single" collapsible className="w-full">
-              <AccordionItem value="wallets" className="border-none">
-                <AccordionTrigger className="px-4 py-4 hover:no-underline">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-full bg-primary/10 text-primary flex items-center justify-center">
-                      <Wallet className="w-5 h-5" />
-                    </div>
-                    <span className="font-medium">Wallets</span>
-                  </div>
-                </AccordionTrigger>
-                <AccordionContent className="px-4 pb-4">
-                  <div className="space-y-3 text-sm">
-                    <p className="text-muted-foreground py-2">
-                      Connect and manage your crypto wallets for transaction tracking.
-                    </p>
-                    <Link
-                      to="/wallets"
-                      className="flex items-center justify-between py-2 text-primary hover:underline"
-                    >
-                      <span>Manage Wallets</span>
-                      <ChevronRight className="w-4 h-4" />
-                    </Link>
-                  </div>
-                </AccordionContent>
-              </AccordionItem>
-            </Accordion>
-          </div>
-
-          {/* Virtual Custody Exchange Accordion */}
-          <div className="card-elevated">
-            <Accordion type="single" collapsible className="w-full">
-              <AccordionItem value="vce" className="border-none">
-                <AccordionTrigger className="px-4 py-4 hover:no-underline">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-full bg-primary/10 text-primary flex items-center justify-center">
-                      <RefreshCw className="w-5 h-5" />
-                    </div>
-                    <span className="font-medium">Virtual Custody Exchange</span>
-                  </div>
-                </AccordionTrigger>
-                <AccordionContent className="px-4 pb-4">
-                  <div className="space-y-3 text-sm">
-                    <p className="text-muted-foreground py-2">
-                      Link exchange APIs to sync trades and balances automatically.
-                    </p>
-                    <Link
-                      to="/vce"
-                      className="flex items-center justify-between py-2 text-primary hover:underline"
-                    >
-                      <span>Manage Exchanges</span>
-                      <ChevronRight className="w-4 h-4" />
-                    </Link>
-                  </div>
-                </AccordionContent>
-              </AccordionItem>
-            </Accordion>
-          </div>
+          <button onClick={onSignOut} className="px-3 py-1.5 rounded bg-red-600 text-white text-sm">
+            Sign out
+          </button>
         </div>
       </div>
-    </AppLayout>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {/* Money/Send money/Create invoice → 一時非表示（復帰用にコメントで残置）
+        <div className="border rounded-xl p-4">…Money…</div>
+        <div className="border rounded-xl p-4">…Send money…</div>
+        <div className="border rounded-xl p-4">…Create invoice…</div>
+        */}
+
+        <div className="border rounded-xl p-4">
+          <h2 className="font-semibold mb-2">Records</h2>
+          <div className="flex flex-col gap-2">
+            <Link to="/transactions" className="px-3 py-2 rounded border text-center">
+              Transaction History
+            </Link>
+            <Link to="/accounting" className="px-3 py-2 rounded border text-center">
+              Accounting / Tax
+            </Link>
+          </div>
+        </div>
+
+        {/* 復活：VCE（取引所連携） */}
+        <div className="border rounded-xl p-4">
+          <h2 className="font-semibold mb-2">Exchanges</h2>
+          <p className="text-sm text-muted-foreground mb-2">
+            Link read-only API keys and sync trades/deposits/withdrawals.
+          </p>
+          {/* ここを /vce に（App 側は /exchange, /exchange/vce でも開けるようエイリアス済み） */}
+          <Link to="/vce" className="px-3 py-2 rounded bg-blue-600 text-white text-center inline-block">
+            Open Virtual Custody / Exchanges (VCE)
+          </Link>
+        </div>
+
+        <div className="border rounded-xl p-4">
+          <h2 className="font-semibold mb-2">Account</h2>
+          <div className="flex flex-col gap-2">
+            <Link to="/profile" className="px-3 py-2 rounded border text-center">Profile</Link>
+            <Link to="/pricing" className="px-3 py-2 rounded border text-center">
+              Pricing / Change plan
+            </Link>
+          </div>
+        </div>
+
+        <div className="border rounded-xl p-4">
+          <h2 className="font-semibold mb-2">Wallets</h2>
+          <p className="text-sm text-muted-foreground mb-2">
+            Manage connected wallets and verification.
+          </p>
+          <Link to="/wallets" className="px-3 py-2 rounded bg-blue-600 text-white text-center inline-block">
+            Open Wallets
+          </Link>
+        </div>
+
+        <div className="border rounded-xl p-4">
+          <h2 className="font-semibold mb-2">Payment Gateway</h2>
+          <p className="text-sm text-muted-foreground mb-2">
+            Configure merchant settings and generate checkout links.
+          </p>
+          <Link to="/payment-gateway" className="px-3 py-2 rounded border text-center inline-block">
+            Open Payment Gateway
+          </Link>
+        </div>
+      </div>
+    </div>
   );
 }
