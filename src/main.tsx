@@ -2,6 +2,8 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import "./index.css";
+import "./styles/feel-theme.css";
 
 // Supabase standard client (keep as-is in your project)
 import { supabase } from "@/integrations/supabase/client";

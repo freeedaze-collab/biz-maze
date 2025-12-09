@@ -7,6 +7,7 @@ import { supabase } from "../integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import AppPageLayout from "@/components/layout/AppPageLayout";
 
 
 // --- Constants ---
@@ -40,8 +41,8 @@ interface Holding {
 }
 
 interface Transaction {
-    id: string; 
-    user_id: string; 
+    id: string;
+    user_id: string;
     reference_id: string;
     date: string;
     source: string;
@@ -65,7 +66,7 @@ export default function TransactionHistory() {
     const [transactions, setTransactions] = useState<Transaction[]>([]);
     const [holdings, setHoldings] = useState<Holding[]>([]);
     const [editedTransactions, setEditedTransactions] = useState<Record<string, EditedTransaction>>({});
-    
+
     // UI/Loading State
     const [isLoading, setIsLoading] = useState(true);
     const [isSaving, setIsSaving] = useState(false);
@@ -100,7 +101,7 @@ export default function TransactionHistory() {
 
             if (holdingsRes.error) throw new Error(`Holdings Error: ${holdingsRes.error.message}`);
             if (transactionsRes.error) throw new Error(`Transactions Error: ${transactionsRes.error.message}`);
-            
+
             setHoldings(holdingsRes.data || []);
             setTransactions(transactionsRes.data as Transaction[] || []);
         } catch (err: any) {
@@ -150,7 +151,7 @@ export default function TransactionHistory() {
                         .from('exchange_trades')
                         .update(updatePayload)
                         .eq('trade_id', originalTx.reference_id)
-                        .eq('user_id', originalTx.user_id); 
+                        .eq('user_id', originalTx.user_id);
                 } else if (originalTx.source === 'on-chain') {
                     return supabase
                         .from('wallet_transactions')
@@ -230,120 +231,136 @@ export default function TransactionHistory() {
 
     // --- Render Method ---
     return (
-        <div className="p-4 md:p-6 lg:p-8">
-            <h1 className="text-3xl font-bold mb-6">Transactions & Portfolio</h1>
-            
-            <section className="mb-8">
-                <h2 className="text-2xl font-semibold mb-2">Actions</h2>
-                <div className="flex items-center space-x-4">
-                    <Button variant="outline" size="sm" onClick={handleUpdatePrices} disabled={isUpdatingPrices || isSyncing || isSaving}>
-                        {isUpdatingPrices ? 'Updating...' : 'Update Prices & Rates'}
-                    </Button>
-                    <Button variant="outline" size="sm" onClick={() => handleSync('exchange-sync-all', 'Exchanges')} disabled={isSyncing || isUpdatingPrices || isSaving}>
-                        {isSyncing ? 'Syncing...' : 'Sync Exchanges'}
-                    </Button>
-                     <Button size="sm" onClick={handleSaveChanges} disabled={isSaving || isSyncing || Object.keys(editedTransactions).length === 0}>
-                        {isSaving ? 'Saving...' : 'Save Changes'}
-                    </Button>
-                     <Link to="/management/exchange-services" className="text-sm font-medium text-blue-600 hover:underline">Manage API Keys</Link>
-                </div>
-                {(syncMessage || error) && (
-                    <div className="mt-4 p-4 bg-gray-100 dark:bg-gray-800 rounded-lg text-sm font-mono">
-                        {syncMessage && <p>{syncMessage}</p>}
-                        {error && <p className="text-red-500">Error: {error}</p>}
+        <AppPageLayout
+            title="Transactions & Portfolio"
+            description="Keep your exchanges, wallets, and ledger notes perfectly aligned before exporting to accounting."
+        >
+            <div className="space-y-8">
+                <section className="surface-card p-5">
+                    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                        <div>
+                            <h2 className="text-xl font-semibold">Actions</h2>
+                            <p className="text-sm text-muted-foreground">Update rates, sync exchanges, and save your labeling.</p>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                            <Button variant="outline" size="sm" onClick={handleUpdatePrices} disabled={isUpdatingPrices || isSyncing ||isSaving}>
+                                {isUpdatingPrices ? 'Updating...' : 'Update Prices & Rates'}
+                            </Button>
+                            <Button variant="outline" size="sm" onClick={() => handleSync('exchange-sync-all', 'Exchanges')} disabled={isSyncing || isUpdatingPrices || isSaving}>
+                                {isSyncing ? 'Syncing...' : 'Sync Exchanges'}
+                            </Button>
+                            <Button size="sm" onClick={handleSaveChanges} disabled={isSaving || isSyncing || Object.keys(editedTransactions).length === 0}>
+                                {isSaving ? 'Saving...' : 'Save Changes'}
+                            </Button>
+                            <Link to="/management/exchange-services" className="text-sm font-semibold text-primary hover:underline">
+                                Manage API Keys
+                            </Link>
+                        </div>
                     </div>
-                )}
-            </section>
+                    {(syncMessage || error) && (
+                        <div className="mt-4 p-4 bg-slate-50 rounded-lg text-sm font-mono border border-border/70">
+                            {syncMessage && <p>{syncMessage}</p>}
+                            {error && <p className="text-red-500">Error: {error}</p>}
+                        </div>
+                    )}
+                </section>
 
-            <section className="mb-8">
-                <h2 className="text-2xl font-semibold mb-4">Portfolio Summary</h2>
-                {isLoading ? <p>Loading portfolio...</p> : (
-                    <div className="w-full overflow-x-auto">
-                         <table className="min-w-full text-sm text-left">
-                            <thead className="font-mono text-gray-500">
-                                <tr>
-                                    <th className="p-2 font-semibold">Asset</th>
-                                    <th className="p-2 font-semibold text-right">Amount</th>
-                                    <th className="p-2 font-semibold text-right">Avg. Buy Price</th>
-                                    <th className="p-2 font-semibold text-right">Current Price</th>
-                                    <th className="p-2 font-semibold text-right">Current Value</th>
-                                    <th className="p-2 font-semibold text-right">Unrealized P&L</th>
-                                </tr>
-                            </thead>
-                            <tbody className="font-mono">
-                                {holdings.length > 0 ? holdings.map((h) => (
-                                    <tr key={h.asset} className="border-b border-gray-200 dark:border-gray-700">
-                                        <td className="p-2 font-bold whitespace-nowrap">{h.asset}</td>
-                                        <td className="p-2 text-right whitespace-nowrap">{formatNumber(h.currentAmount)}</td>
-                                        <td className="p-2 text-right whitespace-nowrap">{formatCurrency(h.averageBuyPrice)}</td>
-                                        <td className="p-2 text-right whitespace-nowrap">{formatCurrency(h.currentPrice)}</td>
-                                        <td className="p-2 text-right whitespace-nowrap font-semibold">{formatCurrency(h.currentValueUsd)}</td> 
-                                        <td className={`p-2 text-right whitespace-nowrap ${getPnlClass(h.capitalGain)}`}>{formatCurrency(h.capitalGain)}</td>
-                                    </tr>
-                                )) : (
-                                    <tr><td colSpan={6} className="text-center text-gray-500 py-4">No holdings found.</td></tr>
-                                )}
-                            </tbody>
-                        </table>
+                <section className="surface-card p-5">
+                    <div className="flex items-center justify-between mb-4">
+                        <h2 className="text-2xl font-semibold">Portfolio Summary</h2>
+                        <span className="text-xs uppercase tracking-[0.2em] text-primary font-semibold">Holdings</span>
                     </div>
-                )}
-            </section>
+                    {isLoading ? <p>Loading portfolio...</p> : (
+                        <div className="table-shell">
+                             <table className="min-w-full text-sm text-left">
+                                <thead className="font-mono text-gray-500">
+                                    <tr>
+                                        <th className="p-2 font-semibold">Asset</th>
+                                        <th className="p-2 font-semibold text-right">Amount</th>
+                                        <th className="p-2 font-semibold text-right">Avg. Buy Price</th>
+                                        <th className="p-2 font-semibold text-right">Current Price</th>
+                                        <th className="p-2 font-semibold text-right">Current Value</th>
+                                        <th className="p-2 font-semibold text-right">Unrealized P&L</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="font-mono">
+                                    {holdings.length > 0 ? holdings.map((h) => (
+                                        <tr key={h.asset} className="border-b border-gray-200 dark:border-gray-700">
+                                            <td className="p-2 font-bold whitespace-nowrap">{h.asset}</td>
+                                            <td className="p-2 text-right whitespace-nowrap">{formatNumber(h.currentAmount)}</td>
+                                            <td className="p-2 text-right whitespace-nowrap">{formatCurrency(h.averageBuyPrice)}</td>
+                                            <td className="p-2 text-right whitespace-nowrap">{formatCurrency(h.currentPrice)}</td>
+                                            <td className="p-2 text-right whitespace-nowrap font-semibold">{formatCurrency(h.currentValueUsd)}</td>
+                                            <td className={`p-2 text-right whitespace-nowrap ${getPnlClass(h.capitalGain)}`}>{formatCurrency(h.capitalGain)}</td>
+                                        </tr>
+                                    )) : (
+                                        <tr><td colSpan={6} className="text-center text-gray-500 py-4">No holdings found.</td></tr>
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
+                </section>
 
-            <section>
-                <h2 className="text-2xl font-semibold mb-4">All Transactions</h2>
-                {isLoading ? <p>Loading transactions...</p> : (
-                    <div className="w-full overflow-x-auto">
-                         <table className="min-w-full text-sm text-left">
-                            <thead className="font-mono text-gray-500">
-                                <tr>
-                                    <th className="p-2 font-semibold">Date</th>
-                                    <th className="p-2 font-semibold">Description</th>
-                                    <th className="p-2 font-semibold text-right">Amount</th>
-                                    <th className="p-2 font-semibold text-right">Value (USD)</th>
-                                    <th className="p-2 font-semibold">Usage</th>
-                                    <th className="p-2 font-semibold">Note</th>
-                                </tr>
-                            </thead>
-                            <tbody className="font-mono">
-                                {transactions.length > 0 ? transactions.map((tx) => {
-                                    const editedTx = editedTransactions[tx.id];
-                                    return (
-                                    <tr key={tx.id} className="border-b border-gray-200 dark:border-gray-700">
-                                        <td className="p-2 whitespace-nowrap">{new Date(tx.date).toLocaleString()}</td>
-                                        <td className="p-2 text-gray-600 dark:text-gray-400">{tx.description}</td>
-                                        <td className="p-2 text-right">{formatNumber(tx.amount)} {tx.asset}</td>
-                                        <td className="p-2 text-right">{formatCurrency(tx.value_in_usd)}</td>
-                                        <td className="p-2" style={{minWidth: '200px'}}>
-                                            <Select 
-                                                value={editedTx?.usage ?? tx.usage ?? 'unspecified'}
-                                                onValueChange={(value) => handleInputChange(tx.id, 'usage', value)}
-                                            >
-                                                <SelectTrigger><SelectValue/></SelectTrigger>
-                                                <SelectContent>
-                                                    {accountingUsageOptions.map(opt => 
-                                                        <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
-                                                    )}
-                                                </SelectContent>
-                                            </Select>
-                                        </td>
-                                        <td className="p-2" style={{minWidth: '200px'}}>
-                                            <Input
-                                                type="text"
-                                                placeholder="Add a note..."
-                                                value={editedTx?.note ?? tx.note ?? ''}
-                                                onChange={(e) => handleInputChange(tx.id, 'note', e.target.value)}
-                                                className="w-full"
-                                            />
-                                        </td>
-                                    </tr>
-                                )}) : (
-                                    <tr><td colSpan={6} className="text-center text-gray-500 py-4">No transactions found.</td></tr>
-                                )}
-                            </tbody>
-                        </table>
+                <section className="surface-card p-5">
+                    <div className="flex items-center justify-between mb-4">
+                        <h2 className="text-2xl font-semibold">All Transactions</h2>
+                        <span className="text-xs uppercase tracking-[0.2em] text-primary font-semibold">Ledger</span>
                     </div>
-                )}
-            </section>
-        </div>
+                    {isLoading ? <p>Loading transactions...</p> : (
+                        <div className="table-shell">
+                             <table className="min-w-full text-sm text-left">
+                                <thead className="font-mono text-gray-500">
+                                    <tr>
+                                        <th className="p-2 font-semibold">Date</th>
+                                        <th className="p-2 font-semibold">Description</th>
+                                        <th className="p-2 font-semibold text-right">Amount</th>
+                                        <th className="p-2 font-semibold text-right">Value (USD)</th>
+                                        <th className="p-2 font-semibold">Usage</th>
+                                        <th className="p-2 font-semibold">Note</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="font-mono">
+                                    {transactions.length > 0 ? transactions.map((tx) => {
+                                        const editedTx = editedTransactions[tx.id];
+                                        return (
+                                        <tr key={tx.id} className="border-b border-gray-200 dark:border-gray-700">
+                                            <td className="p-2 whitespace-nowrap">{new Date(tx.date).toLocaleString()}</td>
+                                            <td className="p-2 text-gray-600 dark:text-gray-400">{tx.description}</td>
+                                            <td className="p-2 text-right">{formatNumber(tx.amount)} {tx.asset}</td>
+                                            <td className="p-2 text-right">{formatCurrency(tx.value_in_usd)}</td>
+                                            <td className="p-2" style={{minWidth: '200px'}}>
+                                                <Select
+                                                    value={editedTx?.usage ?? tx.usage ?? 'unspecified'}
+                                                    onValueChange={(value) => handleInputChange(tx.id, 'usage', value)}
+                                                >
+                                                    <SelectTrigger><SelectValue/></SelectTrigger>
+                                                    <SelectContent>
+                                                        {accountingUsageOptions.map(opt =>
+                                                            <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+                                                        )}
+                                                    </SelectContent>
+                                                </Select>
+                                            </td>
+                                            <td className="p-2" style={{minWidth: '200px'}}>
+                                                <Input
+                                                    type="text"
+                                                    placeholder="Add a note..."
+                                                    value={editedTx?.note ?? tx.note ?? ''}
+                                                    onChange={(e) => handleInputChange(tx.id, 'note', e.target.value)}
+                                                    className="w-full"
+                                                />
+                                            </td>
+                                        </tr>
+                                    )}) : (
+                                        <tr><td colSpan={6} className="text-center text-gray-500 py-4">No transactions found.</td></tr>
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
+                </section>
+            </div>
+        </AppPageLayout>
     );
 }
