@@ -1,5 +1,5 @@
 // src/pages/TransactionHistory.tsx
-// VERSION 15: Fixes portfolio summary displaying zeros by correctly mapping snake_case database columns to camelCase frontend properties.
+// VERSION 16: Adds a dedicated "Sync Wallets" button to the Actions section.
 import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { supabase } from "../integrations/supabase/client";
@@ -91,8 +91,8 @@ export default function TransactionHistory() {
                 supabase.from('all_transactions').select(transactionsSelect).eq('user_id', user.id).order('date', { ascending: false }).limit(100)
             ]);
 
-            if (holdingsRes.error) throw new Error(`Holdings Error: ${holdingsRes.error.message}`);
-            if (transactionsRes.error) throw new Error(`Transactions Error: ${transactionsRes.error.message}`);
+            if (holdingsRes.error) throw new Error(\`Holdings Error: ${holdingsRes.error.message}\`);
+            if (transactionsRes.error) throw new Error(\`Transactions Error: ${transactionsRes.error.message}\`);
             
             // CORRECTED: Manually map snake_case from DB to camelCase for the UI to prevent display errors.
             const mappedHoldings = (holdingsRes.data || []).map(h => ({
@@ -108,7 +108,7 @@ export default function TransactionHistory() {
             setTransactions(transactionsRes.data as Transaction[] || []);
         } catch (err: any) {
             console.error("Error fetching data:", err);
-            setError(`Failed to load data: ${err.message}`);
+            setError(\`Failed to load data: ${err.message}\`);
         } finally {
             setIsLoading(false);
         }
@@ -139,8 +139,8 @@ export default function TransactionHistory() {
             const updatePromises = editedEntries.map(([viewId, changes]) => {
                 const originalTx = transactions.find(t => t.id === viewId);
                 if (!originalTx) {
-                    console.warn(`Original transaction not found for view ID: ${viewId}`);
-                    return Promise.resolve({ error: { message: `Original transaction for ${viewId} not found.` } });
+                    console.warn(\`Original transaction not found for view ID: ${viewId}\`);
+                    return Promise.resolve({ error: { message: \`Original transaction for ${viewId} not found.\` } });
                 }
 
                 const updatePayload = {
@@ -157,7 +157,7 @@ export default function TransactionHistory() {
                         .eq('trade_id', tradeId)
                         .eq('user_id', originalTx.user_id); 
                 } else if (originalTx.source === 'on-chain') {
-                    // For on-chain tx, the view's `id` is the table's `id`
+                    // For on-chain tx, the view's \`id\` is the table's \`id\`
                     return supabase
                         .from('wallet_transactions')
                         .update(updatePayload)
@@ -171,7 +171,7 @@ export default function TransactionHistory() {
 
             const firstError = results.find(res => res && res.error);
             if (firstError) {
-                throw new Error(`An update failed: ${firstError.error.message}`);
+                throw new Error(\`An update failed: ${firstError.error.message}\`);
             }
 
             setSyncMessage("Changes saved successfully. Refreshing data...");
@@ -180,7 +180,7 @@ export default function TransactionHistory() {
 
         } catch (err: any) {
             console.error("Save failed:", err);
-            setError(`Failed to save changes: ${err.message}`);
+            setError(\`Failed to save changes: ${err.message}\`);
         } finally {
             setIsSaving(false);
         }
@@ -188,16 +188,16 @@ export default function TransactionHistory() {
 
     const handleSync = async (syncFunction: 'sync-wallet-transactions' | 'exchange-sync-all' | 'sync-historical-exchange-rates', syncType: string) => {
         setIsSyncing(true);
-        setSyncMessage(`Syncing ${syncType}...`);
+        setSyncMessage(\`Syncing ${syncType}...\`);
         try {
             const { error } = await supabase.functions.invoke(syncFunction);
             if (error) throw error;
-            setSyncMessage(`${syncType} sync complete. Refreshing all data...`);
+            setSyncMessage(\`${syncType} sync complete. Refreshing all data...\`);
             await fetchAllData();
-            setSyncMessage(`${syncType} data refreshed successfully.`);
+            setSyncMessage(\`${syncType} data refreshed successfully.\`);
         } catch (err: any) {
-            console.error(`${syncType} sync failed:`, err);
-            setError(`A critical error occurred during ${syncType} sync: ${err.message}`);
+            console.error(\`${syncType} sync failed:\`, err);
+            setError(\`A critical error occurred during ${syncType} sync: ${err.message}\`);
         } finally {
             setIsSyncing(false);
         }
@@ -220,7 +220,7 @@ export default function TransactionHistory() {
 
         } catch (err: any) {
             console.error("Price update failed:", err);
-            setError(`Failed to update prices: ${err.message}`);
+            setError(\`Failed to update prices: ${err.message}\`);
         } finally {
             setIsUpdatingPrices(false);
         }
@@ -247,6 +247,9 @@ export default function TransactionHistory() {
                     </Button>
                     <Button variant="outline" size="sm" onClick={() => handleSync('exchange-sync-all', 'Exchanges')} disabled={isSyncing || isUpdatingPrices || isSaving}>
                         {isSyncing ? 'Syncing...' : 'Sync Exchanges'}
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => handleSync('sync-wallet-transactions', 'Wallets')} disabled={isSyncing || isUpdatingPrices || isSaving}>
+                        {isSyncing ? 'Syncing...' : 'Sync Wallets'}
                     </Button>
                      <Button size="sm" onClick={handleSaveChanges} disabled={isSaving || isSyncing || Object.keys(editedTransactions).length === 0}>
                         {isSaving ? 'Saving...' : 'Save Changes'}
@@ -284,7 +287,7 @@ export default function TransactionHistory() {
                                         <td className="p-2 text-right whitespace-nowrap">{formatCurrency(h.averageBuyPrice)}</td>
                                         <td className="p-2 text-right whitespace-nowrap">{formatCurrency(h.currentPrice)}</td>
                                         <td className="p-2 text-right whitespace-nowrap font-semibold">{formatCurrency(h.currentValueUsd)}</td> 
-                                        <td className={`p-2 text-right whitespace-nowrap ${getPnlClass(h.capitalGain)}`}>{formatCurrency(h.capitalGain)}</td>
+                                        <td className={\`p-2 text-right whitespace-nowrap ${getPnlClass(h.capitalGain)}\`}>{formatCurrency(h.capitalGain)}</td>
                                     </tr>
                                 )) : (
                                     <tr><td colSpan={6} className="text-center text-gray-500 py-4">No holdings found.</td></tr>
