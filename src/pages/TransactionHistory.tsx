@@ -26,6 +26,7 @@ export default function TransactionHistory() {
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  const [historySyncing, setHistorySyncing] = useState(false);
   const [classifying, setClassifying] = useState(false);
   const [msg, setMsg] = useState<string>("");
 
@@ -115,6 +116,21 @@ export default function TransactionHistory() {
     }
   };
 
+  const syncWalletHistory = async () => {
+    setHistorySyncing(true);
+    setMsg("");
+    try {
+      const { error } = await supabase.functions.invoke("sync_wallet_history", { body: {} });
+      if (error) setMsg(error.message ?? String(error));
+    } catch (e: any) {
+      console.warn("sync wallet history error:", e);
+      setMsg(e?.message || String(e));
+    } finally {
+      await load();
+      setHistorySyncing(false);
+    }
+  };
+
   const onChangeUsage = async (txId: number, key: string) => {
     if (!user) return;
     setMsg("");
@@ -145,21 +161,25 @@ export default function TransactionHistory() {
       <div className="mx-auto max-w-6xl p-6 space-y-8">
         {/* Header */}
         <div className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-primary via-primary to-accent p-8 text-primary-foreground shadow-elegant">
-          <div className="relative z-10 flex items-center justify-between flex-wrap gap-4">
-            <div>
-              <h1 className="text-4xl font-bold mb-2">Transaction History</h1>
-              <p className="text-primary-foreground/90">View all your blockchain transactions & assign usage</p>
-            </div>
-            <div className="flex gap-2">
-              <Button onClick={classify} disabled={classifying} variant="secondary" size="lg"
-                className="bg-primary-foreground text-primary hover:bg-primary-foreground/90">
-                {classifying ? "Classifying..." : "Predict Usage"}
-              </Button>
-              <Button onClick={sync} disabled={syncing} variant="secondary" size="lg"
-                className="bg-primary-foreground text-primary hover:bg-primary-foreground/90">
-                {syncing ? "Syncing..." : "Sync Now"}
-              </Button>
-            </div>
+            <div className="relative z-10 flex items-center justify-between flex-wrap gap-4">
+              <div>
+                <h1 className="text-4xl font-bold mb-2">Transaction History</h1>
+                <p className="text-primary-foreground/90">View all your blockchain transactions & assign usage</p>
+              </div>
+              <div className="flex gap-2">
+                <Button onClick={classify} disabled={classifying} variant="secondary" size="lg"
+                  className="bg-primary-foreground text-primary hover:bg-primary-foreground/90">
+                  {classifying ? "Classifying..." : "Predict Usage"}
+                </Button>
+                <Button onClick={syncWalletHistory} disabled={historySyncing} variant="secondary" size="lg"
+                  className="bg-primary-foreground text-primary hover:bg-primary-foreground/90">
+                  {historySyncing ? "Syncing History..." : "Sync Wallet History"}
+                </Button>
+                <Button onClick={sync} disabled={syncing} variant="secondary" size="lg"
+                  className="bg-primary-foreground text-primary hover:bg-primary-foreground/90">
+                  {syncing ? "Syncing..." : "Sync Now"}
+                </Button>
+              </div>
           </div>
           <div className="absolute -right-10 -bottom-10 w-48 h-48 bg-primary-foreground/10 rounded-full blur-2xl"></div>
         </div>
