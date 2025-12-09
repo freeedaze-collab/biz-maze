@@ -4,6 +4,8 @@ import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
 import { isAddress, toHex, recoverMessageAddress } from "viem";
 import { createWCProvider, WCProvider } from "@/lib/walletconnect";
+import AppPageLayout from "@/components/layout/AppPageLayout";
+import { Button } from "@/components/ui/button";
 
 type WalletRow = {
   id: number;
@@ -209,68 +211,75 @@ export default function WalletSelection() {
   };
 
   return (
-    <div className="max-w-3xl mx-auto p-6 space-y-6">
-      <h1 className="text-3xl font-bold">Wallets</h1>
-      <p className="text-sm text-muted-foreground">
-        あなたのアカウントに紐づくウォレットのみ表示されます。新規連携は
-        <strong>アドレス入力 → 署名 → 完了</strong>の順です。
-      </p>
-
-      <div className="border rounded-xl p-4 space-y-3">
-        <label className="text-sm font-medium">Wallet Address</label>
-        <div className="flex items-center gap-2">
-          <input
-            className="flex-1 border rounded px-3 py-2"
-            placeholder="0x..."
-            value={addressInput}
-            onChange={(e) => setAddressInput(e.target.value)}
-            autoComplete="off"
-          />
-          <button
-            className="px-3 py-2 rounded bg-blue-600 text-white disabled:opacity-50"
-            onClick={handleLinkWithMetaMask}
-            disabled={linking !== null}
-            title="Sign with MetaMask"
-          >
-            {linking === "mm" ? "Linking..." : "Link (MetaMask)"}
-          </button>
-          <button
-            className="px-3 py-2 rounded border disabled:opacity-50"
-            onClick={handleLinkWithWalletConnect}
-            disabled={linking !== null}
-            title="Sign with WalletConnect (mobile / no extension)"
-          >
-            {linking === "wc" ? "Linking..." : "Link (WalletConnect)"}
-          </button>
+    <AppPageLayout
+      title="Wallets"
+      description="Link wallets to your account, verify ownership, and keep your ledger in sync."
+    >
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+        <div className="border rounded-2xl p-5 bg-white/80 shadow-sm space-y-3">
+          <div>
+            <p className="text-sm font-semibold">Add a wallet</p>
+            <p className="text-sm text-muted-foreground">Enter the address, sign the nonce, and confirm.</p>
+          </div>
+          <div className="flex flex-col gap-3">
+            <label className="text-sm font-medium">Wallet Address</label>
+            <input
+              className="flex-1 border rounded px-3 py-2"
+              placeholder="0x..."
+              value={addressInput}
+              onChange={(e) => setAddressInput(e.target.value)}
+              autoComplete="off"
+            />
+            <div className="flex flex-wrap gap-2">
+              <Button
+                onClick={handleLinkWithMetaMask}
+                disabled={linking !== null}
+                title="Sign with MetaMask"
+              >
+                {linking === "mm" ? "Linking..." : "Link (MetaMask)"}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={handleLinkWithWalletConnect}
+                disabled={linking !== null}
+                title="Sign with WalletConnect (mobile / no extension)"
+              >
+                {linking === "wc" ? "Linking..." : "Link (WalletConnect)"}
+              </Button>
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            The signing message is a server-issued nonce. Make sure the input address and signer address match exactly.
+          </p>
+          {alreadyLinked && (
+            <p className="text-xs text-green-700">This address is already linked.</p>
+          )}
         </div>
-        <p className="text-xs text-muted-foreground">
-          署名メッセージはサーバ発行の <code>nonce</code>（素の文字列）です。
-          入力アドレスと署名者のアドレスは<strong>必ず同じ</strong>にしてください。
-        </p>
-        {alreadyLinked && (
-          <p className="text-xs text-green-700">This address is already linked.</p>
-        )}
-      </div>
 
-      <div className="border rounded-xl p-4">
-        <div className="font-semibold mb-2">Linked wallets (DB)</div>
-        {loading ? (
-          <div>Loading...</div>
-        ) : rows.length === 0 ? (
-          <div className="text-sm text-muted-foreground">No linked wallets yet.</div>
-        ) : (
-          <ul className="space-y-2">
-            {rows.map((w) => (
-              <li key={w.id} className="border rounded p-3">
-                <div className="font-mono break-all">{w.address}</div>
-                <div className="text-xs text-muted-foreground">
-                  {w.verified ? "verified" : "unverified"} • {w.created_at ?? "—"}
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
+        <div className="border rounded-2xl p-5 bg-white/80 shadow-sm">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <p className="text-sm font-semibold">Linked wallets</p>
+              <p className="text-xs text-muted-foreground">Only addresses linked to this account are shown.</p>
+            </div>
+            {loading && <span className="text-xs text-muted-foreground">Loading...</span>}
+          </div>
+          {loading ? null : rows.length === 0 ? (
+            <div className="text-sm text-muted-foreground">No linked wallets yet.</div>
+          ) : (
+            <ul className="space-y-2">
+              {rows.map((w) => (
+                <li key={w.id} className="border rounded-xl p-3 bg-white/70">
+                  <div className="font-mono break-all">{w.address}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {w.verified ? "verified" : "unverified"} • {w.created_at ?? "—"}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       </div>
-    </div>
+    </AppPageLayout>
   );
 }
