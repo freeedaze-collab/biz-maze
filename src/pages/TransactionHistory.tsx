@@ -62,201 +62,185 @@ type EditedTransaction = Partial<Pick<Transaction, 'usage' | 'note'>>;
 
 // --- Main Component ---
 export default function TransactionHistory() {
-  const { user } = useAuth();
-  const [rows, setRows] = useState<Row[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [syncing, setSyncing] = useState(false);
-  const [historySyncing, setHistorySyncing] = useState(false);
-  const [classifying, setClassifying] = useState(false);
-  const [msg, setMsg] = useState<string>("");
+    // Component State
+    const [transactions, setTransactions] = useState<Transaction[]>([]);
+    const [holdings, setHoldings] = useState<Holding[]>([]);
+    const [editedTransactions, setEditedTransactions] = useState<Record<string, EditedTransaction>>({});
 
-  const load = useCallback(async () => {
-    if (!user) return;
-    setLoading(true);
-    setMsg("");
+    // UI/Loading State
+    const [isLoading, setIsLoading] = useState(true);
+    const [isSaving, setIsSaving] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const [isSyncing, setIsSyncing] = useState(false);
+    const [isUpdatingPrices, setIsUpdatingPrices] = useState(false);
+    const [syncMessage, setSyncMessage] = useState<string | null>(null);
 
-    // 1) 取引本体のみ取得（素のテーブル）
-    const { data: txs, error: txErr } = await supabase
-      .from("wallet_transactions")
-      .select(
-        "id,wallet_address,chain_id,direction,tx_hash,block_number,occurred_at,asset_symbol,value_wei,fiat_value_usd"
-      )
-      .eq("user_id", user.id)
-      .order("occurred_at", { ascending: false })
-      .limit(200);
+    // --- Data Fetching ---
+    const fetchAllData = useCallback(async () => {
+        setIsLoading(true);
+        setError(null);
+        setEditedTransactions({});
+        try {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (!user) throw new Error("User not authenticated");
 
-    if (txErr) {
-      console.error("load tx error:", txErr);
-      setRows([]);
-      setMsg(`Failed to load transactions: ${txErr.message}`);
-      setLoading(false);
-      return;
-    }
+            const holdingsSelect = `
+                asset,
+                currentAmount:current_amount,
+                currentPrice:current_price,
+                currentValueUsd:current_value_usd,
+                averageBuyPrice:average_buy_price,
+                capitalGain:capital_gain
+            `;
+            const transactionsSelect = 'id, user_id, reference_id, date, source, chain, description, amount, asset, price, value_in_usd, type, usage, note';
 
-    const ids = (txs ?? []).map((t) => t.id);
-    let labelMap = new Map<number, { pred?: string | null; conf?: string | null }>();
+            const [holdingsRes, transactionsRes] = await Promise.all([
+                supabase.from('v_holdings').select(holdingsSelect).eq('user_id', user.id),
+                supabase.from('all_transactions').select(transactionsSelect).eq('user_id', user.id).order('date', { ascending: false }).limit(100)
+            ]);
 
-    // 2) 用途ラベルを別クエリで取得（リレーション不要）
-    if (ids.length) {
-      const { data: labels, error: labErr } = await supabase
-        .from("transaction_usage_labels")
-        .select("tx_id,predicted_key,confirmed_key")
-        .eq("user_id", user.id)
-        .in("tx_id", ids);
+            if (holdingsRes.error) throw new Error(`Holdings Error: ${holdingsRes.error.message}`);
+            if (transactionsRes.error) throw new Error(`Transactions Error: ${transactionsRes.error.message}`);
 
-      if (!labErr && labels) {
-        for (const l of labels) {
-          labelMap.set(l.tx_id, { pred: l.predicted_key, conf: l.confirmed_key });
+            setHoldings(holdingsRes.data || []);
+            setTransactions(transactionsRes.data as Transaction[] || []);
+        } catch (err: any) {
+            console.error("Error fetching data:", err);
+            setError(`Failed to load data: ${err.message}`);
+        } finally {
+            setIsLoading(false);
         }
-      }
-    }
+    }, []);
 
-    const mapped = (txs ?? []).map((t) => {
-      const lab = labelMap.get(t.id);
-      return {
-        ...t,
-        usage_pred: lab?.pred ?? null,
-        usage_conf: lab?.conf ?? null,
-      } as Row;
-    });
+    useEffect(() => {
+        fetchAllData();
+    }, [fetchAllData]);
 
-    setRows(mapped);
-    setLoading(false);
-  }, [user?.id]);
+    // --- Event Handlers ---
+    const handleInputChange = (id: string, field: 'usage' | 'note', value: string) => {
+        setEditedTransactions(prev => ({ ...prev, [id]: { ...prev[id], [field]: value } }));
+    };
 
-  useEffect(() => { load(); }, [load]);
+    const handleSaveChanges = async () => {
+        setIsSaving(true);
+        setError(null);
+        setSyncMessage("Saving changes...");
 
-  const classify = async () => {
-    setClassifying(true);
-    setMsg("");
-    try {
-      const { error } = await supabase.functions.invoke("classify-usage", { body: {} });
-      if (error) setMsg(error.message ?? String(error));
-    } catch (e: any) {
-      console.warn("classify error:", e);
-      setMsg(e?.message || String(e));
-    } finally {
-      await load();
-      setClassifying(false);
-    }
-  };
+        const editedEntries = Object.entries(editedTransactions);
+        if (editedEntries.length === 0) {
+            setSyncMessage("No changes to save.");
+            setIsSaving(false);
+            return;
+        }
 
-  const sync = async () => {
-    setSyncing(true);
-    setMsg("");
-    try {
-      const { error } = await supabase.functions.invoke("sync-wallet-transactions", { body: {} });
-      if (error) setMsg(error.message ?? String(error));
-    } catch (e: any) {
-      console.warn("sync error:", e);
-      setMsg(e?.message || String(e));
-    } finally {
-      await load();
-      setSyncing(false);
-    }
-  };
+        try {
+            const updatePromises = editedEntries.map(([viewId, changes]) => {
+                const originalTx = transactions.find(t => t.id === viewId);
+                if (!originalTx) {
+                    console.warn(`Original transaction not found for view ID: ${viewId}`);
+                    return Promise.resolve({ error: { message: `Original transaction for ${viewId} not found.` } });
+                }
 
-  const syncWalletHistory = async () => {
-    setHistorySyncing(true);
-    setMsg("");
-    try {
-      const { error } = await supabase.functions.invoke("sync_wallet_history", { body: {} });
-      if (error) setMsg(error.message ?? String(error));
-    } catch (e: any) {
-      console.warn("sync wallet history error:", e);
-      setMsg(e?.message || String(e));
-    } finally {
-      await load();
-      setHistorySyncing(false);
-    }
-  };
+                const updatePayload = {
+                    usage: changes.usage !== undefined ? changes.usage : originalTx.usage,
+                    note: changes.note !== undefined ? changes.note : originalTx.note,
+                };
 
-  const onChangeUsage = async (txId: number, key: string) => {
-    if (!user) return;
-    setMsg("");
-    const { error } = await supabase
-      .from("transaction_usage_labels")
-      .upsert({ tx_id: txId, user_id: user.id, confirmed_key: key }, { onConflict: "user_id,tx_id" });
+                if (originalTx.source === 'exchange') {
+                    return supabase
+                        .from('exchange_trades')
+                        .update(updatePayload)
+                        .eq('trade_id', originalTx.reference_id)
+                        .eq('user_id', originalTx.user_id);
+                } else if (originalTx.source === 'on-chain') {
+                    return supabase
+                        .from('wallet_transactions')
+                        .update(updatePayload)
+                        .eq('id', originalTx.reference_id)
+                        .eq('user_id', originalTx.user_id);
+                }
+                return Promise.resolve({ error: null });
+            });
 
-    if (error) {
-      console.warn("label save error:", error);
-      setMsg(error.message ?? String(error));
-      return;
-    }
+            const results = await Promise.all(updatePromises);
 
-    try {
-      const { error: genErr } = await supabase.functions.invoke("generate-journal-entries", {
-        body: { tx_ids: [txId] }
-      });
-      if (genErr) setMsg(genErr.message ?? String(genErr));
-    } catch (e: any) {
-      console.warn("generate error:", e);
-      setMsg(e?.message || String(e));
-    }
-    await load();
-  };
+            const firstError = results.find(res => res && res.error);
+            if (firstError) {
+                throw new Error(`An update failed: ${firstError.error.message}`);
+            }
 
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5">
-      <div className="mx-auto max-w-6xl p-6 space-y-8">
-        {/* Header */}
-        <div className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-primary via-primary to-accent p-8 text-primary-foreground shadow-elegant">
-            <div className="relative z-10 flex items-center justify-between flex-wrap gap-4">
-              <div>
-                <h1 className="text-4xl font-bold mb-2">Transaction History</h1>
-                <p className="text-primary-foreground/90">View all your blockchain transactions & assign usage</p>
-              </div>
-              <div className="flex gap-2">
-                <Button onClick={classify} disabled={classifying} variant="secondary" size="lg"
-                  className="bg-primary-foreground text-primary hover:bg-primary-foreground/90">
-                  {classifying ? "Classifying..." : "Predict Usage"}
-                </Button>
-                <Button onClick={syncWalletHistory} disabled={historySyncing} variant="secondary" size="lg"
-                  className="bg-primary-foreground text-primary hover:bg-primary-foreground/90">
-                  {historySyncing ? "Syncing History..." : "Sync Wallet History"}
-                </Button>
-                <Button onClick={sync} disabled={syncing} variant="secondary" size="lg"
-                  className="bg-primary-foreground text-primary hover:bg-primary-foreground/90">
-                  {syncing ? "Syncing..." : "Sync Now"}
-                </Button>
-              </div>
-          </div>
-          <div className="absolute -right-10 -bottom-10 w-48 h-48 bg-primary-foreground/10 rounded-full blur-2xl"></div>
-        </div>
+            setSyncMessage("Changes saved successfully. Refreshing data...");
+            await fetchAllData();
+            setSyncMessage("Data refreshed.");
 
-        {msg && <div className="text-sm text-red-600">{msg}</div>}
+        } catch (err: any) {
+            console.error("Save failed:", err);
+            setError(`Failed to save changes: ${err.message}`);
+        } finally {
+            setIsSaving(false);
+        }
+    };
 
-        <Card className="shadow-lg border-2">
-          <CardHeader className="border-b bg-gradient-to-r from-card to-primary/5">
-            <CardTitle className="text-2xl">Latest Transactions</CardTitle>
-          </CardHeader>
-          <CardContent className="p-6">
-            {loading ? (
-              <div className="flex items-center justify-center py-12">
-                <div className="h-12 w-12 rounded-full border-4 border-primary/30 border-t-primary animate-spin"></div>
-              </div>
-            ) : rows.length === 0 ? (
-              <div className="text-center py-12">No transactions yet</div>
-            ) : (
-              <div className="space-y-3">
-                {rows.map((r) => (
-                  <div key={r.id}
-                    className="group border-2 rounded-xl p-4 hover:border-primary/50 hover:shadow-md transition-all duration-300 bg-gradient-to-r from-card to-muted/20"
-                  >
-                    <div className="flex items-center justify-between gap-4">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-2">
-                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                            r.direction === 'in' ? 'bg-success/10 text-success' :
-                            r.direction === 'out' ? 'bg-destructive/10 text-destructive' :
-                            'bg-muted text-muted-foreground'
-                          }`}>
-                            {r.direction === 'in' ? '↓ Incoming' : r.direction === 'out' ? '↑ Outgoing' : 'Unknown'}
-                          </span>
-                          <span className="text-xs text-muted-foreground">Chain {r.chain_id ?? "-"}</span>
-                        </div>
-                        <div className="font-mono text-sm font-medium mb-1 truncate group-hover:text-primary">
-                          {r.tx_hash.slice(0, 12)}…{r.tx_hash.slice(-10)}
+    const handleSync = async (syncFunction: 'sync-wallet-transactions' | 'exchange-sync-all' | 'sync-historical-exchange-rates', syncType: string) => {
+        setIsSyncing(true);
+        setSyncMessage(`Syncing ${syncType}...`);
+        try {
+            const { error } = await supabase.functions.invoke(syncFunction);
+            if (error) throw error;
+            setSyncMessage(`${syncType} sync complete. Refreshing all data...`);
+            await fetchAllData();
+            setSyncMessage(`${syncType} data refreshed successfully.`);
+        } catch (err: any) {
+            console.error(`${syncType} sync failed:`, err);
+            setError(`A critical error occurred during ${syncType} sync: ${err.message}`);
+        } finally {
+            setIsSyncing(false);
+        }
+    };
+
+    const handleUpdatePrices = async () => {
+        setIsUpdatingPrices(true);
+        setError(null);
+        setSyncMessage('Updating asset prices (USD)...');
+        try {
+            await supabase.functions.invoke('sync-historical-exchange-rates');
+            setSyncMessage('Exchange rates synced. Updating asset prices...');
+
+            const { error } = await supabase.functions.invoke('update-prices');
+            if (error) throw error;
+            setSyncMessage('Prices updated. Refreshing all data...');
+
+            await fetchAllData();
+            setSyncMessage('Portfolio and transactions refreshed with latest prices.');
+
+        } catch (err: any) {
+            console.error("Price update failed:", err);
+            setError(`Failed to update prices: ${err.message}`);
+        } finally {
+            setIsUpdatingPrices(false);
+        }
+    };
+
+    // --- Formatting & Style Helpers ---
+    const formatCurrency = (value: number | null | undefined) => {
+        const numericValue = value ?? 0;
+        return numericValue.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+    };
+    const formatNumber = (value: number | null | undefined) => (value ?? 0).toFixed(6);
+    const getPnlClass = (pnl: number | null) => (pnl ?? 0) === 0 ? 'text-gray-500' : pnl > 0 ? 'text-green-500' : 'text-red-500';
+
+    // --- Render Method ---
+    return (
+        <AppPageLayout
+            title="Transactions & Portfolio"
+            description="Keep your exchanges, wallets, and ledger notes perfectly aligned before exporting to accounting."
+        >
+            <div className="space-y-8">
+                <section className="surface-card p-5">
+                    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                        <div>
+                            <h2 className="text-xl font-semibold">Actions</h2>
+                            <p className="text-sm text-muted-foreground">Update rates, sync exchanges, and save your labeling.</p>
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
                             <Button variant="outline" size="sm" onClick={handleUpdatePrices} disabled={isUpdatingPrices || isSyncing ||isSaving}>

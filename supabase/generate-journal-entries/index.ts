@@ -2,25 +2,6 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-const corsHeaders: Record<string, string> = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-};
-
-const handleOptions = (req: Request): Response | null => {
-  if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders });
-  }
-  return null;
-};
-
-const jsonHeaders = (extra: Record<string, string> = {}) => ({
-  ...corsHeaders,
-  "Content-Type": "application/json",
-  ...extra,
-});
-
 type Tx = {
   id: number; user_id: string; occurred_at: string|null;
   direction: "in"|"out"|null; asset_symbol: string|null;
@@ -94,9 +75,6 @@ function linesFor(label: string, tx: Tx) {
 }
 
 serve(async (req) => {
-  const opt = handleOptions(req);
-  if (opt) return opt;
-
   const auth = req.headers.get("Authorization") ?? "";
   const supabase = createClient(
     Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_ANON_KEY")!,
@@ -104,9 +82,7 @@ serve(async (req) => {
   );
 
   const { data: { user } } = await supabase.auth.getUser();
-  if (!user) {
-    return new Response("Unauthorized", { status: 401, headers: jsonHeaders() });
-  }
+  if (!user) return new Response("Unauthorized", { status: 401 });
 
   // body: { tx_ids?: number[] } 無ければ、直近100件を対象
   const body = await req.json().catch(() => ({}));
@@ -118,14 +94,14 @@ serve(async (req) => {
     .order("occurred_at", { ascending: false })
     .limit(100);
   const { data: txs, error: txErr } = txFilter ? await q.in("id", txFilter) : await q;
-  if (txErr) return new Response(txErr.message, { status: 500, headers: jsonHeaders() });
+  if (txErr) return new Response(txErr.message, { status: 500 });
 
   // ラベル取得
   const { data: labels, error: labErr } = await supabase
     .from("transaction_usage_labels")
     .select("tx_id,confirmed_key,predicted_key")
     .eq("user_id", user.id);
-  if (labErr) return new Response(labErr.message, { status: 500, headers: jsonHeaders() });
+  if (labErr) return new Response(labErr.message, { status: 500 });
   const map = new Map<number, Label>(); (labels ?? []).forEach((l: any) => map.set(l.tx_id, l));
 
   let created = 0;
@@ -158,7 +134,7 @@ serve(async (req) => {
         memo: material.entry.memo
       })
       .select("id").single();
-    if (insErr) return new Response(insErr.message, { status: 500, headers: jsonHeaders() });
+    if (insErr) return new Response(insErr.message, { status: 500 });
 
     const lines = material.lines.map((ln: any) => ({
       entry_id: inserted.id,
@@ -166,12 +142,12 @@ serve(async (req) => {
       debit: ln.debit, credit: ln.credit, meta: ln.meta
     }));
     const { error: jlErr } = await supabase.from("journal_lines").insert(lines);
-    if (jlErr) return new Response(jlErr.message, { status: 500, headers: jsonHeaders() });
+    if (jlErr) return new Response(jlErr.message, { status: 500 });
 
     created += 1;
   }
 
   return new Response(JSON.stringify({ entries_created: created }), {
-    headers: jsonHeaders(),
+    headers: { "Content-Type": "application/json" },
   });
 });

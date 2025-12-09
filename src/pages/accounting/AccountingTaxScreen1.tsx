@@ -1,6 +1,6 @@
 // @ts-nocheck
 // src/pages/accounting/AccountingTaxScreen1.tsx
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
@@ -40,10 +40,6 @@ export default function AccountingTaxScreen1() {
 
   const [inserted, setInserted] = useState<number | null>(null);
 
-  const [entries, setEntries] = useState<any[]>([]);
-  const [entriesLoading, setEntriesLoading] = useState(false);
-  const [entriesError, setEntriesError] = useState<string | null>(null);
-
   const [basic, setBasic] = useState<BasicSummary | null>(null);
   const [basicRaw, setBasicRaw] = useState<Json | string | null>(null);
 
@@ -71,30 +67,6 @@ export default function AccountingTaxScreen1() {
     })();
   }, [baseFnUrl]);
 
-  const fetchEntries = useCallback(async () => {
-    setEntriesLoading(true);
-    setEntriesError(null);
-    try {
-      const { data, error } = await supabase
-        .from("journal_entries")
-        .select(
-          "id, tx_id, entry_date, usage_key, memo, created_at, journal_lines(account_code,debit,credit,meta)"
-        )
-        .order("entry_date", { ascending: false })
-        .limit(50);
-      if (error) throw error;
-      setEntries(data ?? []);
-    } catch (e: any) {
-      setEntriesError(e?.message || "Failed to fetch journal entries");
-    } finally {
-      setEntriesLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchEntries();
-  }, [fetchEntries]);
-
   const invoke = async (name: string, body?: any) => {
     try {
       const { data, error } = await supabase.functions.invoke(name, {
@@ -119,7 +91,6 @@ export default function AccountingTaxScreen1() {
       const ins = Number((json?.inserted ?? json?.count ?? 0) as any);
       setInserted(ins);
       setLog(`Generated rows: ${ins}`);
-      await fetchEntries();
     } catch (e: any) {
       setLog(`Error: ${String(e.message || e)}`);
     } finally {
@@ -272,78 +243,6 @@ export default function AccountingTaxScreen1() {
             <div className="text-sm text-muted-foreground">
               Inserted rows (journal_entries): <span className="font-mono">{inserted}</span>
             </div>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <CardTitle>Journal Entries (Auto-generated)</CardTitle>
-            <Button variant="outline" size="sm" onClick={fetchEntries} disabled={entriesLoading}>
-              {entriesLoading ? "Refreshing..." : "Refresh"}
-            </Button>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-4 text-sm">
-          {entriesError && (
-            <div className="text-red-600">{entriesError}</div>
-          )}
-          {!entriesError && entries.length === 0 && !entriesLoading && (
-            <div className="text-muted-foreground">
-              No journal entries found yet. Generate entries to see results here.
-            </div>
-          )}
-          {entries.map((entry) => {
-            const lines = entry?.journal_lines ?? [];
-            const formattedDate = (() => {
-              try {
-                return new Date(entry.entry_date).toLocaleString();
-              } catch {
-                return entry.entry_date;
-              }
-            })();
-            return (
-              <div key={entry.id} className="border rounded-lg p-4 space-y-3 bg-muted/30">
-                <div className="flex flex-wrap gap-4 justify-between">
-                  <div>
-                    <div className="font-semibold">{formattedDate}</div>
-                    <div className="text-muted-foreground">Usage: {entry.usage_key || "-"}</div>
-                  </div>
-                  <div className="text-right text-muted-foreground space-y-1">
-                    {entry.tx_id && <div>TX ID: {entry.tx_id}</div>}
-                    {entry.memo && <div>Memo: {entry.memo}</div>}
-                  </div>
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="min-w-[480px] w-full text-sm">
-                    <thead>
-                      <tr className="border-b text-left">
-                        <th className="py-2">Account Code</th>
-                        <th className="py-2 text-right">Debit (USD)</th>
-                        <th className="py-2 text-right">Credit (USD)</th>
-                        <th className="py-2">Meta</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {lines.map((line: any, idx: number) => (
-                        <tr key={idx} className="border-b last:border-0">
-                          <td className="py-2 font-mono">{line.account_code}</td>
-                          <td className="py-2 text-right">{cur(Number(line.debit ?? 0))}</td>
-                          <td className="py-2 text-right">{cur(Number(line.credit ?? 0))}</td>
-                          <td className="py-2 text-muted-foreground">
-                            {line.meta ? JSON.stringify(line.meta) : "-"}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            );
-          })}
-          {entriesLoading && (
-            <div className="text-muted-foreground">Loading...</div>
           )}
         </CardContent>
       </Card>
