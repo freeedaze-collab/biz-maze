@@ -181,11 +181,13 @@ export default function TransactionHistory() {
         }
     };
 
-    const handleSync = async (syncFunction: 'sync-wallet-transactions' | 'exchange-sync-all' | 'sync-historical-exchange-rates', syncType: string) => {
+    const handleSync = async (syncFunction: 'sync-wallet-transactions' | 'exchange-sync-all' | 'sync-historical-exchange-rates' | 'sync_wallet_history', syncType: string) => {
         setIsSyncing(true);
         setSyncMessage(`Syncing ${syncType}...`);
         try {
-            const { error } = await supabase.functions.invoke(syncFunction);
+            const { error } = await supabase.functions.invoke(syncFunction, {
+                body: {}
+            });
             if (error) throw error;
             setSyncMessage(`${syncType} sync complete. Refreshing all data...`);
             await fetchAllData();
@@ -248,6 +250,9 @@ export default function TransactionHistory() {
                             </Button>
                             <Button variant="outline" size="sm" onClick={() => handleSync('exchange-sync-all', 'Exchanges')} disabled={isSyncing || isUpdatingPrices || isSaving}>
                                 {isSyncing ? 'Syncing...' : 'Sync Exchanges'}
+                            </Button>
+                            <Button variant="outline" size="sm" onClick={() => handleSync('sync_wallet_history', 'Wallet History')} disabled={isSyncing || isUpdatingPrices || isSaving}>
+                                {isSyncing ? 'Syncing...' : 'Sync Wallet History'}
                             </Button>
                             <Button size="sm" onClick={handleSaveChanges} disabled={isSaving || isSyncing || Object.keys(editedTransactions).length === 0}>
                                 {isSaving ? 'Saving...' : 'Save Changes'}
