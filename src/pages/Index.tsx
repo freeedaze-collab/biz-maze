@@ -11,6 +11,8 @@ import {
   CheckCircle2,
   ArrowRight,
 } from "lucide-react";
+import dashboardScreenshot from "@/assets/dashboard-screenshot.png";
+import financialStatementsScreenshot from "@/assets/financial-statements-screenshot.png";
 
 const capabilities = [
   {
@@ -33,16 +35,19 @@ const capabilities = [
     icon: CreditCard,
     title: "Payment Automation",
     description: "Streamline crypto payments with approval workflows and audit trails.",
+    badge: "Coming Soon",
   },
   {
     icon: Shield,
     title: "Security & Access Control",
     description: "Role-based permissions, audit logs, and enterprise-grade security controls.",
+    badge: "Coming Soon",
   },
   {
     icon: Settings,
     title: "Custom Workflow Development",
     description: "Tailored modules and integrations built for your specific requirements.",
+    badge: "Coming Soon",
   },
 ];
 
@@ -106,17 +111,14 @@ export default function Index() {
             </p>
           </div>
 
-          {/* Hero Visual Placeholder */}
+          {/* Hero Visual */}
           <div className="mt-16 max-w-5xl mx-auto">
             <div className="relative rounded-xl border border-border bg-gradient-to-b from-secondary/50 to-muted/30 p-1 shadow-lg">
-              <div className="rounded-lg bg-card aspect-[16/9] flex items-center justify-center">
-                <div className="text-center p-8">
-                  <div className="w-16 h-16 rounded-xl bg-primary/10 flex items-center justify-center mx-auto mb-4">
-                    <FileSpreadsheet className="h-8 w-8 text-primary" />
-                  </div>
-                  <p className="text-muted-foreground text-sm">Platform Screenshot Placeholder</p>
-                </div>
-              </div>
+              <img 
+                src={dashboardScreenshot} 
+                alt="Dashboard - Digital Asset Finance Platform" 
+                className="rounded-lg w-full h-auto"
+              />
             </div>
           </div>
         </div>
@@ -161,24 +163,11 @@ export default function Index() {
               </p>
             </div>
             <div className="rounded-xl border border-border bg-gradient-to-b from-secondary/30 to-muted/20 p-1.5 shadow-md">
-              <div className="rounded-lg bg-card aspect-[16/8] flex items-center justify-center">
-                <div className="text-center p-8">
-                  <div className="flex items-center justify-center gap-4 mb-6">
-                    <div className="w-12 h-12 rounded-lg bg-primary/10 flex items-center justify-center">
-                      <Wallet className="h-6 w-6 text-primary" />
-                    </div>
-                    <ArrowRight className="h-5 w-5 text-muted-foreground" />
-                    <div className="w-12 h-12 rounded-lg bg-primary/10 flex items-center justify-center">
-                      <FileSpreadsheet className="h-6 w-6 text-primary" />
-                    </div>
-                    <ArrowRight className="h-5 w-5 text-muted-foreground" />
-                    <div className="w-12 h-12 rounded-lg bg-primary/10 flex items-center justify-center">
-                      <Shield className="h-6 w-6 text-primary" />
-                    </div>
-                  </div>
-                  <p className="text-muted-foreground text-sm">Large Platform Screenshot Placeholder</p>
-                </div>
-              </div>
+              <img 
+                src={financialStatementsScreenshot} 
+                alt="Financial Statements - IFRS-aligned reporting" 
+                className="rounded-lg w-full h-auto"
+              />
             </div>
           </div>
         </div>
