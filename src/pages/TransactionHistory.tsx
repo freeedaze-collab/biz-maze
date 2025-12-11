@@ -95,7 +95,8 @@ export default function TransactionHistory() {
             `;
 
             const transactionsSelect =
-                "id, user_id, reference_id, trade_id, date, source, chain, description, amount, asset, price, value_in_usd, type, usage, note";
+  "id, user_id, reference_id, origin_trade_id, date, source, chain, description, amount, asset, price, value_in_usd, type, usage, note";
+
 
             const [holdingsRes, transactionsRes] = await Promise.all([
                 supabase.from("v_holdings").select(holdingsSelect).eq("user_id", user.id),
