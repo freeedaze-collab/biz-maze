@@ -100,7 +100,8 @@ export default function Accounting() {
                 'Cash & Cash Equivalents': 'cash',
                 'Inventory (Trading Crypto)': 'inventory',
                 'Intangible Assets (Investing Crypto)': 'intangible_assets',
-                'Retained Earnings': 'retained_earnings'
+                'Retained Earnings': 'retained_earnings',
+                'Revaluation Surplus': 'revaluation_surplus'
             };
             const cfMapping = {
                 'Inflow from Sales (IAS 2 & IFRS 15)': 'cash_in_from_sales',
@@ -148,7 +149,7 @@ export default function Accounting() {
 
     const liabilityEquityItems = [
         { label: "Retained Earnings", value: bsData?.retained_earnings },
-        // Add other equity items like 'Revaluation Surplus' if needed
+        { label: "Revaluation Surplus", value: bsData?.revaluation_surplus },
     ];
     const totalLiabilitiesAndEquity = liabilityEquityItems.reduce((acc, item) => acc + (item.value ?? 0), 0);
 
