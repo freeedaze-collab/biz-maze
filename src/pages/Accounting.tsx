@@ -1,6 +1,6 @@
 
 // src/pages/Accounting.tsx
-// VERSION 6: Fixes syntax errors from previous version.
+// VERSION 7: Adds a diagnostic panel to check for raw data.
 import React, { useState, useEffect, useCallback } from 'react';
 import { supabase } from "../integrations/supabase/client";
 import { useAuth } from '../hooks/useAuth';
@@ -48,6 +48,7 @@ export default function Accounting() {
     const [plData, setPlData] = useState<any>(null);
     const [bsData, setBsData] = useState<any>(null);
     const [cfData, setCfData] = useState<any>(null);
+    const [diagData, setDiagData] = useState<any>(null); // For diagnostics
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
@@ -57,22 +58,32 @@ export default function Accounting() {
         setError(null);
 
         try {
-            // THE FIX: Remove `.single()` and handle array results.
-            // This prevents 406 errors when zero rows are returned.
-            const [plRes, bsRes, cfRes] = await Promise.all([
+            const [plRes, bsRes, cfRes, tradesRes, walletsRes] = await Promise.all([
+                // Standard queries
                 supabase.from('v_profit_loss_statement').select('*').eq('user_id', user.id),
                 supabase.from('v_balance_sheet').select('*').eq('user_id', user.id),
-                supabase.from('v_cash_flow_statement').select('*').eq('user_id', user.id)
+                supabase.from('v_cash_flow_statement').select('*').eq('user_id', user.id),
+                // Diagnostic queries to count raw transactions for the user
+                supabase.from('exchange_trades').select('trade_id', { count: 'exact', head: true }),
+                supabase.from('wallet_transactions').select('id', { count: 'exact', head: true }),
             ]);
 
-            if (plRes.error) throw new Error(`Profit & Loss Error: ${plRes.error.message}`);
-            if (bsRes.error) throw new Error(`Balance Sheet Error: ${bsRes.error.message}`);
-            if (cfRes.error) throw new Error(`Cash Flow Error: ${cfRes.error.message}`);
+            // This will check for errors in ALL queries, including diagnostics
+            const allResponses = { plRes, bsRes, cfRes, tradesRes, walletsRes };
+            for (const [key, res] of Object.entries(allResponses)) {
+                if (res.error) throw new Error(`API Error on ${key}: ${res.error.message}`);
+            }
 
-            // Data now comes back as an array, so we take the first element or null.
+            // Set financial data
             setPlData(plRes.data && plRes.data.length > 0 ? plRes.data[0] : null);
             setBsData(bsRes.data && bsRes.data.length > 0 ? bsRes.data[0] : null);
             setCfData(cfRes.data && cfRes.data.length > 0 ? cfRes.data[0] : null);
+            
+            // Set diagnostic data
+            setDiagData({ 
+                exchangeTradesCount: tradesRes.count,
+                walletTransactionsCount: walletsRes.count
+            });
 
         } catch (err: any) {
             console.error("Failed to fetch accounting data:", err);
@@ -124,14 +135,11 @@ export default function Accounting() {
         { label: "Outflow for Intangible Assets", value: cfData?.cash_out_for_intangibles },
         { label: "Inflow from Sale of Intangibles", value: cfData?.cash_in_from_intangibles },
     ];
-    const financingCfItems: { label: string; value: number | null | undefined }[] = [
-        // { label: "Inflow from Capital Contribution", value: cfData?.cash_in_from_financing },
-        // { label: "Outflow to Owners", value: cfData?.cash_out_to_owners },
-    ];
+    const financingCfItems: { label: string; value: number | null | undefined }[] = [];
 
     const totalOperatingCF = (cfData?.cash_in_from_inventory_sales ?? 0) + (cfData?.cash_in_from_revenue ?? 0) + (cfData?.cash_out_for_inventory ?? 0) + (cfData?.cash_out_for_gas_fees ?? 0);
     const totalInvestingCF = (cfData?.cash_out_for_intangibles ?? 0) + (cfData?.cash_in_from_intangibles ?? 0);
-    const totalFinancingCF = (cfData?.cash_in_from_financing ?? 0) + (cfData?.cash_out_to_owners ?? 0);
+    const totalFinancingCF = 0;
     const netCashFlow = totalOperatingCF + totalInvestingCF + totalFinancingCF;
 
     return (
@@ -150,6 +158,18 @@ export default function Accounting() {
                             {isLoading ? 'Refreshing...' : 'Refresh Data'}
                         </button>
                     </div>
+                </div>
+
+                {/* --- Temporary Diagnostic Panel --- */}
+                <div className="bg-amber-50 border border-amber-200 text-amber-900 px-4 py-3 rounded-lg" role="alert">
+                    <h4 className="font-bold">Data Diagnostics</h4>
+                    {isLoading ? <p>Checking for raw data...</p> :
+                        <p className="font-mono text-sm">
+                            - Found <strong>{diagData?.exchangeTradesCount ?? 0}</strong> rows in 'exchange_trades' for your user.<br />
+                            - Found <strong>{diagData?.walletTransactionsCount ?? 0}</strong> rows in 'wallet_transactions' for your user.
+                        </p>
+                    }
+                    <p className="text-xs mt-2">If these counts are zero, the financial reports will correctly be zero. This indicates you may need to sync a wallet or exchange first.</p>
                 </div>
 
                 {error && <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg" role="alert">Error: {error}</div>}
