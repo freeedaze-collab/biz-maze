@@ -1,11 +1,19 @@
 
 // supabase/functions/exchange-save-keys/index.ts
-// FINAL VERSION: Fixes a TypeScript type error in the catch block.
+// FINAL VERSION 2: Uses import_map to resolve shared modules.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.42.0";
-import { cors, serve } from "https://deno.land/x/sift@0.6.0/mod.ts";
 import { AES } from "https://deno.land/x/god_crypto@v1.4.10/aes.ts";
-import { Env } from "../_shared/types.ts";
+import { Env } from "shared/types.ts"; // <<< FIX: Using import_map path
+
+// --- CORS Helper ---
+function cors(res: Response) {
+  const h = new Headers(res.headers);
+  h.set('Access-Control-Allow-Origin', '*');
+  h.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  h.set('Access-Control-Allow-Headers', 'authorization, x-client-info, apikey, content-type');
+  return new Response(res.body, { status: res.status, headers: h });
+}
 
 const iv = new TextEncoder().encode("SUPER_SECRET_IV_"); // 16 bytes
 
@@ -21,7 +29,6 @@ async function getEncryptionKey(supabaseAdmin: any, userId: string): Promise<Uin
     throw new Error("Could not retrieve encryption key.");
   }
 
-  // Assuming the key is stored as a hex string
   const keyHex = data.encryption_key;
   const key = new Uint8Array(keyHex.match(/.{1,2}/g)!.map(byte => parseInt(byte, 16)));
   if (key.length !== 32) {
@@ -30,63 +37,58 @@ async function getEncryptionKey(supabaseAdmin: any, userId: string): Promise<Uin
   return key;
 }
 
-serve({
-  "/exchange-save-keys": async (req) => {
-    if (req.method === "OPTIONS") {
-      return cors(new Response("ok", { headers: { "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type" }}));
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") {
+    return cors(new Response("ok"));
+  }
+
+  try {
+    const { exchange, api_key, secret_key } = await req.json();
+    const authHeader = req.headers.get("Authorization")!;
+    const jwt = authHeader.replace("Bearer ", "");
+
+    const supabaseAdmin = createClient(
+      Deno.env.get(Env.SupabaseUrl)!,
+      Deno.env.get(Env.SupabaseServiceRoleKey)!
+    );
+
+    const { data: { user } } = await supabaseAdmin.auth.getUser(jwt);
+    if (!user) {
+      return cors(new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { "Content-Type": "application/json" } }));
     }
 
-    try {
-      const { exchange, api_key, secret_key } = await req.json();
-      const authHeader = req.headers.get("Authorization")!;
-      const jwt = authHeader.replace("Bearer ", "");
+    const encryptionKey = await getEncryptionKey(supabaseAdmin, user.id);
+    const aes = new AES(encryptionKey, iv);
 
-      const supabaseAdmin = createClient(
-        Deno.env.get(Env.SupabaseUrl)!,
-        Deno.env.get(Env.SupabaseServiceRoleKey)!
-      );
+    const textEncoder = new TextEncoder();
+    const encryptedApiKey = await aes.encrypt(textEncoder.encode(api_key));
+    const encryptedSecretKey = await aes.encrypt(textEncoder.encode(secret_key));
 
-      const { data: { user } } = await supabaseAdmin.auth.getUser(jwt);
-      if (!user) {
-        return cors(new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { "Content-Type": "application/json" } }));
-      }
+    const { error: upsertError } = await supabaseAdmin
+      .from("exchange_connections")
+      .upsert({
+        user_id: user.id,
+        exchange: exchange,
+        api_key_encrypted: encryptedApiKey.hex(),
+        secret_key_encrypted: encryptedSecretKey.hex(),
+        last_updated: new Date().toISOString(),
+      }, { onConflict: "user_id, exchange" });
 
-      const encryptionKey = await getEncryptionKey(supabaseAdmin, user.id);
-      const aes = new AES(encryptionKey, iv);
+    if (upsertError) {
+      console.error("Supabase upsert error:", upsertError);
+      throw upsertError;
+    }
 
-      const textEncoder = new TextEncoder();
-      const encryptedApiKey = await aes.encrypt(textEncoder.encode(api_key));
-      const encryptedSecretKey = await aes.encrypt(textEncoder.encode(secret_key));
+    return cors(new Response(JSON.stringify({ success: true }), { headers: { "Content-Type": "application/json" } }));
 
-      const { error: upsertError } = await supabaseAdmin
-        .from("exchange_connections")
-        .upsert({
-          user_id: user.id,
-          exchange: exchange,
-          api_key_encrypted: encryptedApiKey.hex(),
-          secret_key_encrypted: encryptedSecretKey.hex(),
-          last_updated: new Date().toISOString(),
-        }, { onConflict: "user_id, exchange" });
-
-      if (upsertError) {
-        console.error("Supabase upsert error:", upsertError);
-        throw upsertError;
-      }
-
-      return cors(new Response(JSON.stringify({ success: true }), { headers: { "Content-Type": "application/json" } }));
-
-    } catch (e: any) { // <<< THE FIX: Explicitly type 'e' as 'any'
-        console.error("!!!!!! Function exchange-save-keys CRASHED !!!!!!");
-        console.error("Error Message:", e.message);
-        console.error("Full Error Object:", e);
-    
-        return cors(new Response(JSON.stringify({ 
-          error: "An internal server error occurred.",
-          details: String(e?.message ?? e) 
-        }), {
-          headers: { 'Content-Type': 'application/json' },
-          status: 500,
-        }));
-      }
-    },
+  } catch (e: any) {
+    console.error("!!!!!! Function exchange-save-keys CRASHED !!!!!!", e.message);
+    return cors(new Response(JSON.stringify({ 
+      error: "An internal server error occurred.",
+      details: String(e?.message ?? e) 
+    }), {
+      headers: { 'Content-Type': 'application/json' },
+      status: 500,
+    }));
+  }
 });

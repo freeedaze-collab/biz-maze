@@ -30,3 +30,12 @@ verify_jwt = false
 [functions.wallet-sync-daily]
 verify_jwt = false
 # schedule = "30 3 * * *"  # 毎日 03:30 UTC
+
+# --- FIX: Link import map to functions to resolve module paths ---
+[functions.exchange-save-keys]
+import_map = "import_map.json"
+verify_jwt = false
+
+[functions.sync-wallet-transactions]
+import_map = "import_map.json"
+verify_jwt = false
