@@ -1,4 +1,3 @@
-
 -- =================================================================
 -- UNIFIED FINANCIAL VIEWS MIGRATION
 -- FILENAME: 20260101000000_create_unified_financial_views.sql
@@ -249,4 +248,3 @@ ORDER BY
         WHEN 'Inflow from Sale of Intangibles' THEN 5
         ELSE 99
     END;
-
