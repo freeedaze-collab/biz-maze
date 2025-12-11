@@ -1,6 +1,6 @@
 -- supabase/migrations/20240523120000_consolidated_views_rebuild.sql
--- PURPOSE: Adds usage and note columns to the all_transactions view.
--- VERSION: 18
+-- PURPOSE: Fixes a bug in saving on-chain transactions and ensures unique view IDs.
+-- VERSION: 19
 
 -- Step 1: Safely drop views in reverse order of dependency.
 DROP VIEW IF EXISTS public.v_holdings CASCADE;
@@ -9,14 +9,15 @@ DROP VIEW IF EXISTS public.internal_transfer_pairs CASCADE;
 DROP VIEW IF EXISTS public.all_transactions CASCADE;
 
 -- =================================================================
--- VIEW 1: all_transactions (Added usage and note)
--- Now includes the `usage` and `note` columns from the base tables.
+-- VIEW 1: all_transactions (FIXED)
+-- Fix: Use `t.id` for on-chain `reference_id` instead of `t.tx_hash`.
+-- Fix: Prefixed view `id` to guarantee uniqueness across sources.
 -- =================================================================
 CREATE OR REPLACE VIEW public.all_transactions AS
 -- Exchange Trades (via CTE)
 WITH trades_with_acquisition_price AS (
     SELECT
-        *,
+        * ,
         split_part(symbol, '/', 2) AS quote_asset,
         CASE
             WHEN side = 'buy' THEN (price * amount) + COALESCE(fee, 0)
@@ -26,7 +27,7 @@ WITH trades_with_acquisition_price AS (
     FROM public.exchange_trades
 )
 SELECT
-    et.trade_id::text AS id,
+    ('exchange-' || et.trade_id)::text AS id, -- Prefixed for uniqueness
     et.user_id,
     et.trade_id::text AS reference_id,
     et.ts AS date,
@@ -47,8 +48,8 @@ SELECT
     et.side AS type,
     'exchange' as source,
     et.exchange AS chain,
-    et.usage, -- Added
-    et.note   -- Added
+    et.usage,
+    et.note
 FROM trades_with_acquisition_price et
 LEFT JOIN public.daily_exchange_rates rates
     ON DATE(et.ts) = rates.date
@@ -59,16 +60,22 @@ UNION ALL
 
 -- On-chain Transactions
 SELECT
-    t.id::text, t.user_id, t.tx_hash, t.timestamp,
-    'On-chain: ' || t.direction || ' ' || COALESCE(t.asset_symbol, 'ETH'),
-    (t.value_wei / 1e18), COALESCE(t.asset_symbol, 'ETH'),
-    'USD',
-    CASE WHEN (t.value_wei / 1e18) <> 0 THEN t.value_usd / (t.value_wei / 1e18) ELSE 0 END,
+    ('onchain-' || t.id)::text as id, -- Prefixed for uniqueness
+    t.user_id,
+    t.id::text as reference_id, -- CORRECT: Use the wallet_transactions primary key
+    t.timestamp as date,
+    'On-chain: ' || t.direction || ' ' || COALESCE(t.asset_symbol, 'ETH') as description,
+    (t.value_wei / 1e18) as amount,
+    COALESCE(t.asset_symbol, 'ETH') as asset,
+    'USD' as quote_asset,
+    CASE WHEN (t.value_wei / 1e18) <> 0 THEN t.value_usd / (t.value_wei / 1e18) ELSE 0 END as price,
     t.value_usd AS acquisition_price_total,
     t.value_usd AS value_in_usd,
-    t.direction, 'on-chain', t.chain_id::text,
-    t.usage, -- Added
-    t.note   -- Added
+    t.direction as type,
+    'on-chain' as source,
+    t.chain_id::text as chain,
+    t.usage,
+    t.note
 FROM public.wallet_transactions t;
 
 -- =================================================================
