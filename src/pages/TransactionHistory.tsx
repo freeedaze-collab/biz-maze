@@ -1,5 +1,5 @@
 // src/pages/TransactionHistory.tsx
-// FIXED VERSION: exchange_trades SAVE WORKS
+// FIXED VERSION (trade_id fully removed, UUID-safe updates)
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
@@ -42,8 +42,8 @@ interface Holding {
 interface Transaction {
     id: string;
     user_id: string;
-    reference_id: string;
-    trade_id?: string | null;
+    reference_id: string | null;
+    origin_trade_id?: string | null;
     date: string;
     source: string;
     chain: string;
@@ -80,9 +80,7 @@ export default function TransactionHistory() {
         setEditedTransactions({});
 
         try {
-            const {
-                data: { user }
-            } = await supabase.auth.getUser();
+            const { data: { user } } = await supabase.auth.getUser();
             if (!user) throw new Error("User not authenticated");
 
             const holdingsSelect = `
@@ -95,8 +93,7 @@ export default function TransactionHistory() {
             `;
 
             const transactionsSelect =
-  "id, user_id, reference_id, origin_trade_id, date, source, chain, description, amount, asset, price, value_in_usd, type, usage, note";
-
+                "id, user_id, reference_id, origin_trade_id, date, source, chain, description, amount, asset, price, value_in_usd, type, usage, note";
 
             const [holdingsRes, transactionsRes] = await Promise.all([
                 supabase.from("v_holdings").select(holdingsSelect).eq("user_id", user.id),
@@ -113,6 +110,7 @@ export default function TransactionHistory() {
 
             setHoldings(holdingsRes.data || []);
             setTransactions(transactionsRes.data || []);
+
         } catch (err: any) {
             console.error("Error fetching:", err);
             setError("Failed to load: " + err.message);
@@ -121,11 +119,9 @@ export default function TransactionHistory() {
         }
     }, []);
 
-    useEffect(() => {
-        fetchAllData();
-    }, [fetchAllData]);
+    useEffect(() => { fetchAllData(); }, [fetchAllData]);
 
-    // --- Handle Select / Input Changes ---
+    // --- Handle Select / Input ---
     const handleInputChange = (id: string, field: 'usage' | 'note', value: string) => {
         setEditedTransactions(prev => ({
             ...prev,
@@ -133,85 +129,89 @@ export default function TransactionHistory() {
         }));
     };
 
-    // --- SAVE CHANGES (FIXED VERSION) ---
-const handleSaveChanges = async () => {
-    setIsSaving(true);
-    setError(null);
-    setSyncMessage("Saving changes...");
+    // --- SAVE CHANGES (trade_id fully removed) ---
+    const handleSaveChanges = async () => {
+        setIsSaving(true);
+        setError(null);
+        setSyncMessage("Saving changes...");
 
-    const editedEntries = Object.entries(editedTransactions);
-    if (editedEntries.length === 0) {
-        setSyncMessage("No changes to save.");
-        setIsSaving(false);
-        return;
-    }
+        const editedEntries = Object.entries(editedTransactions);
+        if (editedEntries.length === 0) {
+            setSyncMessage("No changes to save.");
+            setIsSaving(false);
+            return;
+        }
 
-    try {
-        const updatePromises = editedEntries.map(async ([viewId, changes]) => {
-            const originalTx = transactions.find(t => t.id === viewId);
-            if (!originalTx) {
-                console.warn("No original transaction found for", viewId);
-                return { error: { message: "Original transaction not found" } };
-            }
+        try {
+            const updatePromises = editedEntries.map(async ([viewId, changes]) => {
+                const originalTx = transactions.find(t => t.id === viewId);
+                if (!originalTx) {
+                    console.warn("No original transaction found for", viewId);
+                    return { error: { message: "Original transaction not found" } };
+                }
 
-            // -----------------------------
-            // Extract real primary key for exchange_trades
-            // -----------------------------
-            let realId = originalTx.reference_id;
+                // -----------------------------
+                // Determine correct UUID for UPDATE
+                // -----------------------------
+                let uuidToUpdate = originalTx.reference_id;
 
-            // If reference_id is missing (problem case), recover from "id"
-            if (!realId && originalTx.id.startsWith("exchange-")) {
-                realId = originalTx.id.replace("exchange-", "");
-            }
+                // Safety: if null but id begins with "exchange-"
+                if (!uuidToUpdate && originalTx.id.startsWith("exchange-")) {
+                    uuidToUpdate = originalTx.id.replace("exchange-", "");
+                }
 
-            const updatePayload = {
-                usage: changes.usage ?? originalTx.usage,
-                note: changes.note ?? originalTx.note,
-            };
+                if (!uuidToUpdate) {
+                    console.error("Missing UUID for update:", originalTx);
+                    return { error: { message: "Missing UUID for update" } };
+                }
 
-            // -----------------------------
-            // Exchange transactions
-            // -----------------------------
-            if (originalTx.source === "exchange") {
-                console.log("Updating exchange_trades with ID:", realId, updatePayload);
+                const updatePayload = {
+                    usage: changes.usage ?? originalTx.usage,
+                    note: changes.note ?? originalTx.note,
+                };
 
-                return supabase
-                    .from("exchange_trades")
-                    .update(updatePayload)
-                    .eq("id", realId)       // ← FIXED: Always correct UUID
-                    .eq("user_id", originalTx.user_id);
-            }
+                // -----------------------------
+                // Exchange Transaction Update
+                // -----------------------------
+                if (originalTx.source === "exchange") {
+                    console.log("Updating exchange_trades:", uuidToUpdate, updatePayload);
 
-            // -----------------------------
-            // Wallet transactions (already OK)
-            // -----------------------------
-            if (originalTx.source === "on-chain") {
-                return supabase
-                    .from("wallet_transactions")
-                    .update(updatePayload)
-                    .eq("id", originalTx.reference_id)
-                    .eq("user_id", originalTx.user_id);
-            }
+                    return supabase
+                        .from("exchange_trades")
+                        .update(updatePayload)
+                        .eq("id", uuidToUpdate)
+                        .eq("user_id", originalTx.user_id);
+                }
 
-            return { error: null };
-        });
+                // -----------------------------
+                // Wallet Transaction Update
+                // -----------------------------
+                if (originalTx.source === "on-chain") {
+                    return supabase
+                        .from("wallet_transactions")
+                        .update(updatePayload)
+                        .eq("id", originalTx.reference_id)
+                        .eq("user_id", originalTx.user_id);
+                }
 
-        const results = await Promise.all(updatePromises);
-        const firstError = results.find(r => r && r.error);
-        if (firstError) throw new Error(firstError.error.message);
+                return { error: null };
+            });
 
-        setSyncMessage("Changes saved successfully. Refreshing data...");
-        await fetchAllData();
-        setSyncMessage("Data refreshed.");
+            const results = await Promise.all(updatePromises);
+            const firstError = results.find(r => r && r.error);
+            if (firstError) throw new Error(firstError.error.message);
 
-    } catch (err: any) {
-        console.error("Save failed:", err);
-        setError("Failed to save changes: " + err.message);
-    } finally {
-        setIsSaving(false);
-    }
-};
+            setSyncMessage("Changes saved successfully. Refreshing...");
+            await fetchAllData();
+            setSyncMessage("Data refreshed.");
 
+        } catch (err: any) {
+            console.error("Save failed:", err);
+            setError("Failed to save changes: " + err.message);
+        } finally {
+            setIsSaving(false);
+        }
+    };
 
     // --- SYNC FUNCTIONS ---
     const handleSync = async (fn: 'sync-wallet-transactions' | 'exchange-sync-all' | 'sync-historical-exchange-rates', label: string) => {
@@ -233,7 +233,7 @@ const handleSaveChanges = async () => {
         }
     };
 
-    // --- Prices Update ---
+    // --- Update Prices ---
     const handleUpdatePrices = async () => {
         setIsUpdatingPrices(true);
         setSyncMessage("Updating prices...");
@@ -270,7 +270,7 @@ const handleSaveChanges = async () => {
         >
             <div className="space-y-8">
 
-                {/* Actions Section */}
+                {/* Actions */}
                 <section className="surface-card p-5">
                     <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                         <div>
@@ -334,8 +334,7 @@ const handleSaveChanges = async () => {
                     )}
                 </section>
 
-
-                {/* Portfolio Table */}
+                {/* Portfolio */}
                 <section className="surface-card p-5">
                     <div className="flex items-center justify-between mb-4">
                         <h2 className="text-2xl font-semibold">Portfolio Summary</h2>
@@ -365,9 +364,15 @@ const handleSaveChanges = async () => {
                                         holdings.map(h => (
                                             <tr key={h.asset} className="border-b border-gray-200 dark:border-gray-700">
                                                 <td className="p-2 font-bold whitespace-nowrap">{h.asset}</td>
-                                                <td className="p-2 text-right whitespace-nowrap">{formatNumber(h.currentAmount)}</td>
-                                                <td className="p-2 text-right whitespace-nowrap">{formatCurrency(h.averageBuyPrice)}</td>
-                                                <td className="p-2 text-right whitespace-nowrap">{formatCurrency(h.currentPrice)}</td>
+                                                <td className="p-2 text-right whitespace-nowrap">
+                                                    {formatNumber(h.currentAmount)}
+                                                </td>
+                                                <td className="p-2 text-right whitespace-nowrap">
+                                                    {formatCurrency(h.averageBuyPrice)}
+                                                </td>
+                                                <td className="p-2 text-right whitespace-nowrap">
+                                                    {formatCurrency(h.currentPrice)}
+                                                </td>
                                                 <td className="p-2 text-right whitespace-nowrap font-semibold">
                                                     {formatCurrency(h.currentValueUsd)}
                                                 </td>
@@ -389,8 +394,7 @@ const handleSaveChanges = async () => {
                     )}
                 </section>
 
-
-                {/* Transactions Table */}
+                {/* Transactions */}
                 <section className="surface-card p-5">
                     <div className="flex items-center justify-between mb-4">
                         <h2 className="text-2xl font-semibold">All Transactions</h2>
@@ -425,17 +429,23 @@ const handleSaveChanges = async () => {
                                                     <td className="p-2 whitespace-nowrap">
                                                         {new Date(tx.date).toLocaleString()}
                                                     </td>
-                                                    <td className="p-2 text-gray-600 dark:text-gray-400">{tx.description}</td>
+                                                    <td className="p-2 text-gray-600 dark:text-gray-400">
+                                                        {tx.description}
+                                                    </td>
                                                     <td className="p-2 text-right">
                                                         {formatNumber(tx.amount)} {tx.asset}
                                                     </td>
-                                                    <td className="p-2 text-right">{formatCurrency(tx.value_in_usd)}</td>
+                                                    <td className="p-2 text-right">
+                                                        {formatCurrency(tx.value_in_usd)}
+                                                    </td>
 
                                                     {/* Usage */}
                                                     <td className="p-2" style={{ minWidth: "200px" }}>
                                                         <Select
                                                             value={editedTx?.usage ?? tx.usage ?? "unspecified"}
-                                                            onValueChange={value => handleInputChange(tx.id, "usage", value)}
+                                                            onValueChange={value =>
+                                                                handleInputChange(tx.id, "usage", value)
+                                                            }
                                                         >
                                                             <SelectTrigger><SelectValue /></SelectTrigger>
                                                             <SelectContent>
@@ -454,7 +464,9 @@ const handleSaveChanges = async () => {
                                                             type="text"
                                                             placeholder="Add a note..."
                                                             value={editedTx?.note ?? tx.note ?? ""}
-                                                            onChange={e => handleInputChange(tx.id, "note", e.target.value)}
+                                                            onChange={e =>
+                                                                handleInputChange(tx.id, "note", e.target.value)
+                                                            }
                                                             className="w-full"
                                                         />
                                                     </td>
