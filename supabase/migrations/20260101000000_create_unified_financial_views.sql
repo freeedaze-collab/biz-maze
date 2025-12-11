@@ -1,13 +1,12 @@
 -- =================================================================
--- UNIFIED FINANCIAL VIEWS MIGRATION
+-- UNIFIED FINANCIAL VIEWS MIGRATION (VERSION 3)
 -- FILENAME: 20260101000000_create_unified_financial_views.sql
--- PURPOSE: This is the single source of truth for all financial reporting views.
--- It resolves historical conflicts, fixes all known bugs (bigint, RLS, view names),
--- and consolidates all necessary logic into one file.
+-- PURPOSE: This version introduces two major fixes:
+-- 1. Correctly calculates the sold crypto amount for exchange 'sell' trades.
+-- 2. Adds logic to identify and exclude internal transfers from holdings calculations.
 -- =================================================================
 
 -- STEP 1: Define Row Level Security (RLS) policies for base tables.
--- This ensures that views can only access data belonging to the currently authenticated user.
 ALTER TABLE public.exchange_trades ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.wallet_transactions ENABLE ROW LEVEL SECURITY;
 
@@ -26,7 +25,6 @@ CREATE POLICY "allow_user_select_own_wallet_transactions"
 
 
 -- STEP 2: Clean up ALL legacy and conflicting views.
--- The CASCADE option ensures a completely clean slate for rebuilding.
 DROP VIEW IF EXISTS public.v_balance_sheet CASCADE;
 DROP VIEW IF EXISTS public.v_cash_flow_statement CASCADE;
 DROP VIEW IF EXISTS public.v_profit_loss_statement CASCADE;
@@ -42,17 +40,15 @@ DROP VIEW IF EXISTS public.all_transactions CASCADE;
 -- =================================================================
 
 -- VIEW 1: all_transactions (The Unified Foundation)
--- Combines the latest structure (e.g., joins exchange_connections) with all critical fixes
--- (correct on-chain reference_id, inclusion of value_in_usd for financial reporting).
+-- FIX: Correctly calculates asset amount for 'sell' trades.
 CREATE OR REPLACE VIEW public.all_transactions AS
 WITH trades_with_acquisition_price AS (
     SELECT
         *,
         split_part(symbol, '/', 2) AS quote_asset,
-        -- Note: `fee` is assumed to be in the quote_asset currency for buys, and base_asset for sells.
-        -- This logic might need refinement based on actual data structure.
         CASE
             WHEN side = 'buy' THEN (price * amount) + COALESCE(fee, 0)
+            -- For sells, the `amount` is the received fiat, so it's the basis for total value.
             ELSE amount - COALESCE(fee, 0)
         END AS acquisition_price_total
     FROM public.exchange_trades
@@ -64,7 +60,11 @@ SELECT
     et.trade_id::text AS reference_id,
     et.ts AS date,
     'Exchange: ' || et.side || ' ' || et.amount::text || ' ' || et.symbol || ' @ ' || et.price::text AS description,
-    et.amount AS amount,
+    -- CORRECTED LOGIC: For 'sell' trades, `amount` is fiat received. Divide by price to get crypto amount.
+    CASE
+        WHEN et.side = 'sell' THEN et.amount / NULLIF(et.price, 0)
+        ELSE et.amount
+    END AS amount,
     split_part(et.symbol, '/', 1) AS asset,
     et.quote_asset,
     et.price,
@@ -109,6 +109,7 @@ FROM public.wallet_transactions t;
 
 
 -- VIEW 2: v_all_transactions_classified
+-- Standardizes transaction types (BUY, SELL, DEPOSIT, WITHDRAWAL)
 CREATE OR REPLACE VIEW public.v_all_transactions_classified AS
 SELECT t.*, CASE
     WHEN t.type IN ('buy', 'sell') THEN UPPER(t.type)
@@ -119,7 +120,38 @@ END as transaction_type
 FROM public.all_transactions t;
 
 
--- VIEW 3: v_holdings (Latest logic)
+-- VIEW 3: internal_transfer_pairs
+-- NEW: Identifies pairs of internal transfers to be excluded from holdings calculations.
+CREATE OR REPLACE VIEW public.internal_transfer_pairs AS
+WITH ranked_matches AS (
+    SELECT
+        w.id as withdrawal_id,
+        d.id as deposit_id,
+        -- Rank matches by time difference to find the best pair for each withdrawal
+        ROW_NUMBER() OVER(PARTITION BY w.id ORDER BY d.date - w.date) as w_rank,
+        -- Rank matches by time difference to find the best pair for each deposit
+        ROW_NUMBER() OVER(PARTITION BY d.id ORDER BY d.date - w.date) as d_rank
+    FROM
+        (SELECT * FROM public.v_all_transactions_classified WHERE transaction_type = 'WITHDRAWAL') AS w
+    JOIN
+        (SELECT * FROM public.v_all_transactions_classified WHERE transaction_type = 'DEPOSIT') AS d
+    ON
+        w.user_id = d.user_id
+        AND w.asset = d.asset
+        -- Deposit must happen after withdrawal, but within a 2-day window
+        AND d.date > w.date
+        AND d.date <= (w.date + INTERVAL '2 day')
+        -- Amount must be very close (allowing for a 0.2% fee/difference)
+        AND abs(w.amount - d.amount) / NULLIF(w.amount, 0) <= 0.002
+)
+-- Select only the unique, 1-to-1 matches where the pairing is mutual
+SELECT withdrawal_id as id FROM ranked_matches WHERE w_rank = 1 AND d_rank = 1
+UNION
+SELECT deposit_id as id FROM ranked_matches WHERE w_rank = 1 AND d_rank = 1;
+
+
+-- VIEW 4: v_holdings (Latest logic, now excluding internal transfers)
+-- FIX: Excludes internal transfers from the calculation.
 CREATE OR REPLACE VIEW public.v_holdings AS
 WITH base_calcs AS (
     SELECT
@@ -129,6 +161,8 @@ WITH base_calcs AS (
         SUM(CASE WHEN transaction_type IN ('BUY', 'DEPOSIT') AND value_in_usd IS NOT NULL THEN COALESCE(value_in_usd, 0) ELSE 0 END) as total_cost_for_priced_inflows,
         SUM(CASE WHEN transaction_type IN ('BUY', 'DEPOSIT') AND value_in_usd IS NOT NULL THEN COALESCE(amount, 0) ELSE 0 END) as total_quantity_of_priced_inflows
     FROM public.v_all_transactions_classified
+    -- Exclude internal transfers from the calculation
+    WHERE id NOT IN (SELECT id FROM public.internal_transfer_pairs)
     GROUP BY user_id, asset
 )
 SELECT
@@ -142,7 +176,7 @@ FROM base_calcs b
 WHERE (b.total_inflow_amount - b.total_outflow_amount) > 0.000001;
 
 
--- VIEW 4: v_profit_loss_statement (Correct Name and Logic)
+-- VIEW 5: v_profit_loss_statement (Correct Name and Logic)
 CREATE OR REPLACE VIEW public.v_profit_loss_statement AS
 WITH pnl_items AS (
     SELECT user_id, 'Sales Revenue (IAS 2)' AS account, value_in_usd AS balance FROM public.all_transactions WHERE usage = 'sale_ias2' AND value_in_usd IS NOT NULL
@@ -173,7 +207,7 @@ GROUP BY user_id, account
 ORDER BY user_id, account;
 
 
--- VIEW 5: v_balance_sheet (Depends on correct P&L name)
+-- VIEW 6: v_balance_sheet (Depends on correct P&L name)
 CREATE OR REPLACE VIEW public.v_balance_sheet AS
 WITH account_movements AS (
     -- ASSETS
@@ -215,7 +249,7 @@ GROUP BY m.user_id, m.account
 ORDER BY user_id, account;
 
 
--- VIEW 6: v_cash_flow_statement
+-- VIEW 7: v_cash_flow_statement
 CREATE OR REPLACE VIEW public.v_cash_flow_statement AS
 WITH cash_flows AS (
     -- Operating Activities
