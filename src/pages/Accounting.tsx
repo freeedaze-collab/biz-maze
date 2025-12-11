@@ -1,6 +1,6 @@
 
 // src/pages/Accounting.tsx
-// VERSION 5: Removes `.single()` for robust data fetching.
+// VERSION 6: Fixes syntax errors from previous version.
 import React, { useState, useEffect, useCallback } from 'react';
 import { supabase } from "../integrations/supabase/client";
 import { useAuth } from '../hooks/useAuth';
@@ -31,7 +31,7 @@ const FinancialCard: React.FC<FinancialCardProps> = ({ title, items, totalLabel,
                         <span className="text-slate-600">{item.label}</span>
                         <span className="text-slate-800">{formatCurrency(item.value)}</span>
                     </div>
-                ))}\
+                ))}
                 <div className="flex justify-between py-3 mt-2 font-bold">
                     <span className="text-slate-800">{totalLabel}</span>
                     <span className="text-slate-900">{formatCurrency(totalValue)}</span>
@@ -129,7 +129,7 @@ export default function Accounting() {
         // { label: "Outflow to Owners", value: cfData?.cash_out_to_owners },
     ];
 
-    const totalOperatingCF = (cfData?.cash_in_from_inventory_sales ?? 0) + (cfData?.cash_in_from_revenue ?? 0) + (cfData?.cash_out_for_inventory ?? 0) + (cfData?.cash_out_for_gas_fees ?? 0);\
+    const totalOperatingCF = (cfData?.cash_in_from_inventory_sales ?? 0) + (cfData?.cash_in_from_revenue ?? 0) + (cfData?.cash_out_for_inventory ?? 0) + (cfData?.cash_out_for_gas_fees ?? 0);
     const totalInvestingCF = (cfData?.cash_out_for_intangibles ?? 0) + (cfData?.cash_in_from_intangibles ?? 0);
     const totalFinancingCF = (cfData?.cash_in_from_financing ?? 0) + (cfData?.cash_out_to_owners ?? 0);
     const netCashFlow = totalOperatingCF + totalInvestingCF + totalFinancingCF;
@@ -138,7 +138,7 @@ export default function Accounting() {
         <AppPageLayout
             title="Financial Statements"
             description="IFRS-aligned reporting for profit & loss, balance sheet, and cash flow—updated from your synced activity."
-        >\
+        >
             <div className="space-y-6">
                 <div className="feature-banner">
                     <div className="flex flex-col gap-1">
@@ -195,7 +195,7 @@ export default function Accounting() {
                                             <span className="text-slate-600">{item.label}</span>
                                             <span>{formatCurrency(item.value)}</span>
                                         </div>
-                                    ))}\
+                                    ))}
                                     <div className="flex justify-between py-2 ml-4 font-semibold">
                                         <span>Net Cash from Operating Activities</span>
                                         <span>{formatCurrency(totalOperatingCF)}</span>
@@ -210,7 +210,7 @@ export default function Accounting() {
                                             <span className="text-slate-600">{item.label}</span>
                                             <span>{formatCurrency(item.value)}</span>
                                         </div>
-                                    ))}\
+                                    ))}
                                      <div className="flex justify-between py-2 ml-4 font-semibold">
                                         <span>Net Cash from Investing Activities</span>
                                         <span>{formatCurrency(totalInvestingCF)}</span>
@@ -226,13 +226,13 @@ export default function Accounting() {
                                                 <span className="text-slate-600">{item.label}</span>
                                                 <span>{formatCurrency(item.value)}</span>
                                             </div>
-                                        ))}\
+                                        ))}
                                         <div className="flex justify-between py-2 ml-4 font-semibold">
                                             <span>Net Cash from Financing Activities</span>
                                             <span>{formatCurrency(totalFinancingCF)}</span>
                                         </div>
                                     </div>
-                                )}\
+                                )}
 
                                  {/* Net Change in Cash */}
                                  <div className="flex justify-between pt-4 border-t-2 border-gray-300 dark:border-gray-600 font-bold text-lg">
@@ -240,7 +240,7 @@ export default function Accounting() {
                                     <span>{formatCurrency(netCashFlow)}</span>
                                 </div>
                              </div>
-                        )}\
+                        )}
                     </div>
                 </div>
             </div>
