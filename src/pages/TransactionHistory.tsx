@@ -133,84 +133,84 @@ export default function TransactionHistory() {
     };
 
     // --- SAVE CHANGES (FIXED VERSION) ---
-    const handleSaveChanges = async () => {
-        setIsSaving(true);
-        setError(null);
-        setSyncMessage("Saving changes...");
+const handleSaveChanges = async () => {
+    setIsSaving(true);
+    setError(null);
+    setSyncMessage("Saving changes...");
 
-        const editedEntries = Object.entries(editedTransactions);
-        if (editedEntries.length === 0) {
-            setSyncMessage("No changes to save.");
-            setIsSaving(false);
-            return;
-        }
+    const editedEntries = Object.entries(editedTransactions);
+    if (editedEntries.length === 0) {
+        setSyncMessage("No changes to save.");
+        setIsSaving(false);
+        return;
+    }
 
-        try {
-            const updatePromises = editedEntries.map(async ([viewId, changes]) => {
-                const originalTx = transactions.find(t => t.id === viewId);
-
-                if (!originalTx) {
-                    console.warn("No original transaction found for", viewId);
-                    return { error: { message: "Original transaction not found" } };
-                }
-
-                // Construct update payload
-                const updatePayload = {
-                    usage: changes.usage ?? originalTx.usage,
-                    note: changes.note ?? originalTx.note,
-                };
-
-                // ---------------------------------------
-                // 🔥 FIXED: exchange_trades updates
-                // ---------------------------------------
-                if (originalTx.source === "exchange") {
-                    console.log("Updating EXCHANGE tx:", {
-                        reference_id: originalTx.reference_id,
-                        trade_id: originalTx.trade_id,
-                        updatePayload
-                    });
-
-                    // 更新対象は exchange_trades.id（UUID）
-                    return supabase
-                        .from("exchange_trades")
-                        .update(updatePayload)
-                        .eq("id", originalTx.reference_id)
-                        .eq("user_id", originalTx.user_id);
-                }
-
-                // ---------------------------------------
-                // WALLET updates (元々正しく動いていた)
-                // ---------------------------------------
-                if (originalTx.source === "on-chain") {
-                    console.log("Updating WALLET tx:", originalTx.reference_id);
-                    return supabase
-                        .from("wallet_transactions")
-                        .update(updatePayload)
-                        .eq("id", originalTx.reference_id)
-                        .eq("user_id", originalTx.user_id);
-                }
-
-                return { error: null };
-            });
-
-            const results = await Promise.all(updatePromises);
-
-            const firstError = results.find(r => r && r.error);
-            if (firstError) {
-                throw new Error(`Update failed: ${firstError.error.message}`);
+    try {
+        const updatePromises = editedEntries.map(async ([viewId, changes]) => {
+            const originalTx = transactions.find(t => t.id === viewId);
+            if (!originalTx) {
+                console.warn("No original transaction found for", viewId);
+                return { error: { message: "Original transaction not found" } };
             }
 
-            setSyncMessage("Changes saved. Refreshing...");
-            await fetchAllData();
-            setSyncMessage("Data refreshed.");
+            // -----------------------------
+            // Extract real primary key for exchange_trades
+            // -----------------------------
+            let realId = originalTx.reference_id;
 
-        } catch (err: any) {
-            console.error("Save failed:", err);
-            setError(`Failed to save changes: ${err.message}`);
-        } finally {
-            setIsSaving(false);
-        }
-    };
+            // If reference_id is missing (problem case), recover from "id"
+            if (!realId && originalTx.id.startsWith("exchange-")) {
+                realId = originalTx.id.replace("exchange-", "");
+            }
+
+            const updatePayload = {
+                usage: changes.usage ?? originalTx.usage,
+                note: changes.note ?? originalTx.note,
+            };
+
+            // -----------------------------
+            // Exchange transactions
+            // -----------------------------
+            if (originalTx.source === "exchange") {
+                console.log("Updating exchange_trades with ID:", realId, updatePayload);
+
+                return supabase
+                    .from("exchange_trades")
+                    .update(updatePayload)
+                    .eq("id", realId)       // ← FIXED: Always correct UUID
+                    .eq("user_id", originalTx.user_id);
+            }
+
+            // -----------------------------
+            // Wallet transactions (already OK)
+            // -----------------------------
+            if (originalTx.source === "on-chain") {
+                return supabase
+                    .from("wallet_transactions")
+                    .update(updatePayload)
+                    .eq("id", originalTx.reference_id)
+                    .eq("user_id", originalTx.user_id);
+            }
+
+            return { error: null };
+        });
+
+        const results = await Promise.all(updatePromises);
+        const firstError = results.find(r => r && r.error);
+        if (firstError) throw new Error(firstError.error.message);
+
+        setSyncMessage("Changes saved successfully. Refreshing data...");
+        await fetchAllData();
+        setSyncMessage("Data refreshed.");
+
+    } catch (err: any) {
+        console.error("Save failed:", err);
+        setError("Failed to save changes: " + err.message);
+    } finally {
+        setIsSaving(false);
+    }
+};
+
 
     // --- SYNC FUNCTIONS ---
     const handleSync = async (fn: 'sync-wallet-transactions' | 'exchange-sync-all' | 'sync-historical-exchange-rates', label: string) => {
