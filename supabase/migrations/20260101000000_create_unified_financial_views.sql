@@ -97,9 +97,9 @@ SELECT
     (t.value_wei / 1e18) as amount,
     COALESCE(t.asset_symbol, 'ETH') as asset,
     'USD' as quote_asset,
-    CASE WHEN (t.value_wei / 1e18) <> 0 THEN t.value_usd / (t.value_wei / 1e18) ELSE 0 END as price,
-    t.value_usd AS acquisition_price_total,
-    t.value_usd AS value_in_usd, -- Critical: Pass through value_in_usd
+    CASE WHEN (t.value_wei / 1e18) <> 0 THEN t.usd_value_at_tx / (t.value_wei / 1e18) ELSE 0 END as price,
+    t.usd_value_at_tx AS acquisition_price_total,
+    t.usd_value_at_tx AS value_in_usd, -- Critical: Pass through value_in_usd
     t.direction as type,
     'on-chain' as source,
     t.chain_id::text as chain,
