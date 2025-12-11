@@ -1,5 +1,5 @@
 // src/pages/TransactionHistory.tsx
-// FINAL STABLE VERSION — exchange_trades SAVE FIXED using origin_trade_id
+// FINAL FIXED VERSION — consistent with all_transactions schema and correct save logic
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import AppPageLayout from "@/components/layout/AppPageLayout";
 
-// --- Constants ---
+// --- Accounting Usage Options ---
 const accountingUsageOptions = [
     { value: 'investment_acquisition_ias38', label: 'Investment Acquisition (IAS 38)' },
     { value: 'trading_acquisition_ias2', label: 'Trading Acquisition (IAS 2)' },
@@ -29,7 +29,7 @@ const accountingUsageOptions = [
     { value: 'unspecified', label: 'Unspecified' },
 ];
 
-// --- Data Types ---
+// --- Type Definitions ---
 interface Holding {
     asset: string;
     currentAmount: number;
@@ -40,12 +40,11 @@ interface Holding {
 }
 
 interface Transaction {
-    id: string; // artificial id: "exchange-xxxx"
-    user_id: string;
-    reference_id: string; // trade_id or txid
-    origin_trade_id?: string | null; // REAL exchange_trades.id
+    id: string;                // view id (exchange-xxxx)
+    user_id: string;           // uuid
+    reference_id: string;      // ← the real primary key: trade_id OR wallet id
     date: string;
-    source: string;
+    source: string;            // "exchange" | "on-chain"
     chain: string;
     description: string;
     amount: number;
@@ -59,12 +58,15 @@ interface Transaction {
 
 type EditedTransaction = Partial<Pick<Transaction, 'usage' | 'note'>>;
 
-// --- Main Component ---
+// ============================================================================
+// MAIN COMPONENT
+// ============================================================================
 export default function TransactionHistory() {
 
     const [transactions, setTransactions] = useState<Transaction[]>([]);
     const [holdings, setHoldings] = useState<Holding[]>([]);
     const [editedTransactions, setEditedTransactions] = useState<Record<string, EditedTransaction>>({});
+
     const [isLoading, setIsLoading] = useState(true);
     const [isSaving, setIsSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -72,7 +74,9 @@ export default function TransactionHistory() {
     const [isUpdatingPrices, setIsUpdatingPrices] = useState(false);
     const [syncMessage, setSyncMessage] = useState<string | null>(null);
 
-    // --- Fetch Data ---
+    // ============================================================================
+    // Fetch Data
+    // ============================================================================
     const fetchAllData = useCallback(async () => {
         setIsLoading(true);
         setError(null);
@@ -91,8 +95,22 @@ export default function TransactionHistory() {
                 capitalGain:capital_gain
             `;
 
-            const transactionsSelect =
-                "id, user_id, reference_id, origin_trade_id, date, source, chain, description, amount, asset, price, value_in_usd, type, usage, note";
+            const transactionsSelect = `
+                id,
+                user_id,
+                reference_id,
+                date,
+                source,
+                chain,
+                description,
+                amount,
+                asset,
+                price,
+                value_in_usd,
+                type,
+                usage,
+                note
+            `;
 
             const [holdingsRes, transactionsRes] = await Promise.all([
                 supabase.from("v_holdings").select(holdingsSelect).eq("user_id", user.id),
@@ -101,7 +119,7 @@ export default function TransactionHistory() {
                     .select(transactionsSelect)
                     .eq("user_id", user.id)
                     .order("date", { ascending: false })
-                    .limit(300)
+                    .limit(200)
             ]);
 
             if (holdingsRes.error) throw new Error(holdingsRes.error.message);
@@ -120,7 +138,9 @@ export default function TransactionHistory() {
 
     useEffect(() => { fetchAllData(); }, [fetchAllData]);
 
-    // --- Handle input changes ---
+    // ============================================================================
+    // Input Change
+    // ============================================================================
     const handleInputChange = (id: string, field: 'usage' | 'note', value: string) => {
         setEditedTransactions(prev => ({
             ...prev,
@@ -128,7 +148,9 @@ export default function TransactionHistory() {
         }));
     };
 
-    // --- SAVE CHANGES ---
+    // ============================================================================
+    // SAVE CHANGES — FINAL CORRECT VERSION
+    // ============================================================================
     const handleSaveChanges = async () => {
         setIsSaving(true);
         setError(null);
@@ -143,52 +165,46 @@ export default function TransactionHistory() {
 
         try {
             const updatePromises = editedEntries.map(async ([viewId, changes]) => {
-                const tx = transactions.find(t => t.id === viewId);
-                if (!tx) return;
-
-                const payload = {
-                    usage: changes.usage ?? tx.usage,
-                    note: changes.note ?? tx.note,
-                };
-
-                // ==========================================
-                // 🔥 EXCHANGE — always use origin_trade_id
-                // ==========================================
-                if (tx.source === "exchange") {
-                    const realId = tx.origin_trade_id; // MUST be UUID
-
-                    if (!realId) {
-                        console.error("Missing origin_trade_id for:", tx);
-                        return { error: { message: "Missing origin_trade_id" } };
-                    }
-
-                    return supabase
-                        .from("exchange_trades")
-                        .update(payload)
-                        .eq("id", realId)
-                        .eq("user_id", tx.user_id);
+                const originalTx = transactions.find(t => t.id === viewId);
+                if (!originalTx) {
+                    return { error: { message: "Original transaction not found" } };
                 }
 
-                // ==========================================
-                // 🔥 WALLET — reference_id is already UUID
-                // ==========================================
-                if (tx.source === "on-chain") {
+                const updatePayload = {
+                    usage: changes.usage ?? originalTx.usage,
+                    note: changes.note ?? originalTx.note,
+                };
+
+                // ---------------------------
+                // Exchange → use trade_id
+                // ---------------------------
+                if (originalTx.source === "exchange") {
+                    return supabase
+                        .from("exchange_trades")
+                        .update(updatePayload)
+                        .eq("trade_id", originalTx.reference_id)  // ← CRITICAL FIX
+                        .eq("user_id", originalTx.user_id);
+                }
+
+                // ---------------------------
+                // On-chain → use wallet id
+                // ---------------------------
+                if (originalTx.source === "on-chain") {
                     return supabase
                         .from("wallet_transactions")
-                        .update(payload)
-                        .eq("id", tx.reference_id)
-                        .eq("user_id", tx.user_id);
+                        .update(updatePayload)
+                        .eq("id", originalTx.reference_id)
+                        .eq("user_id", originalTx.user_id);
                 }
 
                 return { error: null };
             });
 
             const results = await Promise.all(updatePromises);
-            const firstError = results.find(r => r?.error);
-
+            const firstError = results.find(r => r && r.error);
             if (firstError) throw new Error(firstError.error.message);
 
-            setSyncMessage("Changes saved. Refreshing...");
+            setSyncMessage("Changes saved successfully. Refreshing...");
             await fetchAllData();
             setSyncMessage("Data refreshed.");
 
@@ -200,7 +216,9 @@ export default function TransactionHistory() {
         }
     };
 
-    // --- SYNC FUNCTIONS ---
+    // ============================================================================
+    // SYNC HANDLERS (unchanged)
+    // ============================================================================
     const handleSync = async (fn: 'sync-wallet-transactions' | 'exchange-sync-all' | 'sync-historical-exchange-rates', label: string) => {
         setIsSyncing(true);
         setSyncMessage(`Syncing ${label}...`);
@@ -220,7 +238,6 @@ export default function TransactionHistory() {
         }
     };
 
-    // --- Prices Update ---
     const handleUpdatePrices = async () => {
         setIsUpdatingPrices(true);
         setSyncMessage("Updating prices...");
@@ -240,9 +257,13 @@ export default function TransactionHistory() {
         }
     };
 
-    // --- Helpers ---
-    const formatCurrency = (v: number | null | undefined) =>
-        (v ?? 0).toLocaleString("en-US", { style: "currency", currency: "USD" });
+    // ============================================================================
+    // Helpers
+    // ============================================================================
+    const formatCurrency = (v: number | null | undefined) => {
+        const n = v ?? 0;
+        return n.toLocaleString("en-US", { style: "currency", currency: "USD" });
+    };
 
     const formatNumber = (v: number | null | undefined) =>
         (v ?? 0).toFixed(6);
@@ -250,7 +271,9 @@ export default function TransactionHistory() {
     const getPnlClass = (p: number | null) =>
         (p ?? 0) === 0 ? "text-gray-500" : p! > 0 ? "text-green-500" : "text-red-500";
 
-    // --- Render ---
+    // ============================================================================
+    // RENDER
+    // ============================================================================
     return (
         <AppPageLayout
             title="Transactions & Portfolio"
@@ -258,7 +281,7 @@ export default function TransactionHistory() {
         >
             <div className="space-y-8">
 
-                {/* Actions Section */}
+                {/* ACTIONS */}
                 <section className="surface-card p-5">
                     <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                         <div>
@@ -269,27 +292,38 @@ export default function TransactionHistory() {
                         </div>
 
                         <div className="flex flex-wrap items-center gap-2">
-                            <Button variant="outline" size="sm"
+                            <Button
+                                variant="outline"
+                                size="sm"
                                 onClick={handleUpdatePrices}
-                                disabled={isUpdatingPrices || isSyncing || isSaving}>
+                                disabled={isUpdatingPrices || isSyncing || isSaving}
+                            >
                                 {isUpdatingPrices ? "Updating..." : "Update Prices & Rates"}
                             </Button>
 
-                            <Button variant="outline" size="sm"
+                            <Button
+                                variant="outline"
+                                size="sm"
                                 onClick={() => handleSync("exchange-sync-all", "Exchanges")}
-                                disabled={isSyncing || isUpdatingPrices || isSaving}>
+                                disabled={isSyncing || isUpdatingPrices || isSaving}
+                            >
                                 {isSyncing ? "Syncing..." : "Sync Exchanges"}
                             </Button>
 
-                            <Button variant="outline" size="sm"
+                            <Button
+                                variant="outline"
+                                size="sm"
                                 onClick={() => handleSync("sync-wallet-transactions", "Wallet Transactions")}
-                                disabled={isSyncing || isUpdatingPrices || isSaving}>
+                                disabled={isSyncing || isUpdatingPrices || isSaving}
+                            >
                                 {isSyncing ? "Syncing..." : "Sync Wallet Transactions"}
                             </Button>
 
-                            <Button size="sm"
+                            <Button
+                                size="sm"
                                 onClick={handleSaveChanges}
-                                disabled={isSaving || isSyncing || Object.keys(editedTransactions).length === 0}>
+                                disabled={isSaving || isSyncing || Object.keys(editedTransactions).length === 0}
+                            >
                                 {isSaving ? "Saving..." : "Save Changes"}
                             </Button>
 
@@ -310,9 +344,14 @@ export default function TransactionHistory() {
                     )}
                 </section>
 
-                {/* Portfolio Section */}
+                {/* HOLDINGS TABLE */}
                 <section className="surface-card p-5">
-                    <h2 className="text-2xl font-semibold mb-4">Portfolio Summary</h2>
+                    <div className="flex items-center justify-between mb-4">
+                        <h2 className="text-2xl font-semibold">Portfolio Summary</h2>
+                        <span className="text-xs uppercase tracking-[0.2em] text-primary font-semibold">
+                            Holdings
+                        </span>
+                    </div>
 
                     {isLoading ? (
                         <p>Loading portfolio...</p>
@@ -321,28 +360,38 @@ export default function TransactionHistory() {
                             <table className="min-w-full text-sm text-left">
                                 <thead className="font-mono text-gray-500">
                                     <tr>
-                                        <th className="p-2">Asset</th>
-                                        <th className="p-2 text-right">Amount</th>
-                                        <th className="p-2 text-right">Avg. Buy Price</th>
-                                        <th className="p-2 text-right">Current Price</th>
-                                        <th className="p-2 text-right">Current Value</th>
-                                        <th className="p-2 text-right">Unrealized P&L</th>
+                                        <th className="p-2 font-semibold">Asset</th>
+                                        <th className="p-2 font-semibold text-right">Amount</th>
+                                        <th className="p-2 font-semibold text-right">Avg. Buy Price</th>
+                                        <th className="p-2 font-semibold text-right">Current Price</th>
+                                        <th className="p-2 font-semibold text-right">Current Value</th>
+                                        <th className="p-2 font-semibold text-right">Unrealized P&L</th>
                                     </tr>
                                 </thead>
+
                                 <tbody className="font-mono">
-                                    {holdings.length > 0 ? holdings.map(h => (
-                                        <tr key={h.asset} className="border-b">
-                                            <td className="p-2">{h.asset}</td>
-                                            <td className="p-2 text-right">{formatNumber(h.currentAmount)}</td>
-                                            <td className="p-2 text-right">{formatCurrency(h.averageBuyPrice)}</td>
-                                            <td className="p-2 text-right">{formatCurrency(h.currentPrice)}</td>
-                                            <td className="p-2 text-right">{formatCurrency(h.currentValueUsd)}</td>
-                                            <td className={`p-2 text-right ${getPnlClass(h.capitalGain)}`}>
-                                                {formatCurrency(h.capitalGain)}
+                                    {holdings.length > 0 ? (
+                                        holdings.map(h => (
+                                            <tr key={h.asset} className="border-b border-gray-200 dark:border-gray-700">
+                                                <td className="p-2 font-bold whitespace-nowrap">{h.asset}</td>
+                                                <td className="p-2 text-right whitespace-nowrap">{formatNumber(h.currentAmount)}</td>
+                                                <td className="p-2 text-right whitespace-nowrap">{formatCurrency(h.averageBuyPrice)}</td>
+                                                <td className="p-2 text-right whitespace-nowrap">{formatCurrency(h.currentPrice)}</td>
+                                                <td className="p-2 text-right whitespace-nowrap font-semibold">
+                                                    {formatCurrency(h.currentValueUsd)}
+                                                </td>
+                                                <td className={`p-2 text-right whitespace-nowrap ${getPnlClass(h.capitalGain)}`}>
+                                                    {formatCurrency(h
+                                                    .capitalGain)}
+                                                </td>
+                                            </tr>
+                                        ))
+                                    ) : (
+                                        <tr>
+                                            <td colSpan={6} className="text-center text-gray-500 py-4">
+                                                No holdings found.
                                             </td>
                                         </tr>
-                                    )) : (
-                                        <tr><td colSpan={6} className="text-center p-4">No holdings found.</td></tr>
                                     )}
                                 </tbody>
                             </table>
@@ -350,9 +399,14 @@ export default function TransactionHistory() {
                     )}
                 </section>
 
-                {/* Transactions Section */}
+                {/* TRANSACTIONS TABLE */}
                 <section className="surface-card p-5">
-                    <h2 className="text-2xl font-semibold mb-4">All Transactions</h2>
+                    <div className="flex items-center justify-between mb-4">
+                        <h2 className="text-2xl font-semibold">All Transactions</h2>
+                        <span className="text-xs uppercase tracking-[0.2em] text-primary font-semibold">
+                            Ledger
+                        </span>
+                    </div>
 
                     {isLoading ? (
                         <p>Loading transactions...</p>
@@ -361,64 +415,73 @@ export default function TransactionHistory() {
                             <table className="min-w-full text-sm text-left">
                                 <thead className="font-mono text-gray-500">
                                     <tr>
-                                        <th className="p-2">Date</th>
-                                        <th className="p-2">Description</th>
-                                        <th className="p-2 text-right">Amount</th>
-                                        <th className="p-2 text-right">Value (USD)</th>
-                                        <th className="p-2">Usage</th>
-                                        <th className="p-2">Note</th>
+                                        <th className="p-2 font-semibold">Date</th>
+                                        <th className="p-2 font-semibold">Description</th>
+                                        <th className="p-2 font-semibold text-right">Amount</th>
+                                        <th className="p-2 font-semibold text-right">Value (USD)</th>
+                                        <th className="p-2 font-semibold">Usage</th>
+                                        <th className="p-2 font-semibold">Note</th>
                                     </tr>
                                 </thead>
+
                                 <tbody className="font-mono">
-                                    {transactions.length > 0 ? transactions.map(tx => {
-                                        const editedTx = editedTransactions[tx.id];
+                                    {transactions.length > 0 ? (
+                                        transactions.map(tx => {
+                                            const editedTx = editedTransactions[tx.id];
 
-                                        return (
-                                            <tr key={tx.id} className="border-b">
-                                                <td className="p-2">{new Date(tx.date).toLocaleString()}</td>
-                                                <td className="p-2">{tx.description}</td>
-                                                <td className="p-2 text-right">{formatNumber(tx.amount)} {tx.asset}</td>
-                                                <td className="p-2 text-right">{formatCurrency(tx.value_in_usd)}</td>
+                                            return (
+                                                <tr key={tx.id} className="border-b border-gray-200 dark:border-gray-700">
+                                                    <td className="p-2 whitespace-nowrap">
+                                                        {new Date(tx.date).toLocaleString()}
+                                                    </td>
+                                                    <td className="p-2 text-gray-600 dark:text-gray-400">{tx.description}</td>
+                                                    <td className="p-2 text-right">
+                                                        {formatNumber(tx.amount)} {tx.asset}
+                                                    </td>
+                                                    <td className="p-2 text-right">{formatCurrency(tx.value_in_usd)}</td>
 
-                                                {/* Usage */}
-                                                <td className="p-2" style={{ minWidth: "200px" }}>
-                                                    <Select
-                                                        value={editedTx?.usage ?? tx.usage ?? "unspecified"}
-                                                        onValueChange={v => handleInputChange(tx.id, "usage", v)}
-                                                    >
-                                                        <SelectTrigger>
-                                                            <SelectValue />
-                                                        </SelectTrigger>
-                                                        <SelectContent>
-                                                            {accountingUsageOptions.map(opt => (
-                                                                <SelectItem key={opt.value} value={opt.value}>
-                                                                    {opt.label}
-                                                                </SelectItem>
-                                                            ))}
-                                                        </SelectContent>
-                                                    </Select>
-                                                </td>
+                                                    {/* USAGE SELECT */}
+                                                    <td className="p-2" style={{ minWidth: "200px" }}>
+                                                        <Select
+                                                            value={editedTx?.usage ?? tx.usage ?? "unspecified"}
+                                                            onValueChange={value => handleInputChange(tx.id, "usage", value)}
+                                                        >
+                                                            <SelectTrigger><SelectValue /></SelectTrigger>
+                                                            <SelectContent>
+                                                                {accountingUsageOptions.map(opt => (
+                                                                    <SelectItem key={opt.value} value={opt.value}>
+                                                                        {opt.label}
+                                                                    </SelectItem>
+                                                                ))}
+                                                            </SelectContent>
+                                                        </Select>
+                                                    </td>
 
-                                                {/* Note */}
-                                                <td className="p-2" style={{ minWidth: "200px" }}>
-                                                    <Input
-                                                        type="text"
-                                                        value={editedTx?.note ?? tx.note ?? ""}
-                                                        placeholder="Add a note…"
-                                                        onChange={e => handleInputChange(tx.id, "note", e.target.value)}
-                                                    />
-                                                </td>
-                                            </tr>
-                                        );
-                                    }) : (
-                                        <tr><td colSpan={6} className="text-center p-4">No transactions found.</td></tr>
+                                                    {/* NOTE INPUT */}
+                                                    <td className="p-2" style={{ minWidth: "200px" }}>
+                                                        <Input
+                                                            type="text"
+                                                            placeholder="Add a note..."
+                                                            value={editedTx?.note ?? tx.note ?? ""}
+                                                            onChange={e => handleInputChange(tx.id, "note", e.target.value)}
+                                                            className="w-full"
+                                                        />
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })
+                                    ) : (
+                                        <tr>
+                                            <td colSpan={6} className="text-center text-gray-500 py-4">
+                                                No transactions found.
+                                            </td>
+                                        </tr>
                                     )}
                                 </tbody>
                             </table>
                         </div>
                     )}
                 </section>
-
             </div>
         </AppPageLayout>
     );
