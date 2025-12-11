@@ -48,7 +48,7 @@ WITH trades_with_acquisition_price AS (
         split_part(symbol, '/', 2) AS quote_asset,
         CASE
             WHEN side = 'buy' THEN (price * amount) + COALESCE(fee, 0)
-            -- For sells, the `amount` is the received fiat, so it's the basis for total value.
+            -- For sells, the amount is the received fiat, so it's the basis for total value.
             ELSE amount - COALESCE(fee, 0)
         END AS acquisition_price_total
     FROM public.exchange_trades
@@ -60,7 +60,7 @@ SELECT
     et.trade_id::text AS reference_id,
     et.ts AS date,
     'Exchange: ' || et.side || ' ' || et.amount::text || ' ' || et.symbol || ' @ ' || et.price::text AS description,
-    -- CORRECTED LOGIC: For 'sell' trades, `amount` is fiat received. Divide by price to get crypto amount.
+    -- CORRECTED LOGIC: For 'sell' trades, amount is fiat received. Divide by price to get crypto amount.
     CASE
         WHEN et.side = 'sell' THEN et.amount / NULLIF(et.price, 0)
         ELSE et.amount
@@ -91,7 +91,7 @@ UNION ALL
 SELECT
     ('onchain-' || t.id)::text as id,
     t.user_id,
-    t.id::text as reference_id, -- <<< CRITICAL FIX: Use internal `id` to prevent `bigint` error.
+    t.id::text as reference_id, -- <<< CRITICAL FIX: Use internal id to prevent bigint error.
     t.timestamp as date,
     'On-chain: ' || t.direction || ' ' || COALESCE(t.asset_symbol, 'ETH') as description,
     (t.value_wei / 1e18) as amount,
