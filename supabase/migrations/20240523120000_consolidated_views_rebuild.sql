@@ -1,12 +1,12 @@
 -- supabase/migrations/20240523120000_consolidated_views_rebuild.sql
--- PURPOSE: Consolidates all core financial views into a single, ordered file to fix cascading drop issues and a bug in on-chain transaction saving.
--- VERSION: 21
+-- PURPOSE: Consolidates all views, fixes on-chain save bug, and corrects the P&L view name.
+-- VERSION: 22
 
 -- Step 1: Safely drop views in reverse order of dependency.
--- Financial statements are dropped first as they depend on the lower-level views.
-DROP VIEW IF EXISTS public.v_profit_and_loss CASCADE;
 DROP VIEW IF EXISTS public.v_balance_sheet CASCADE;
 DROP VIEW IF EXISTS public.v_cash_flow_statement CASCADE;
+DROP VIEW IF EXISTS public.v_profit_loss_statement CASCADE; -- Corrected name
+DROP VIEW IF EXISTS public.v_profit_and_loss CASCADE; -- Old incorrect name
 DROP VIEW IF EXISTS public.v_holdings CASCADE;
 DROP VIEW IF EXISTS public.v_all_transactions_classified CASCADE;
 DROP VIEW IF EXISTS public.internal_transfer_pairs CASCADE;
@@ -14,8 +14,7 @@ DROP VIEW IF EXISTS public.all_transactions CASCADE;
 
 
 -- =================================================================
--- VIEW 1: all_transactions
--- The foundational view combining exchange and on-chain transactions.
+-- VIEW 1: all_transactions (Foundation)
 -- FIX: Uses correct `id` for on-chain `reference_id` to fix saving bug.
 -- FIX: Prefixes view `id` to guarantee uniqueness between sources.
 -- =================================================================
@@ -124,9 +123,9 @@ WHERE (b.total_inflow_amount - b.total_outflow_amount) > 0.000001;
 
 
 -- =================================================================
--- VIEW 4: v_profit_and_loss (Re-created to prevent drop)
+-- VIEW 4: v_profit_loss_statement (Name corrected)
 -- =================================================================
-CREATE OR REPLACE VIEW public.v_profit_and_loss AS
+CREATE OR REPLACE VIEW public.v_profit_loss_statement AS -- <<< FIX: Name changed from v_profit_and_loss
 WITH pnl_items AS (
     SELECT user_id, 'Sales Revenue (IAS 2)' AS account, value_in_usd AS balance FROM public.all_transactions WHERE usage = 'sale_ias2' AND value_in_usd IS NOT NULL
     UNION ALL
@@ -157,7 +156,7 @@ ORDER BY user_id, account;
 
 
 -- =================================================================
--- VIEW 5: v_balance_sheet (Re-created to prevent drop)
+-- VIEW 5: v_balance_sheet (Re-created and depends on corrected P&L name)
 -- =================================================================
 CREATE OR REPLACE VIEW public.v_balance_sheet AS
 WITH account_movements AS (
@@ -181,12 +180,12 @@ WITH account_movements AS (
     -- EQUITY
     UNION ALL
     SELECT p.user_id, 'Retained Earnings' AS account, SUM(p.balance) AS balance_change
-    FROM public.v_profit_and_loss p
-    WHERE p.account not in ('Unrealized Gains on Intangibles (Revaluation)') -- Revaluation surplus goes to OCI, not Retained Earnings
+    FROM public.v_profit_loss_statement p -- <<< FIX: Referencing corrected view name
+    WHERE p.account not in ('Unrealized Gains on Intangibles (Revaluation)')
     GROUP BY p.user_id
     UNION ALL
     SELECT p.user_id, 'Revaluation Surplus' AS account, SUM(p.balance) AS balance_change
-    FROM public.v_profit_and_loss p
+    FROM public.v_profit_loss_statement p -- <<< FIX: Referencing corrected view name
     WHERE p.account = 'Unrealized Gains on Intangibles (Revaluation)'
     GROUP BY p.user_id
 )
@@ -200,7 +199,7 @@ GROUP BY m.user_id, m.account
 ORDER BY user_id, account;
 
 -- =================================================================
--- VIEW 6: v_cash_flow_statement (Re-created to prevent drop)
+-- VIEW 6: v_cash_flow_statement (No changes needed)
 -- =================================================================
 CREATE OR REPLACE VIEW public.v_cash_flow_statement AS
 WITH cash_flows AS (
@@ -227,11 +226,9 @@ GROUP BY user_id, item
 ORDER BY
     user_id,
     CASE item
-        -- Operating
         WHEN 'Inflow from Sales (IAS 2 & IFRS 15)' THEN 1
         WHEN 'Outflow for Inventory (IAS 2)' THEN 2
         WHEN 'Outflow for Gas Fees' THEN 3
-        -- Investing
         WHEN 'Outflow for Intangible Assets' THEN 4
         WHEN 'Inflow from Sale of Intangibles' THEN 5
         ELSE 99
