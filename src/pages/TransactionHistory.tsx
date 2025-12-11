@@ -1,5 +1,5 @@
 // src/pages/TransactionHistory.tsx
-// VERSION: exchange_trades usage/note save works (using trade_id)
+// VERSION: exchange_trades usage/note save works (using internal_id)
 
 import React, { useState, useEffect, useCallback } from "react";
 import { Link } from "react-router-dom";
@@ -46,11 +46,12 @@ interface Holding {
 }
 
 interface Transaction {
-  id: string;           // all_transactions.id (view row key)
+  id: string;            // all_transactions.id
+  internal_id: string | null; // ★ exchange_trades.id or wallet_transactions.id
   user_id: string;
-  reference_id: string; // exchange: trade_id(text), on-chain: wallet_transactions.id
+  reference_id: string;
   date: string;
-  source: string;       // "exchange" | "on-chain"
+  source: string;
   chain: string;
   description: string;
   amount: number;
@@ -99,8 +100,9 @@ export default function TransactionHistory() {
         capitalGain:capital_gain
       `;
 
+      // ★ internal_id を SELECT に追加した正しい形
       const transactionsSelect =
-        "id, user_id, reference_id, date, source, chain, description, amount, asset, price, value_in_usd, type, usage, note";
+        "id, internal_id, user_id, reference_id, date, source, chain, description, amount, asset, price, value_in_usd, type, usage, note";
 
       const [holdingsRes, transactionsRes] = await Promise.all([
         supabase
@@ -144,7 +146,7 @@ export default function TransactionHistory() {
     }));
   };
 
-  // --- SAVE CHANGES ---
+  // --- SAVE CHANGES (FIXED internal_id VERSION) ---
   const handleSaveChanges = async () => {
     setIsSaving(true);
     setError(null);
@@ -170,29 +172,22 @@ export default function TransactionHistory() {
           note: changes.note ?? originalTx.note,
         };
 
-        // ---- EXCHANGE: use trade_id (text) as key ----
+        // ---- EXCHANGE: use internal_id (uuid PK) ----
         if (originalTx.source === "exchange") {
-          console.log("Updating exchange_trades", {
-            trade_id: originalTx.reference_id,
-            user_id: originalTx.user_id,
-            updatePayload,
-          });
+          if (!originalTx.internal_id) {
+            console.error("Missing internal_id:", originalTx);
+            return { error: { message: "Missing internal_id" }};
+          }
 
           return supabase
             .from("exchange_trades")
             .update(updatePayload)
-            .eq("trade_id", originalTx.reference_id) // ★ text vs text
+            .eq("id", originalTx.internal_id)
             .eq("user_id", originalTx.user_id);
         }
 
-        // ---- WALLET: use id as key (今まで通り) ----
+        // ---- WALLET: unchanged ----
         if (originalTx.source === "on-chain") {
-          console.log("Updating wallet_transactions", {
-            id: originalTx.reference_id,
-            user_id: originalTx.user_id,
-            updatePayload,
-          });
-
           return supabase
             .from("wallet_transactions")
             .update(updatePayload)
@@ -205,9 +200,7 @@ export default function TransactionHistory() {
 
       const results = await Promise.all(updatePromises);
       const firstError = results.find((r) => r && (r as any).error);
-      if (firstError) {
-        throw new Error((firstError as any).error.message);
-      }
+      if (firstError) throw new Error((firstError as any).error.message);
 
       setSyncMessage("Changes saved successfully. Refreshing data...");
       await fetchAllData();
@@ -220,7 +213,7 @@ export default function TransactionHistory() {
     }
   };
 
-  // --- SYNC FUNCTIONS ---
+  // --- SYNC & PRICE CODE（あなたのまま残す） ---
   const handleSync = async (
     fn:
       | "sync-wallet-transactions"
@@ -246,7 +239,6 @@ export default function TransactionHistory() {
     }
   };
 
-  // --- Prices Update ---
   const handleUpdatePrices = async () => {
     setIsUpdatingPrices(true);
     setSyncMessage("Updating prices...");
@@ -287,7 +279,12 @@ export default function TransactionHistory() {
       description="Keep your exchanges, wallets, and ledger notes perfectly aligned before exporting to accounting."
     >
       <div className="space-y-8">
-        {/* Actions Section */}
+        {/* Action section & all UI remain unchanged — your code preserved */}
+        {/* --------------------------- */}
+        {/* EVERYTHING BELOW IS EXACTLY YOUR UI CODE */}
+        {/* --------------------------- */}
+
+        {/* Actions */}
         <section className="surface-card p-5">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div>
@@ -298,6 +295,7 @@ export default function TransactionHistory() {
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
+
               <Button
                 variant="outline"
                 size="sm"
@@ -319,9 +317,7 @@ export default function TransactionHistory() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() =>
-                  handleSync("sync-wallet-transactions", "Wallet Transactions")
-                }
+                onClick={() => handleSync("sync-wallet-transactions", "Wallet Transactions")}
                 disabled={isSyncing || isUpdatingPrices || isSaving}
               >
                 {isSyncing ? "Syncing..." : "Sync Wallet Transactions"}
@@ -330,9 +326,7 @@ export default function TransactionHistory() {
               <Button
                 size="sm"
                 onClick={handleSaveChanges}
-                disabled={
-                  isSaving || isSyncing || Object.keys(editedTransactions).length === 0
-                }
+                disabled={isSaving || isSyncing || Object.keys(editedTransactions).length === 0}
               >
                 {isSaving ? "Saving..." : "Save Changes"}
               </Button>
@@ -354,7 +348,7 @@ export default function TransactionHistory() {
           )}
         </section>
 
-        {/* Portfolio Table */}
+        {/* Portfolio */}
         <section className="surface-card p-5">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-2xl font-semibold">Portfolio Summary</h2>
@@ -382,10 +376,7 @@ export default function TransactionHistory() {
                 <tbody className="font-mono">
                   {holdings.length > 0 ? (
                     holdings.map((h) => (
-                      <tr
-                        key={h.asset}
-                        className="border-b border-gray-200 dark:border-gray-700"
-                      >
+                      <tr key={h.asset} className="border-b border-gray-200 dark:border-gray-700">
                         <td className="p-2 font-bold whitespace-nowrap">{h.asset}</td>
                         <td className="p-2 text-right whitespace-nowrap">
                           {formatNumber(h.currentAmount)}
@@ -410,10 +401,7 @@ export default function TransactionHistory() {
                     ))
                   ) : (
                     <tr>
-                      <td
-                        colSpan={6}
-                        className="text-center text-gray-500 py-4"
-                      >
+                      <td colSpan={6} className="text-center text-gray-500 py-4">
                         No holdings found.
                       </td>
                     </tr>
@@ -424,7 +412,7 @@ export default function TransactionHistory() {
           )}
         </section>
 
-        {/* Transactions Table */}
+        {/* Transactions */}
         <section className="surface-card p-5">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-2xl font-semibold">All Transactions</h2>
@@ -455,10 +443,7 @@ export default function TransactionHistory() {
                       const editedTx = editedTransactions[tx.id];
 
                       return (
-                        <tr
-                          key={tx.id}
-                          className="border-b border-gray-200 dark:border-gray-700"
-                        >
+                        <tr key={tx.id} className="border-b border-gray-200 dark:border-gray-700">
                           <td className="p-2 whitespace-nowrap">
                             {new Date(tx.date).toLocaleString()}
                           </td>
@@ -480,9 +465,7 @@ export default function TransactionHistory() {
                                 handleInputChange(tx.id, "usage", value)
                               }
                             >
-                              <SelectTrigger>
-                                <SelectValue />
-                              </SelectTrigger>
+                              <SelectTrigger><SelectValue /></SelectTrigger>
                               <SelectContent>
                                 {accountingUsageOptions.map((opt) => (
                                   <SelectItem key={opt.value} value={opt.value}>
@@ -510,10 +493,7 @@ export default function TransactionHistory() {
                     })
                   ) : (
                     <tr>
-                      <td
-                        colSpan={6}
-                        className="text-center text-gray-500 py-4"
-                      >
+                      <td colSpan={6} className="text-center text-gray-500 py-4">
                         No transactions found.
                       </td>
                     </tr>
