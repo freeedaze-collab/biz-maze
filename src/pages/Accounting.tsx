@@ -257,7 +257,7 @@ export default function Accounting() {
                                                     <span className="text-slate-600">{item.label}</span>
                                                     <span>{formatCurrency(item.value)}</span>
                                                 </div>
-V                                            ))}
+                                            ))}
                                             <div className="flex justify-between py-2 ml-4 font-semibold">
                                                 <span>Net Cash from Investing Activities</span>
                                                 <span>{formatCurrency(totalInvestingCF)}</span>
