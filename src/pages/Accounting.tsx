@@ -58,7 +58,7 @@ export default function Accounting() {
 
         try {
             const [plRes, bsRes, cfRes] = await Promise.all([
-                supabase.from('v_profit_loss').select('*').eq('user_id', user.id).single(),
+                supabase.from('v_profit_loss_statement').select('*').eq('user_id', user.id).single(),
                 supabase.from('v_balance_sheet').select('*').eq('user_id', user.id).single(),
                 supabase.from('v_cash_flow_statement').select('*').eq('user_id', user.id).single()
             ]);
