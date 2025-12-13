@@ -1,6 +1,6 @@
 
 // supabase/functions/sync-wallet-transactions/index.ts
-// FINAL VERSION: Fixes the crash by safely handling cases where 'from' address is missing.
+// FINAL VERSION: Adds a final validation layer to filter out malformed 'ghost' transactions from Ankr.
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
@@ -11,36 +11,20 @@ export const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// Ankr API Key from environment variables
 const ANKR_API_KEY = Deno.env.get('ANKR_API_KEY') ?? '';
 
-interface WalletRequestBody {
-  walletAddress: string;
-}
+interface WalletRequestBody { walletAddress: string; }
 
 serve(async (req) => {
-  // Handle preflight OPTIONS request
-  if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders });
-  }
+  if (req.method === 'OPTIONS') { return new Response('ok', { headers: corsHeaders }); }
 
   try {
-    // Create Supabase client with auth header
-    const supabaseClient = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_ANON_KEY') ?? '',
-      { global: { headers: { Authorization: req.headers.get('Authorization')! } } }
-    );
-
+    const supabaseClient = createClient( Deno.env.get('SUPABASE_URL') ?? '', Deno.env.get('SUPABASE_ANON_KEY') ?? '', { global: { headers: { Authorization: req.headers.get('Authorization')! } } });
     const { data: { user } } = await supabaseClient.auth.getUser();
-    if (!user) {
-      return new Response(JSON.stringify({ error: 'User not authenticated' }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-    }
+    if (!user) { return new Response(JSON.stringify({ error: 'User not authenticated' }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }); }
 
     const { walletAddress }: WalletRequestBody = await req.json();
-    if (!walletAddress) {
-      return new Response(JSON.stringify({ error: 'walletAddress is required' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-    }
+    if (!walletAddress) { return new Response(JSON.stringify({ error: 'walletAddress is required' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }); }
 
     const chainsToSync = ['eth', 'polygon', 'bsc', 'arbitrum', 'optimism', 'avalanche'];
     let allTransactions: any[] = [];
@@ -61,28 +45,40 @@ serve(async (req) => {
       } catch (e) { console.error(`Error processing chain [${chain}]:`, e.message); }
     }
 
-    console.log(`Received a total of ${allTransactions.length} transactions from Ankr across all chains.`);
+    console.log(`Received a total of ${allTransactions.length} transactions from Ankr.`);
 
     if (allTransactions.length === 0) {
         return new Response(JSON.stringify({ message: 'No new transactions found.' }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
-    const recordsToUpsert = allTransactions.map(tx => {
+    // ===== FINAL DEFENSE: Filter out malformed/ghost transactions =====
+    // A transaction is only valid if it has a hash, a timestamp, and a chainId.
+    const validTransactions = allTransactions.filter(tx => {
+        if (!tx || !tx.hash || !tx.timestamp || !tx.chainId) {
+            console.warn('Skipping malformed transaction object received from Ankr:', tx);
+            return false;
+        }
+        return true;
+    });
+    console.log(`Processing ${validTransactions.length} valid transactions...`);
+
+    if (validTransactions.length === 0) {
+        return new Response(JSON.stringify({ message: 'All fetched transactions were malformed. Nothing to save.' }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
+
+    const recordsToUpsert = validTransactions.map(tx => {
       let valueWei = null;
       if (tx.value && (tx.value.startsWith('0x') || /^[0-9]+$/.test(tx.value))) {
-          try { valueWei = BigInt(tx.value).toString(); } catch (e) { console.error(`Could not parse 'value' ("${tx.value}") into BigInt for tx ${tx.hash}. Setting to null.`); valueWei = null; }
+          try { valueWei = BigInt(tx.value).toString(); } catch (e) { valueWei = null; }
       }
-      
-      // ===== ROBUST DIRECTION LOGIC =====
-      // Safely check for the existence of tx.from before calling .toLowerCase()
       const direction = tx.from && tx.from.toLowerCase() === walletAddress.toLowerCase() ? 'OUT' : 'IN';
 
       return {
         user_id: user.id,
         wallet_address: walletAddress,
-        tx_hash: tx.hash,
+        tx_hash: tx.hash, 
         chain_id: parseInt(tx.chainId, 16),
-        direction: direction, // Use the safely determined direction
+        direction: direction,
         timestamp: new Date(parseInt(tx.timestamp, 16) * 1000).toISOString(),
         from_address: tx.from,
         to_address: tx.to,
@@ -97,10 +93,10 @@ serve(async (req) => {
 
     if (upsertError) { throw new Error(`Supabase upsert error: ${upsertError.message}`); }
 
-    return new Response(JSON.stringify({ message: `Sync successful. ${recordsToUpsert.length} transactions processed.` }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    return new Response(JSON.stringify({ message: `Sync successful. ${recordsToUpsert.length} valid transactions processed.` }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
   } catch (err) {
-    console.error('CRITICAL ERROR in sync-wallet-transactions:', err);
+    console.error('CRITICAL ERROR in sync-wallet-transactions:', err.message, err.stack);
     return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   }
 });
