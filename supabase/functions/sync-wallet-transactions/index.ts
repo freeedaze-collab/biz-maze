@@ -1,6 +1,6 @@
 
 // supabase/functions/sync-wallet-transactions/index.ts
-// FINAL VERSION: Adds 'includePrice: true' to fetch USD value from Ankr.
+// FINAL VERSION: Completely rewritten based on past proven logic, ensuring USD value is correctly processed.
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
@@ -8,10 +8,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 export const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 
 const ANKR_API_KEY = Deno.env.get('ANKR_API_KEY') ?? '';
-
-const chainIdMap: { [key: string]: number } = {
-  eth: 1, polygon: 137, bsc: 56, arbitrum: 42161, optimism: 10, avalanche: 43114,
-};
+const chainIdMap: { [key: string]: number } = { eth: 1, polygon: 137, bsc: 56, arbitrum: 42161, optimism: 10, avalanche: 43114 };
 
 interface WalletRequestBody { walletAddress: string; }
 
@@ -31,7 +28,6 @@ serve(async (req) => {
 
     for (const chain of chainsToSync) {
       try {
-        // ===== STEP 1 of 2: Add includePrice: true to the Ankr API call =====
         const ankrRequestBody = { jsonrpc: '2.0', method: 'ankr_getTransactionsByAddress', params: { address: walletAddress, blockchain: [chain], limit: 1000, includeLogs: false, includePrice: true }, id: 1 };
         const response = await fetch(`https://rpc.ankr.com/multichain/${ANKR_API_KEY}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ankrRequestBody) });
         if (!response.ok) { console.error(`Ankr API failed for [${chain}]: ${response.statusText}`); continue; }
@@ -53,27 +49,39 @@ serve(async (req) => {
     if (validTransactions.length === 0) {
         return new Response(JSON.stringify({ message: 'No valid transactions found to save.' }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
-    console.log(`Processing ${validTransactions.length} valid transactions...`);
 
+    // --- REWRITTEN LOGIC BASED ON PROVEN PAST CODE ---
     const recordsToUpsert = validTransactions.map(tx => {
-      let valueWei = null;
-      if (tx.value && (tx.value.startsWith('0x') || /^[0-9]+$/.test(tx.value))) {
-          try { valueWei = BigInt(tx.value).toString(); } catch (e) { valueWei = null; }
-      }
       const direction = tx.from && tx.from.toLowerCase() === walletAddress.toLowerCase() ? 'OUT' : 'IN';
       const chainId = typeof tx.chainId === 'string' && tx.chainId.startsWith('0x') ? parseInt(tx.chainId, 16) : Number(tx.chainId);
+      
+      // Safely parse value to BigInt string, or null if invalid
+      let valueWei = null;
+      if (tx.value && /^(0x)?[0-9a-fA-F]+$/.test(tx.value)) {
+          try { valueWei = BigInt(tx.value).toString(); } catch { valueWei = null; }
+      }
+
+      // THE FIX: Directly and correctly map the fetched `valueUsd` to the `value_usd` column.
+      const valueUsd = tx.valueUsd ? parseFloat(tx.valueUsd) : null;
 
       return {
-        user_id: user.id, wallet_address: walletAddress, tx_hash: tx.hash, 
+        user_id: user.id,
+        wallet_address: walletAddress,
+        tx_hash: tx.hash, 
         chain_id: chainId,
         direction: direction,
         timestamp: new Date(parseInt(tx.timestamp, 16) * 1000).toISOString(),
-        from_address: tx.from, to_address: tx.to, value_wei: valueWei,
+        from_address: tx.from,
+        to_address: tx.to,
+        value_wei: valueWei,
         asset_symbol: tx.tokenSymbol || 'ETH', 
-        value_usd: tx.valueUsd, // This will now be populated thanks to includePrice: true
+        value_usd: valueUsd, // Correctly mapped from Ankr's response
         raw: tx,
       };
     });
+    // --- END OF REWRITTEN LOGIC ---
+
+    console.log(`Attempting to upsert ${recordsToUpsert.length} valid records...`);
 
     const { error: upsertError } = await supabaseClient.from('wallet_transactions').upsert(recordsToUpsert, { onConflict: 'tx_hash, user_id' });
     if (upsertError) { throw new Error(`Supabase upsert error: ${upsertError.message}`); }
