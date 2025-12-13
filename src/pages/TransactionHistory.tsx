@@ -1,6 +1,6 @@
 
 // src/pages/TransactionHistory.tsx
-// VERSION 16: Makes wallet sync button actually work by iterating through linked wallets.
+// VERSION 17: Adds extensive logging to debug the wallet sync issue.
 import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { supabase } from "../integrations/supabase/client";
@@ -46,7 +46,7 @@ interface Transaction {
     reference_id: string;
     date: string;
     source: string;
-    chain: string;
+    chain: string; // Represents the exchange or blockchain name
     description: string;
     amount: number;
     asset: string;
@@ -59,11 +59,15 @@ interface Transaction {
 
 type EditedTransaction = Partial<Pick<Transaction, 'usage' | 'note'>>;
 
+
 // --- Main Component ---
 export default function TransactionHistory() {
+    // Component State
     const [transactions, setTransactions] = useState<Transaction[]>([]);
     const [holdings, setHoldings] = useState<Holding[]>([]);
     const [editedTransactions, setEditedTransactions] = useState<Record<string, EditedTransaction>>({});
+
+    // UI/Loading State
     const [isLoading, setIsLoading] = useState(true);
     const [isSaving, setIsSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -71,6 +75,7 @@ export default function TransactionHistory() {
     const [isUpdatingPrices, setIsUpdatingPrices] = useState(false);
     const [syncMessage, setSyncMessage] = useState<string | null>(null);
 
+    // --- Data Fetching ---
     const fetchAllData = useCallback(async () => {
         setIsLoading(true);
         setError(null);
@@ -102,6 +107,7 @@ export default function TransactionHistory() {
 
     useEffect(() => { fetchAllData(); }, [fetchAllData]);
 
+    // --- Event Handlers ---
     const handleInputChange = (id: string, field: 'usage' | 'note', value: string) => {
         setEditedTransactions(prev => ({ ...prev, [id]: { ...prev[id], [field]: value } }));
     };
@@ -168,65 +174,75 @@ export default function TransactionHistory() {
 
     const handleSync = async (syncFunction: 'sync-wallet-transactions' | 'exchange-sync-all' | 'sync-historical-exchange-rates', syncType: string) => {
         setIsSyncing(true);
-        setSyncMessage(`Syncing ${syncType}...`);
+        setSyncMessage(`Initiating ${syncType} sync...`);
         setError(null);
+        console.log(`[DEBUG] handleSync called with syncFunction: ${syncFunction}`);
+
         try {
             if (syncFunction === 'sync-wallet-transactions') {
                 const { data: { user } } = await supabase.auth.getUser();
                 if (!user) throw new Error("User not authenticated");
 
-                setSyncMessage("Fetching linked wallets...");
+                setSyncMessage("Fetching linked wallets from database...");
                 const { data: wallets, error: walletsError } = await supabase
                     .from('wallets')
                     .select('address')
                     .eq('user_id', user.id);
 
                 if (walletsError) throw walletsError;
+                
+                console.log("[DEBUG] Fetched wallets from DB:", wallets);
+
                 if (!wallets || wallets.length === 0) {
-                    setSyncMessage("No linked wallets found. Please link a wallet first.");
-                    setIsSyncing(false); // Stop the sync process
+                    setSyncMessage("No linked wallets found in the database. Please link a wallet first.");
+                    setIsSyncing(false);
                     return;
                 }
 
                 const chainsToSync = ['ethereum', 'polygon', 'bsc'];
                 let syncErrors: string[] = [];
-
-                setSyncMessage(`Found ${wallets.length} wallet(s). Syncing across ${chainsToSync.length} chains...`);
+                setSyncMessage(`Found ${wallets.length} wallet(s). Preparing to sync across ${chainsToSync.length} chains...`);
 
                 for (const wallet of wallets) {
+                     if (!wallet.address) {
+                        console.warn("[DEBUG] Skipping a wallet record with no address.", wallet);
+                        continue;
+                    }
                     for (const chain of chainsToSync) {
                         try {
+                            console.log(`[DEBUG] Invoking 'sync-wallet-transactions' for wallet: "${wallet.address}", chain: "${chain}"`);
                             const { error: invokeError } = await supabase.functions.invoke('sync-wallet-transactions', {
                                 body: { walletAddress: wallet.address, chain: chain }
                             });
                             if (invokeError) {
                                 const errorMsg = invokeError.message || JSON.stringify(invokeError);
-                                console.warn(`Failed to sync ${wallet.address} on ${chain}: ${errorMsg}`);
+                                console.error(`[ERROR] on sync for ${wallet.address} on ${chain}:`, errorMsg);
                                 syncErrors.push(errorMsg);
                             }
                         } catch (e: any) {
-                             syncErrors.push(`Exception during sync for ${wallet.address} on ${chain}: ${e.message}`);
+                             console.error(`[CRITICAL] EXCEPTION during invoke for ${wallet.address} on ${chain}:`, e);
+                             syncErrors.push(`Exception for ${wallet.address}: ${e.message}`);
                         }
                     }
                 }
                 if (syncErrors.length > 0) {
-                    setError(`Sync completed with some issues: ${syncErrors.join("; ")}`)
+                    setError(`Sync completed with ${syncErrors.length} issue(s). Check browser console for details.`);
                 } else {
-                    setSyncMessage('All wallets and chains synced.');
+                    setSyncMessage('Wallet sync tasks initiated.');
                 }
-
             } else {
+                console.log(`[DEBUG] Invoking generic sync function: ${syncFunction}`);
                 const { error } = await supabase.functions.invoke(syncFunction, { body: {} });
                 if (error) throw error;
             }
 
-            setSyncMessage("Sync complete. Refreshing all data...");
+            setSyncMessage("Sync tasks complete. Refreshing all data...");
             await fetchAllData();
             setSyncMessage("Data refreshed successfully.");
 
         } catch (err: any) {
-            console.error(`${syncType} sync failed:`, err);
-            setError(`A critical error occurred during ${syncType} sync: ${err.message}`);
+            console.error(`[FATAL] A critical error occurred during ${syncType} sync:`, err);
+            setError(`Sync failed: ${err.message}. Check browser console for details.`);
         } finally {
             setIsSyncing(false);
         }
