@@ -1,6 +1,6 @@
 
 // supabase/functions/sync-wallet-transactions/index.ts
-// FINAL VERSION: Handles Ankr's response format by converting 'blockchain' string to 'chainId' number.
+// FINAL VERSION: Adds 'includePrice: true' to fetch USD value from Ankr.
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
@@ -9,14 +9,8 @@ export const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control
 
 const ANKR_API_KEY = Deno.env.get('ANKR_API_KEY') ?? '';
 
-// Map from Ankr's blockchain string to a numerical chainId
 const chainIdMap: { [key: string]: number } = {
-  eth: 1,
-  polygon: 137,
-  bsc: 56,
-  arbitrum: 42161,
-  optimism: 10,
-  avalanche: 43114,
+  eth: 1, polygon: 137, bsc: 56, arbitrum: 42161, optimism: 10, avalanche: 43114,
 };
 
 interface WalletRequestBody { walletAddress: string; }
@@ -37,36 +31,28 @@ serve(async (req) => {
 
     for (const chain of chainsToSync) {
       try {
-        const ankrRequestBody = { jsonrpc: '2.0', method: 'ankr_getTransactionsByAddress', params: { address: walletAddress, blockchain: [chain], limit: 1000, includeLogs: false }, id: 1 };
+        // ===== STEP 1 of 2: Add includePrice: true to the Ankr API call =====
+        const ankrRequestBody = { jsonrpc: '2.0', method: 'ankr_getTransactionsByAddress', params: { address: walletAddress, blockchain: [chain], limit: 1000, includeLogs: false, includePrice: true }, id: 1 };
         const response = await fetch(`https://rpc.ankr.com/multichain/${ANKR_API_KEY}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ankrRequestBody) });
         if (!response.ok) { console.error(`Ankr API failed for [${chain}]: ${response.statusText}`); continue; }
         const result = await response.json();
         if (result.error) { console.error(`Ankr API Error for [${chain}]: ${result.error.message}`); continue; }
 
         let transactions = result.result?.transactions || [];
-
-        // ===== FINAL FIX: Augment transactions with chainId from blockchain string =====
         transactions = transactions.map(tx => {
             if (!tx.chainId && tx.blockchain && chainIdMap[tx.blockchain]) {
                 return { ...tx, chainId: chainIdMap[tx.blockchain] };
             }
             return tx;
         });
-        // ==========================================================================
-
         allTransactions = allTransactions.concat(transactions);
       } catch (e) { console.error(`Error processing chain [${chain}]:`, e.message); }
     }
 
-    const validTransactions = allTransactions.filter(tx => {
-        if (!tx || !tx.hash || !tx.timestamp || !tx.chainId) { return false; }
-        return true;
-    });
-
+    const validTransactions = allTransactions.filter(tx => (tx && tx.hash && tx.timestamp && tx.chainId));
     if (validTransactions.length === 0) {
         return new Response(JSON.stringify({ message: 'No valid transactions found to save.' }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
-
     console.log(`Processing ${validTransactions.length} valid transactions...`);
 
     const recordsToUpsert = validTransactions.map(tx => {
@@ -75,8 +61,6 @@ serve(async (req) => {
           try { valueWei = BigInt(tx.value).toString(); } catch (e) { valueWei = null; }
       }
       const direction = tx.from && tx.from.toLowerCase() === walletAddress.toLowerCase() ? 'OUT' : 'IN';
-      
-      // Robustly parse chainId whether it's a hex string or a number from our map
       const chainId = typeof tx.chainId === 'string' && tx.chainId.startsWith('0x') ? parseInt(tx.chainId, 16) : Number(tx.chainId);
 
       return {
@@ -85,12 +69,13 @@ serve(async (req) => {
         direction: direction,
         timestamp: new Date(parseInt(tx.timestamp, 16) * 1000).toISOString(),
         from_address: tx.from, to_address: tx.to, value_wei: valueWei,
-        asset_symbol: tx.tokenSymbol || 'ETH', value_usd: tx.valueUsd, raw: tx,
+        asset_symbol: tx.tokenSymbol || 'ETH', 
+        value_usd: tx.valueUsd, // This will now be populated thanks to includePrice: true
+        raw: tx,
       };
     });
 
     const { error: upsertError } = await supabaseClient.from('wallet_transactions').upsert(recordsToUpsert, { onConflict: 'tx_hash, user_id' });
-
     if (upsertError) { throw new Error(`Supabase upsert error: ${upsertError.message}`); }
 
     return new Response(JSON.stringify({ message: `Sync successful. ${recordsToUpsert.length} valid transactions processed.` }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
