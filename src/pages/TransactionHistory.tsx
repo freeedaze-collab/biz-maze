@@ -1,8 +1,7 @@
 
 // src/pages/TransactionHistory.tsx
-// VERSION 21: Final fix for v_holdings schema based on user-provided screenshot.
+// FINAL VERSION: Correctly formatted and corresponds to the new v_holdings view.
 import React, { useState, useEffect, useCallback } from 'react';
-import { Link } from 'react-router-dom';
 import { supabase } from "../integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,6 +9,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import AppPageLayout from "@/components/layout/AppPageLayout";
 
 const accountingUsageOptions = [{ value: 'investment_acquisition_ias38', label: 'Investment Acquisition (IAS 38)' }, { value: 'trading_acquisition_ias2', label: 'Trading Acquisition (IAS 2)' }, { value: 'mining_rewards', label: 'Mining Rewards' }, { value: 'staking_rewards', label: 'Staking Rewards' }, { value: 'revenue_ifrs15', label: 'Received as Consideration (IFRS 15)' }, { value: 'impairment_ias38', label: 'Impairment (IAS 38)' }, { value: 'revaluation_increase_ias38', label: 'Revaluation Increase (IAS 38)' }, { value: 'revaluation_decrease_ias38', label: 'Revaluation Decrease (IAS 38)' }, { value: 'lcnrv_ias2', label: 'LCNRV Adjustment (IAS 2)' }, { value: 'fvlcs_ias2', label: 'FVLCS Adjustment (IAS 2)' }, { value: 'sale_ias38', label: 'Sale of Intangible Asset (IAS 38)' }, { value: 'sale_ias2', label: 'Sale of Inventory (IAS 2)' }, { value: 'crypto_to_crypto_exchange', label: 'Crypto-to-Crypto Exchange' }, { value: 'gas_fees', label: 'Gas / Network Fee' }, { value: 'loss_unrecoverable', label: 'Loss of Crypto (Unrecoverable)' }, { value: 'unspecified', label: 'Unspecified' }];
+
+// This interface now perfectly matches the new v_holdings view and the UI table.
 interface Holding { asset: string; currentAmount: number; currentPrice: number; currentValueUsd: number; averageBuyPrice: number; capitalGain: number; }
 interface Transaction { id: string; user_id: string; reference_id: string; date: string; source: string; chain: string; description: string; amount: number; asset: string; price: number; value_in_usd: number; type: string; usage: string | null; note: string | null; }
 type EditedTransaction = Partial<Pick<Transaction, 'usage' | 'note'>>;
@@ -32,7 +33,8 @@ export default function TransactionHistory() {
             const { data: { user } } = await supabase.auth.getUser();
             if (!user) throw new Error("User not authenticated");
 
-            const holdingsSelect = 'asset, quantity, current_value_usd, price_per_unit_usd';
+            // Select statement now fetches the correct columns from the new v_holdings view.
+            const holdingsSelect = 'asset, current_amount, current_price, current_value_usd, average_buy_price, capital_gain';
             const transactionsSelect = 'id, user_id, reference_id, date, source, chain, description, amount, asset, price, value_in_usd, type, usage, note';
 
             const [holdingsRes, transactionsRes] = await Promise.all([
@@ -43,13 +45,14 @@ export default function TransactionHistory() {
             if (holdingsRes.error) throw new Error(`Holdings Error: ${holdingsRes.error.message}`);
             if (transactionsRes.error) throw new Error(`Transactions Error: ${transactionsRes.error.message}`);
 
+            // Map the snake_case columns from the DB to the camelCase properties of the Holding interface.
             const mappedHoldings = (holdingsRes.data || []).map(h => ({
                 asset: h.asset,
-                currentAmount: h.quantity,
-                currentPrice: h.price_per_unit_usd,
+                currentAmount: h.current_amount,
+                currentPrice: h.current_price,
                 currentValueUsd: h.current_value_usd,
-                averageBuyPrice: 0, // Not available in current view, placeholder
-                capitalGain: 0,     // Not available in current view, placeholder
+                averageBuyPrice: h.average_buy_price,
+                capitalGain: h.capital_gain,
             }));
 
             setHoldings(mappedHoldings as Holding[]);
@@ -64,7 +67,6 @@ export default function TransactionHistory() {
 
     useEffect(() => { fetchAllData(); }, [fetchAllData]);
 
-    // ... (The rest of the component remains unchanged, as the logic for sync, save, etc. is correct)
     const handleInputChange = (id: string, field: 'usage' | 'note', value: string) => {
         setEditedTransactions(prev => ({ ...prev, [id]: { ...prev[id], [field]: value } }));
     };
@@ -219,7 +221,7 @@ export default function TransactionHistory() {
                                 <tr key={tx.id}><td className="p-2">{new Date(tx.date).toLocaleString()}</td><td className="p-2">{tx.description}</td><td className="p-2 text-right">{formatNumber(tx.amount)} {tx.asset}</td><td className="p-2 text-right">{formatCurrency(tx.value_in_usd)}</td>
                                 <td className="p-2" style={{minWidth: '200px'}}><Select value={editedTransactions[tx.id]?.usage ?? tx.usage ?? 'unspecified'} onValueChange={(v) => handleInputChange(tx.id, 'usage', v)}><SelectTrigger><SelectValue/></SelectTrigger><SelectContent>{accountingUsageOptions.map(opt => <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>)}</SelectContent></Select></td>
                                 <td className="p-2" style={{minWidth: '200px'}}><Input type="text" placeholder="Add a note..." value={editedTransactions[tx.id]?.note ?? tx.note ?? ''} onChange={(e) => handleInputChange(tx.id, 'note', e.target.value)} /></td></tr>
-                            )) : <tr><td colSpan={6} className="text-center py-4 text-muted-foreground">No transactions found.</td></tr>}</tbody></table>
+                                )) : <tr><td colSpan={6} className="text-center py-4 text-muted-foreground">No transactions found.</td></tr>}</tbody></table>
                         </div>
                     )}
                 </section>
