@@ -1,6 +1,6 @@
 
 // src/pages/TransactionHistory.tsx
-// VERSION 19: Fixes DB query and simplifies wallet sync to a single call.
+// VERSION 20: Definitive fix for holdings view based on direct schema review.
 import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { supabase } from "../integrations/supabase/client";
@@ -32,7 +32,7 @@ export default function TransactionHistory() {
             const { data: { user } } = await supabase.auth.getUser();
             if (!user) throw new Error("User not authenticated");
 
-            const holdingsSelect = `asset, quantity, price, value_usd`;
+            const holdingsSelect = 'asset, current_amount, current_price, current_value_usd, average_buy_price, capital_gain';
             const transactionsSelect = 'id, user_id, reference_id, date, source, chain, description, amount, asset, price, value_in_usd, type, usage, note';
 
             const [holdingsRes, transactionsRes] = await Promise.all([
@@ -43,7 +43,15 @@ export default function TransactionHistory() {
             if (holdingsRes.error) throw new Error(`Holdings Error: ${holdingsRes.error.message}`);
             if (transactionsRes.error) throw new Error(`Transactions Error: ${transactionsRes.error.message}`);
 
-            const mappedHoldings = (holdingsRes.data || []).map(h => ({ asset: h.asset, currentAmount: h.quantity, currentPrice: h.price, currentValueUsd: h.value_usd, averageBuyPrice: 0, capitalGain: 0 }));
+            const mappedHoldings = (holdingsRes.data || []).map(h => ({
+                asset: h.asset,
+                currentAmount: h.current_amount,
+                currentPrice: h.current_price,
+                currentValueUsd: h.current_value_usd,
+                averageBuyPrice: h.average_buy_price,
+                capitalGain: h.capital_gain,
+            }));
+
             setHoldings(mappedHoldings as Holding[]);
             setTransactions(transactionsRes.data as Transaction[] || []);
         } catch (err: any) {
@@ -147,6 +155,7 @@ export default function TransactionHistory() {
 
     const formatCurrency = (val: number | null | undefined) => (val ?? 0).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
     const formatNumber = (val: number | null | undefined) => (val ?? 0).toFixed(6);
+    const getPnlClass = (pnl: number | null) => (pnl ?? 0) === 0 ? 'text-gray-500' : pnl > 0 ? 'text-green-500' : 'text-red-500';
 
     return (
         <AppPageLayout title="Transactions & Portfolio" description="Keep your exchanges, wallets, and ledger notes perfectly aligned.">
@@ -168,15 +177,32 @@ export default function TransactionHistory() {
                     <div className="flex items-center justify-between mb-4"><h2 className="text-2xl font-semibold">Portfolio Summary</h2></div>
                     {isLoading ? <p>Loading...</p> : (
                         <div className="table-shell">
-                            <table className="min-w-full text-sm text-left"><thead className="font-mono text-gray-500"><tr>
-                                <th className="p-2 font-semibold">Asset</th>
-                                <th className="p-2 font-semibold text-right">Amount</th>
-                                <th className="p-2 font-semibold text-right">Current Price</th>
-                                <th className="p-2 font-semibold text-right">Current Value</th>
-                            </tr></thead>
-                            <tbody className="font-mono">{holdings.length > 0 ? holdings.map((h) => (
-                                <tr key={h.asset}><td className="p-2 font-bold">{h.asset}</td><td className="p-2 text-right">{formatNumber(h.currentAmount)}</td><td className="p-2 text-right">{formatCurrency(h.currentPrice)}</td><td className="p-2 text-right font-semibold">{formatCurrency(h.currentValueUsd)}</td></tr>
-                            )) : <tr><td colSpan={4} className="text-center py-4 text-muted-foreground">No holdings found.</td></tr>}</tbody></table>
+                             <table className="min-w-full text-sm text-left">
+                                <thead className="font-mono text-gray-500">
+                                    <tr>
+                                        <th className="p-2 font-semibold">Asset</th>
+                                        <th className="p-2 font-semibold text-right">Amount</th>
+                                        <th className="p-2 font-semibold text-right">Avg. Buy Price</th>
+                                        <th className="p-2 font-semibold text-right">Current Price</th>
+                                        <th className="p-2 font-semibold text-right">Current Value</th>
+                                        <th className="p-2 font-semibold text-right">Unrealized P&L</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="font-mono">
+                                    {holdings.length > 0 ? holdings.map((h) => (
+                                        <tr key={h.asset} className="border-b border-gray-200 dark:border-gray-700">
+                                            <td className="p-2 font-bold whitespace-nowrap">{h.asset}</td>
+                                            <td className="p-2 text-right whitespace-nowrap">{formatNumber(h.currentAmount)}</td>
+                                            <td className="p-2 text-right whitespace-nowrap">{formatCurrency(h.averageBuyPrice)}</td>
+                                            <td className="p-2 text-right whitespace-nowrap">{formatCurrency(h.currentPrice)}</td>
+                                            <td className="p-2 text-right whitespace-nowrap font-semibold">{formatCurrency(h.currentValueUsd)}</td>
+                                            <td className={`p-2 text-right whitespace-nowrap ${getPnlClass(h.capitalGain)}`}>{formatCurrency(h.capitalGain)}</td>
+                                        </tr>
+                                    )) : (
+                                        <tr><td colSpan={6} className="text-center text-gray-500 py-4">No holdings found.</td></tr>
+                                    )}
+                                </tbody>
+                            </table>
                         </div>
                     )}
                 </section>
