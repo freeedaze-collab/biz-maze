@@ -1,15 +1,11 @@
 
 // supabase/functions/sync-wallet-transactions/index.ts
-// FINAL VERSION: Adds a final validation layer to filter out malformed 'ghost' transactions from Ankr.
+// FINAL VERSION: Adds enhanced logging to capture the full raw response from Ankr for deep diagnosis.
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
-// Cors headers
-export const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-};
+export const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 
 const ANKR_API_KEY = Deno.env.get('ANKR_API_KEY') ?? '';
 
@@ -37,7 +33,13 @@ serve(async (req) => {
         const ankrRequestBody = { jsonrpc: '2.0', method: 'ankr_getTransactionsByAddress', params: { address: walletAddress, blockchain: [chain], limit: 1000, includeLogs: false }, id: 1 };
         const response = await fetch(`https://rpc.ankr.com/multichain/${ANKR_API_KEY}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ankrRequestBody) });
         if (!response.ok) { console.error(`Ankr API failed for chain [${chain}]: ${response.statusText}`); continue; }
+        
         const result = await response.json();
+        
+        // ===== DIAGNOSTIC LOGGING: Dump the entire Ankr response =====
+        console.log(`Full Ankr response for [${chain}]:`, JSON.stringify(result, null, 2));
+        // =============================================================
+
         if (result.error) { console.error(`Ankr API Error for chain [${chain}]: ${result.error.message}`); continue; }
         const transactions = result.result?.transactions || [];
         console.log(`Found ${transactions.length} transactions on [${chain}].`);
@@ -51,8 +53,6 @@ serve(async (req) => {
         return new Response(JSON.stringify({ message: 'No new transactions found.' }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
-    // ===== FINAL DEFENSE: Filter out malformed/ghost transactions =====
-    // A transaction is only valid if it has a hash, a timestamp, and a chainId.
     const validTransactions = allTransactions.filter(tx => {
         if (!tx || !tx.hash || !tx.timestamp || !tx.chainId) {
             console.warn('Skipping malformed transaction object received from Ankr:', tx);
@@ -74,18 +74,11 @@ serve(async (req) => {
       const direction = tx.from && tx.from.toLowerCase() === walletAddress.toLowerCase() ? 'OUT' : 'IN';
 
       return {
-        user_id: user.id,
-        wallet_address: walletAddress,
-        tx_hash: tx.hash, 
-        chain_id: parseInt(tx.chainId, 16),
-        direction: direction,
+        user_id: user.id, wallet_address: walletAddress, tx_hash: tx.hash, 
+        chain_id: parseInt(tx.chainId, 16), direction: direction,
         timestamp: new Date(parseInt(tx.timestamp, 16) * 1000).toISOString(),
-        from_address: tx.from,
-        to_address: tx.to,
-        value_wei: valueWei,
-        asset_symbol: tx.tokenSymbol || 'ETH',
-        value_usd: tx.valueUsd,
-        raw: tx,
+        from_address: tx.from, to_address: tx.to, value_wei: valueWei,
+        asset_symbol: tx.tokenSymbol || 'ETH', value_usd: tx.valueUsd, raw: tx,
       };
     });
 
