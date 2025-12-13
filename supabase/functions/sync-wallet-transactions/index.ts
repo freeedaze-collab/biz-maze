@@ -1,6 +1,6 @@
 
 // supabase/functions/sync-wallet-transactions/index.ts
-// FINAL VERSION: Fixes the function crash by fetching transactions per-chain instead of all at once.
+// FINAL VERSION: Fixes the BigInt conversion crash by robustly parsing the 'value' field.
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
@@ -85,7 +85,6 @@ serve(async (req) => {
         allTransactions = allTransactions.concat(transactions);
       } catch (e) {
         console.error(`Error processing chain [${chain}]:`, e.message);
-        // Continue to next chain even if one fails
       }
     }
 
@@ -95,20 +94,34 @@ serve(async (req) => {
         return new Response(JSON.stringify({ message: 'No new transactions found.' }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
-    const recordsToUpsert = allTransactions.map(tx => ({
+    const recordsToUpsert = allTransactions.map(tx => {
+      // ===== ROBUST PARSING LOGIC =====
+      // Safely parse tx.value to prevent crashes from non-numeric strings (e.g., '0x', '', ' ')
+      let valueWei = null;
+      if (tx.value && (tx.value.startsWith('0x') || /^[0-9]+$/.test(tx.value))) {
+          try {
+              valueWei = BigInt(tx.value).toString();
+          } catch (e) {
+              console.error(`Could not parse 'value' ("${tx.value}") into BigInt for tx ${tx.hash}. Setting value_wei to null.`);
+              valueWei = null; // Ensure it's null on failure
+          }
+      }
+
+      return {
         user_id: user.id,
         wallet_address: walletAddress,
         tx_hash: tx.hash,
         chain_id: parseInt(tx.chainId, 16),
-        direction: tx.from === walletAddress.toLowerCase() ? 'OUT' : 'IN',
+        direction: tx.from.toLowerCase() === walletAddress.toLowerCase() ? 'OUT' : 'IN',
         timestamp: new Date(parseInt(tx.timestamp, 16) * 1000).toISOString(),
         from_address: tx.from,
         to_address: tx.to,
-        value_wei: tx.value ? BigInt(tx.value).toString() : null,
-        asset_symbol: tx.tokenSymbol || 'ETH', 
+        value_wei: valueWei, // Use the safely parsed value
+        asset_symbol: tx.tokenSymbol || 'ETH',
         value_usd: tx.valueUsd,
-        raw: tx, 
-    }));
+        raw: tx,
+      };
+    });
 
     const { error: upsertError } = await supabaseClient.from('wallet_transactions').upsert(recordsToUpsert, {
       onConflict: 'tx_hash, user_id',
@@ -121,6 +134,7 @@ serve(async (req) => {
     return new Response(JSON.stringify({ message: `Sync successful. ${recordsToUpsert.length} transactions processed.` }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
   } catch (err) {
+    console.error('CRITICAL ERROR in sync-wallet-transactions:', err);
     return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   }
 });
