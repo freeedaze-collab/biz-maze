@@ -1,6 +1,6 @@
 
 // supabase/functions/sync-wallet-transactions/index.ts
-// FINAL VERSION: Adds enhanced logging to capture the full raw response from Ankr for deep diagnosis.
+// FINAL VERSION: Handles Ankr's response format by converting 'blockchain' string to 'chainId' number.
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
@@ -8,6 +8,16 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 export const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 
 const ANKR_API_KEY = Deno.env.get('ANKR_API_KEY') ?? '';
+
+// Map from Ankr's blockchain string to a numerical chainId
+const chainIdMap: { [key: string]: number } = {
+  eth: 1,
+  polygon: 137,
+  bsc: 56,
+  arbitrum: 42161,
+  optimism: 10,
+  avalanche: 43114,
+};
 
 interface WalletRequestBody { walletAddress: string; }
 
@@ -25,46 +35,39 @@ serve(async (req) => {
     const chainsToSync = ['eth', 'polygon', 'bsc', 'arbitrum', 'optimism', 'avalanche'];
     let allTransactions: any[] = [];
 
-    console.log(`Starting sync for wallet: ${walletAddress}`);
-
     for (const chain of chainsToSync) {
-      console.log(`Fetching [${chain}] transactions...`);
       try {
         const ankrRequestBody = { jsonrpc: '2.0', method: 'ankr_getTransactionsByAddress', params: { address: walletAddress, blockchain: [chain], limit: 1000, includeLogs: false }, id: 1 };
         const response = await fetch(`https://rpc.ankr.com/multichain/${ANKR_API_KEY}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ankrRequestBody) });
-        if (!response.ok) { console.error(`Ankr API failed for chain [${chain}]: ${response.statusText}`); continue; }
-        
+        if (!response.ok) { console.error(`Ankr API failed for [${chain}]: ${response.statusText}`); continue; }
         const result = await response.json();
-        
-        // ===== DIAGNOSTIC LOGGING: Dump the entire Ankr response =====
-        console.log(`Full Ankr response for [${chain}]:`, JSON.stringify(result, null, 2));
-        // =============================================================
+        if (result.error) { console.error(`Ankr API Error for [${chain}]: ${result.error.message}`); continue; }
 
-        if (result.error) { console.error(`Ankr API Error for chain [${chain}]: ${result.error.message}`); continue; }
-        const transactions = result.result?.transactions || [];
-        console.log(`Found ${transactions.length} transactions on [${chain}].`);
+        let transactions = result.result?.transactions || [];
+
+        // ===== FINAL FIX: Augment transactions with chainId from blockchain string =====
+        transactions = transactions.map(tx => {
+            if (!tx.chainId && tx.blockchain && chainIdMap[tx.blockchain]) {
+                return { ...tx, chainId: chainIdMap[tx.blockchain] };
+            }
+            return tx;
+        });
+        // ==========================================================================
+
         allTransactions = allTransactions.concat(transactions);
       } catch (e) { console.error(`Error processing chain [${chain}]:`, e.message); }
     }
 
-    console.log(`Received a total of ${allTransactions.length} transactions from Ankr.`);
-
-    if (allTransactions.length === 0) {
-        return new Response(JSON.stringify({ message: 'No new transactions found.' }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-    }
-
     const validTransactions = allTransactions.filter(tx => {
-        if (!tx || !tx.hash || !tx.timestamp || !tx.chainId) {
-            console.warn('Skipping malformed transaction object received from Ankr:', tx);
-            return false;
-        }
+        if (!tx || !tx.hash || !tx.timestamp || !tx.chainId) { return false; }
         return true;
     });
-    console.log(`Processing ${validTransactions.length} valid transactions...`);
 
     if (validTransactions.length === 0) {
-        return new Response(JSON.stringify({ message: 'All fetched transactions were malformed. Nothing to save.' }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+        return new Response(JSON.stringify({ message: 'No valid transactions found to save.' }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
+
+    console.log(`Processing ${validTransactions.length} valid transactions...`);
 
     const recordsToUpsert = validTransactions.map(tx => {
       let valueWei = null;
@@ -72,10 +75,14 @@ serve(async (req) => {
           try { valueWei = BigInt(tx.value).toString(); } catch (e) { valueWei = null; }
       }
       const direction = tx.from && tx.from.toLowerCase() === walletAddress.toLowerCase() ? 'OUT' : 'IN';
+      
+      // Robustly parse chainId whether it's a hex string or a number from our map
+      const chainId = typeof tx.chainId === 'string' && tx.chainId.startsWith('0x') ? parseInt(tx.chainId, 16) : Number(tx.chainId);
 
       return {
         user_id: user.id, wallet_address: walletAddress, tx_hash: tx.hash, 
-        chain_id: parseInt(tx.chainId, 16), direction: direction,
+        chain_id: chainId,
+        direction: direction,
         timestamp: new Date(parseInt(tx.timestamp, 16) * 1000).toISOString(),
         from_address: tx.from, to_address: tx.to, value_wei: valueWei,
         asset_symbol: tx.tokenSymbol || 'ETH', value_usd: tx.valueUsd, raw: tx,
