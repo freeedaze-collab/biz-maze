@@ -1,97 +1,127 @@
 
 // supabase/functions/sync-wallet-transactions/index.ts
-// VERSION 3: Fetches all supported chains for a wallet in a single run.
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+// FINAL VERSION: Fixes the function crash by fetching transactions per-chain instead of all at once.
 
-const ANKR_CHAIN_NAMES = ['ethereum', 'polygon', 'bsc', 'arbitrum', 'optimism', 'avalanche'];
-const CHAIN_ID_MAP: Record<string, number> = { 'ethereum': 1, 'polygon': 137, 'bsc': 56, 'arbitrum': 42161, 'optimism': 10, 'avalanche': 43114 };
-const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
+import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
-Deno.serve(async (req) => {
-    if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
+// Cors headers
+export const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+};
 
-    try {
-        const { walletAddress } = await req.json();
-        if (!walletAddress) throw new Error('Missing walletAddress in request body.');
+// Ankr API Key from environment variables
+const ANKR_API_KEY = Deno.env.get('ANKR_API_KEY') ?? '';
 
-        const supabaseAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
-        const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(req.headers.get('Authorization')!.replace('Bearer ', ''));
-        if (userError || !user) throw new Error('Unauthorized');
+interface WalletRequestBody {
+  walletAddress: string;
+}
 
-        const ANKR_API_KEY = Deno.env.get('ANKR_API_KEY');
-        if (!ANKR_API_KEY) throw new Error('ANKR_API_KEY is not set.');
-        
-        console.log(`Fetching all chain transactions for ${walletAddress} via Ankr...`);
+serve(async (req) => {
+  // Handle preflight OPTIONS request
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { headers: corsHeaders });
+  }
 
+  try {
+    // Create Supabase client with auth header
+    const supabaseClient = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_ANON_KEY') ?? '',
+      { global: { headers: { Authorization: req.headers.get('Authorization')! } } }
+    );
+
+    const { data: { user } } = await supabaseClient.auth.getUser();
+    if (!user) {
+      return new Response(JSON.stringify({ error: 'User not authenticated' }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
+
+    const { walletAddress }: WalletRequestBody = await req.json();
+    if (!walletAddress) {
+      return new Response(JSON.stringify({ error: 'walletAddress is required' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
+
+    // Chains to sync one by one for stability
+    const chainsToSync = ['eth', 'polygon', 'bsc', 'arbitrum', 'optimism', 'avalanche'];
+    let allTransactions: any[] = [];
+
+    console.log(`Starting sync for wallet: ${walletAddress}`);
+
+    for (const chain of chainsToSync) {
+      console.log(`Fetching [${chain}] transactions...`);
+      try {
         const ankrRequestBody = {
-            jsonrpc: "2.0",
-            method: "ankr_getTransactionsByAddress",
-            params: {
-                address: walletAddress,
-                blockchain: ANKR_CHAIN_NAMES, // [FIX] Pass all supported chains at once
-                pageSize: 1000,
-                descOrder: true,
-                includeLogs: true, 
-            },
-            id: 1,
+          jsonrpc: '2.0',
+          method: 'ankr_getTransactionsByAddress',
+          params: {
+            address: walletAddress,
+            blockchain: [chain], // Fetch one chain at a time
+            limit: 1000, // Fetch a generous amount per chain
+            includeLogs: false,
+          },
+          id: 1,
         };
 
         const response = await fetch(`https://rpc.ankr.com/multichain/${ANKR_API_KEY}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(ankrRequestBody),
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(ankrRequestBody),
         });
 
-        if (!response.ok) throw new Error(`Ankr API failed: ${response.statusText}`);
+        if (!response.ok) {
+          console.error(`Ankr API failed for chain [${chain}]: ${response.statusText}`);
+          continue; // Skip to the next chain on failure
+        }
 
         const result = await response.json();
-        if (result.error) throw new Error(`Ankr API Error: ${result.error.message}`);
-        
+        if (result.error) {
+          console.error(`Ankr API Error for chain [${chain}]: ${result.error.message}`);
+          continue;
+        }
+
         const transactions = result.result?.transactions || [];
-        console.log(`Received ${transactions.length} total transactions from Ankr across all chains.`);
-
-        if (transactions.length === 0) {
-            return new Response(JSON.stringify({ message: 'No new transactions found.' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-        }
-        
-        const transactionsToUpsert = transactions.map(tx => {
-            const chainName = tx.blockchain;
-            const numericChainId = CHAIN_ID_MAP[chainName];
-            if (numericChainId === undefined) {
-                 console.warn(`Skipping transaction with unknown chain: ${chainName}`);
-                 return null;
-            }
-            return {
-                user_id: user.id,
-                wallet_address: walletAddress.toLowerCase(),
-                chain_id: numericChainId,
-                direction: walletAddress.toLowerCase() === tx.from.toLowerCase() ? 'out' : 'in',
-                tx_hash: tx.hash,
-                block_number: parseInt(tx.blockNumber, 16),
-                timestamp: new Date(parseInt(tx.timestamp) * 1000).toISOString(),
-                from_address: tx.from,
-                to_address: tx.to,
-                value_wei: tx.value, 
-                asset_symbol: tx.tokenSymbol || chainName.toUpperCase(),
-                value_usd: tx.valueInUsd, 
-                raw_data: tx,
-            };
-        }).filter(Boolean); // Filter out any null entries from unknown chains
-        
-        if (transactionsToUpsert.length === 0) {
-             return new Response(JSON.stringify({ message: 'No valid transactions to save.' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-        }
-
-        console.log(`Upserting ${transactionsToUpsert.length} transactions...`);
-        const { error: upsertError } = await supabaseAdmin.from('wallet_transactions').upsert(transactionsToUpsert, { onConflict: 'tx_hash' });
-
-        if (upsertError) throw upsertError;
-
-        console.log('Sync successful.');
-        return new Response(JSON.stringify({ message: 'Sync successful.' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-
-    } catch (err) {
-        return new Response(JSON.stringify({ error: err.message }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 });
+        console.log(`Found ${transactions.length} transactions on [${chain}].`);
+        allTransactions = allTransactions.concat(transactions);
+      } catch (e) {
+        console.error(`Error processing chain [${chain}]:`, e.message);
+        // Continue to next chain even if one fails
+      }
     }
+
+    console.log(`Received a total of ${allTransactions.length} transactions from Ankr across all chains.`);
+
+    if (allTransactions.length === 0) {
+        return new Response(JSON.stringify({ message: 'No new transactions found.' }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
+
+    const recordsToUpsert = allTransactions.map(tx => ({
+        user_id: user.id,
+        wallet_address: walletAddress,
+        tx_hash: tx.hash,
+        chain_id: parseInt(tx.chainId, 16),
+        direction: tx.from === walletAddress.toLowerCase() ? 'OUT' : 'IN',
+        timestamp: new Date(parseInt(tx.timestamp, 16) * 1000).toISOString(),
+        from_address: tx.from,
+        to_address: tx.to,
+        value_wei: tx.value ? BigInt(tx.value).toString() : null,
+        asset_symbol: tx.tokenSymbol || 'ETH', 
+        value_usd: tx.valueUsd,
+        raw: tx, 
+    }));
+
+    const { error: upsertError } = await supabaseClient.from('wallet_transactions').upsert(recordsToUpsert, {
+      onConflict: 'tx_hash, user_id',
+    });
+
+    if (upsertError) {
+      throw new Error(`Supabase upsert error: ${upsertError.message}`);
+    }
+
+    return new Response(JSON.stringify({ message: `Sync successful. ${recordsToUpsert.length} transactions processed.` }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+
+  } catch (err) {
+    return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+  }
 });
 
