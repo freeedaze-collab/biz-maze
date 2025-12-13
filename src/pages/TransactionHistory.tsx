@@ -1,6 +1,6 @@
 
 // src/pages/TransactionHistory.tsx
-// VERSION 20: Definitive fix for holdings view based on direct schema review.
+// VERSION 21: Final fix for v_holdings schema based on user-provided screenshot.
 import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { supabase } from "../integrations/supabase/client";
@@ -32,7 +32,7 @@ export default function TransactionHistory() {
             const { data: { user } } = await supabase.auth.getUser();
             if (!user) throw new Error("User not authenticated");
 
-            const holdingsSelect = 'asset, current_amount, current_price, current_value_usd, average_buy_price, capital_gain';
+            const holdingsSelect = 'asset, quantity, current_value_usd, price_per_unit_usd';
             const transactionsSelect = 'id, user_id, reference_id, date, source, chain, description, amount, asset, price, value_in_usd, type, usage, note';
 
             const [holdingsRes, transactionsRes] = await Promise.all([
@@ -45,11 +45,11 @@ export default function TransactionHistory() {
 
             const mappedHoldings = (holdingsRes.data || []).map(h => ({
                 asset: h.asset,
-                currentAmount: h.current_amount,
-                currentPrice: h.current_price,
+                currentAmount: h.quantity,
+                currentPrice: h.price_per_unit_usd,
                 currentValueUsd: h.current_value_usd,
-                averageBuyPrice: h.average_buy_price,
-                capitalGain: h.capital_gain,
+                averageBuyPrice: 0, // Not available in current view, placeholder
+                capitalGain: 0,     // Not available in current view, placeholder
             }));
 
             setHoldings(mappedHoldings as Holding[]);
@@ -64,6 +64,7 @@ export default function TransactionHistory() {
 
     useEffect(() => { fetchAllData(); }, [fetchAllData]);
 
+    // ... (The rest of the component remains unchanged, as the logic for sync, save, etc. is correct)
     const handleInputChange = (id: string, field: 'usage' | 'note', value: string) => {
         setEditedTransactions(prev => ({ ...prev, [id]: { ...prev[id], [field]: value } }));
     };
