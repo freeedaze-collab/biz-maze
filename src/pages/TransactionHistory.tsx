@@ -1,6 +1,6 @@
 
 // src/pages/TransactionHistory.tsx
-// VERSION 15: Correctly calls sync-wallet-transactions instead of sync_wallet_history.
+// VERSION 16: Makes wallet sync button actually work by iterating through linked wallets.
 import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { supabase } from "../integrations/supabase/client";
@@ -46,7 +46,7 @@ interface Transaction {
     reference_id: string;
     date: string;
     source: string;
-    chain: string; // Represents the exchange or blockchain name
+    chain: string;
     description: string;
     amount: number;
     asset: string;
@@ -59,15 +59,11 @@ interface Transaction {
 
 type EditedTransaction = Partial<Pick<Transaction, 'usage' | 'note'>>;
 
-
 // --- Main Component ---
 export default function TransactionHistory() {
-    // Component State
     const [transactions, setTransactions] = useState<Transaction[]>([]);
     const [holdings, setHoldings] = useState<Holding[]>([]);
     const [editedTransactions, setEditedTransactions] = useState<Record<string, EditedTransaction>>({});
-
-    // UI/Loading State
     const [isLoading, setIsLoading] = useState(true);
     const [isSaving, setIsSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -75,7 +71,6 @@ export default function TransactionHistory() {
     const [isUpdatingPrices, setIsUpdatingPrices] = useState(false);
     const [syncMessage, setSyncMessage] = useState<string | null>(null);
 
-    // --- Data Fetching ---
     const fetchAllData = useCallback(async () => {
         setIsLoading(true);
         setError(null);
@@ -84,14 +79,7 @@ export default function TransactionHistory() {
             const { data: { user } } = await supabase.auth.getUser();
             if (!user) throw new Error("User not authenticated");
 
-            const holdingsSelect = `
-                asset,
-                currentAmount:current_amount,
-                currentPrice:current_price,
-                currentValueUsd:current_value_usd,
-                averageBuyPrice:average_buy_price,
-                capitalGain:capital_gain
-            `;
+            const holdingsSelect = `asset,currentAmount:current_amount,currentPrice:current_price,currentValueUsd:current_value_usd,averageBuyPrice:average_buy_price,capitalGain:capital_gain`;
             const transactionsSelect = 'id, user_id, reference_id, date, source, chain, description, amount, asset, price, value_in_usd, type, usage, note';
 
             const [holdingsRes, transactionsRes] = await Promise.all([
@@ -112,11 +100,8 @@ export default function TransactionHistory() {
         }
     }, []);
 
-    useEffect(() => {
-        fetchAllData();
-    }, [fetchAllData]);
+    useEffect(() => { fetchAllData(); }, [fetchAllData]);
 
-    // --- Event Handlers ---
     const handleInputChange = (id: string, field: 'usage' | 'note', value: string) => {
         setEditedTransactions(prev => ({ ...prev, [id]: { ...prev[id], [field]: value } }));
     };
@@ -184,14 +169,61 @@ export default function TransactionHistory() {
     const handleSync = async (syncFunction: 'sync-wallet-transactions' | 'exchange-sync-all' | 'sync-historical-exchange-rates', syncType: string) => {
         setIsSyncing(true);
         setSyncMessage(`Syncing ${syncType}...`);
+        setError(null);
         try {
-            const { error } = await supabase.functions.invoke(syncFunction, {
-                body: {}
-            });
-            if (error) throw error;
-            setSyncMessage(`${syncType} sync complete. Refreshing all data...`);
+            if (syncFunction === 'sync-wallet-transactions') {
+                const { data: { user } } = await supabase.auth.getUser();
+                if (!user) throw new Error("User not authenticated");
+
+                setSyncMessage("Fetching linked wallets...");
+                const { data: wallets, error: walletsError } = await supabase
+                    .from('wallets')
+                    .select('address')
+                    .eq('user_id', user.id);
+
+                if (walletsError) throw walletsError;
+                if (!wallets || wallets.length === 0) {
+                    setSyncMessage("No linked wallets found. Please link a wallet first.");
+                    setIsSyncing(false); // Stop the sync process
+                    return;
+                }
+
+                const chainsToSync = ['ethereum', 'polygon', 'bsc'];
+                let syncErrors: string[] = [];
+
+                setSyncMessage(`Found ${wallets.length} wallet(s). Syncing across ${chainsToSync.length} chains...`);
+
+                for (const wallet of wallets) {
+                    for (const chain of chainsToSync) {
+                        try {
+                            const { error: invokeError } = await supabase.functions.invoke('sync-wallet-transactions', {
+                                body: { walletAddress: wallet.address, chain: chain }
+                            });
+                            if (invokeError) {
+                                const errorMsg = invokeError.message || JSON.stringify(invokeError);
+                                console.warn(`Failed to sync ${wallet.address} on ${chain}: ${errorMsg}`);
+                                syncErrors.push(errorMsg);
+                            }
+                        } catch (e: any) {
+                             syncErrors.push(`Exception during sync for ${wallet.address} on ${chain}: ${e.message}`);
+                        }
+                    }
+                }
+                if (syncErrors.length > 0) {
+                    setError(`Sync completed with some issues: ${syncErrors.join("; ")}`)
+                } else {
+                    setSyncMessage('All wallets and chains synced.');
+                }
+
+            } else {
+                const { error } = await supabase.functions.invoke(syncFunction, { body: {} });
+                if (error) throw error;
+            }
+
+            setSyncMessage("Sync complete. Refreshing all data...");
             await fetchAllData();
-            setSyncMessage(`${syncType} data refreshed successfully.`);
+            setSyncMessage("Data refreshed successfully.");
+
         } catch (err: any) {
             console.error(`${syncType} sync failed:`, err);
             setError(`A critical error occurred during ${syncType} sync: ${err.message}`);
@@ -222,8 +254,7 @@ export default function TransactionHistory() {
             setIsUpdatingPrices(false);
         }
     };
-
-    // --- Formatting & Style Helpers ---
+    
     const formatCurrency = (value: number | null | undefined) => {
         const numericValue = value ?? 0;
         return numericValue.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
@@ -231,7 +262,6 @@ export default function TransactionHistory() {
     const formatNumber = (value: number | null | undefined) => (value ?? 0).toFixed(6);
     const getPnlClass = (pnl: number | null) => (pnl ?? 0) === 0 ? 'text-gray-500' : pnl > 0 ? 'text-green-500' : 'text-red-500';
 
-    // --- Render Method ---
     return (
         <AppPageLayout
             title="Transactions & Portfolio"
@@ -369,3 +399,4 @@ export default function TransactionHistory() {
         </AppPageLayout>
     );
 }
+
