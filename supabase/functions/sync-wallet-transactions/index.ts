@@ -1,4 +1,3 @@
-
 // supabase/functions/sync-wallet-transactions/index.ts
 // FINAL VERSION: Completely rewritten based on past proven logic, ensuring USD value is correctly processed.
 
