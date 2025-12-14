@@ -71,7 +71,7 @@ serve(async (req) => {
         to_address: tx.to,
         value_wei: valueWei,
         asset_symbol: tx.tokenSymbol || 'ETH', 
-        usd_value_at_tx: valueUsd, // THE FIX: Changed `value_usd` to `usd_value_at_tx` to match the actual DB column name.
+        value_usd: valueUsd, // FINAL FIX: Changed to `value_usd` based on the user-provided schema screenshot.
         raw: tx,
       };
     });
@@ -88,4 +88,3 @@ serve(async (req) => {
     return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   }
 });
-
