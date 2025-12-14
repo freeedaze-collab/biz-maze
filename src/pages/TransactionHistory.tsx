@@ -34,7 +34,7 @@ export default function TransactionHistory() {
             if (!user) throw new Error("User not authenticated");
 
             // Select statement now fetches the correct columns from the new v_holdings view.
-            const holdingsSelect = 'asset, current_amount, current_value, price_per_unit_usd';
+            const holdingsSelect = 'asset, current_amount, current_value, Unrealized P&L, ';
             const transactionsSelect = 'id, user_id, reference_id, date, source, chain, description, amount, asset, price, value_in_usd, type, usage, note';
 
             const [holdingsRes, transactionsRes] = await Promise.all([
@@ -49,10 +49,9 @@ export default function TransactionHistory() {
             const mappedHoldings = (holdingsRes.data || []).map(h => ({
                 asset: h.asset,
                 currentAmount: h.current_amount, // DB `current_amount` maps to `currentAmount`
-                currentPrice: h.current_value, // DB `current_value` (unit price) maps to `currentPrice`
-                currentValueUsd: h.price_per_unit_usd, // DB `price_per_unit_usd` (total value) maps to `currentValueUsd`
-                averageBuyPrice: 0, // Data no longer in view, default to 0
-                capitalGain: 0, // Data no longer in view, default to 0
+                currentValue: h.current_value, // DB `current_value`  maps to `currentValue`
+                averageBuyPrice: h.averageBuyPrice, // DB `Avg. Buy Price`  maps to `averageBuyPrice`
+                capitalGain: h.Unrealized P&L, // DB `Unrealized P&L`  maps to `capitalGain`
             }));
 
             setHoldings(mappedHoldings as Holding[]);
