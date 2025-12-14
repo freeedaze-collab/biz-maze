@@ -1,6 +1,6 @@
 
 // supabase/functions/sync-wallet-transactions/index.ts
-// ROBUST VERSION: Implements a fallback mechanism to calculate USD value from an internal price database.
+// ROBUST VERSION 3: Implements a fallback using the 'asset_prices' table with current prices.
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
@@ -50,40 +50,36 @@ serve(async (req) => {
         return new Response(JSON.stringify({ message: 'No valid transactions found to save.' }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
-    // --- NEW: Asynchronous mapping to allow for DB lookups ---
     const recordsToUpsert = await Promise.all(validTransactions.map(async (tx) => {
         const timestamp = new Date(parseInt(tx.timestamp, 16) * 1000).toISOString();
         const assetSymbol = tx.tokenSymbol || 'ETH';
         let valueUsd = null;
 
-        // Step 1: Attempt to get USD value directly from Ankr's response
         if (tx.valueUsd && !isNaN(parseFloat(tx.valueUsd))) {
             valueUsd = parseFloat(tx.valueUsd);
         } else {
-            // Step 2: If Ankr has no value, fall back to our own historical price data
-            const decimals = tx.tokenDecimal ? parseInt(tx.tokenDecimal, 16) : 18; // Default to 18 for ETH-like tokens
+            const decimals = tx.tokenDecimal ? parseInt(tx.tokenDecimal, 16) : 18;
             const amount = tx.value && tx.value !== '0x0' ? Number(BigInt(tx.value)) / Math.pow(10, decimals) : 0;
             
             if (assetSymbol && timestamp && amount > 0) {
-                console.log(`[Fallback] Ankr USD not found for ${amount} ${assetSymbol}. Querying historical price...`);
+                console.log(`[Fallback] Ankr USD not found for ${amount} ${assetSymbol}. Querying current price from 'asset_prices'...`);
+                // --- FIX: Corrected table and column names, and removed historical logic ---
                 const { data: priceData, error: priceError } = await supabaseClient
-                    .from('historical_prices')
-                    .select('price_usd')
-                    .eq('symbol', assetSymbol.toUpperCase())
-                    .lte('timestamp', timestamp)
-                    .order('timestamp', { ascending: false })
+                    .from('asset_prices')
+                    .select('current_price')
+                    .eq('asset', assetSymbol.toUpperCase())
                     .limit(1)
                     .single();
 
-                if (priceError && priceError.code !== 'PGRST116') { // PGRST116 is "No rows found", which is an expected outcome.
+                if (priceError && priceError.code !== 'PGRST116') { // PGRST116: "No rows found"
                     console.error(`[Fallback] Price lookup failed for ${assetSymbol}:`, priceError.message);
                 }
 
                 if (priceData) {
-                    valueUsd = priceData.price_usd * amount;
-                    console.log(`[Fallback] Found price ${priceData.price_usd}. Calculated USD value: ${valueUsd}`);
+                    valueUsd = priceData.current_price * amount;
+                    console.log(`[Fallback] Found current price ${priceData.current_price}. Calculated approx. USD value: ${valueUsd}`);
                 } else {
-                    console.log(`[Fallback] No historical price found for ${assetSymbol} at or before ${timestamp}`);
+                    console.log(`[Fallback] No price found in asset_prices for ${assetSymbol}`);
                 }
             }
         }
@@ -106,7 +102,7 @@ serve(async (req) => {
           to_address: tx.to,
           value_wei: valueWei,
           asset_symbol: assetSymbol, 
-          value_usd: valueUsd, // This value is now robustly calculated
+          value_usd: valueUsd, 
           raw: tx,
         };
     }));
