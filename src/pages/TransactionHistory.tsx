@@ -34,7 +34,7 @@ export default function TransactionHistory() {
             if (!user) throw new Error("User not authenticated");
 
             // Select statement now fetches the correct columns from the new v_holdings view.
-            const holdingsSelect = 'asset, current_amount, current_price, current_value_usd, average_buy_price, capital_gain';
+            const holdingsSelect = 'asset, quantity, current_value_usd, price_per_unit_usd';
             const transactionsSelect = 'id, user_id, reference_id, date, source, chain, description, amount, asset, price, value_in_usd, type, usage, note';
 
             const [holdingsRes, transactionsRes] = await Promise.all([
@@ -48,11 +48,11 @@ export default function TransactionHistory() {
             // Map the snake_case columns from the DB to the camelCase properties of the Holding interface.
             const mappedHoldings = (holdingsRes.data || []).map(h => ({
                 asset: h.asset,
-                currentAmount: h.current_amount,
-                currentPrice: h.current_price,
-                currentValueUsd: h.current_value_usd,
-                averageBuyPrice: h.average_buy_price,
-                capitalGain: h.capital_gain,
+                currentAmount: h.quantity, // DB `quantity` maps to `currentAmount`
+                currentPrice: h.current_value_usd, // DB `current_value_usd` (unit price) maps to `currentPrice`
+                currentValueUsd: h.price_per_unit_usd, // DB `price_per_unit_usd` (total value) maps to `currentValueUsd`
+                averageBuyPrice: 0, // Data no longer in view, default to 0
+                capitalGain: 0, // Data no longer in view, default to 0
             }));
 
             setHoldings(mappedHoldings as Holding[]);
@@ -229,4 +229,5 @@ export default function TransactionHistory() {
         </AppPageLayout>
     );
 }
+
 
