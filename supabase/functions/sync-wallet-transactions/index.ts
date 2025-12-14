@@ -50,18 +50,15 @@ serve(async (req) => {
         return new Response(JSON.stringify({ message: 'No valid transactions found to save.' }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
-    // --- REWRITTEN LOGIC BASED ON PROVEN PAST CODE ---
     const recordsToUpsert = validTransactions.map(tx => {
       const direction = tx.from && tx.from.toLowerCase() === walletAddress.toLowerCase() ? 'OUT' : 'IN';
       const chainId = typeof tx.chainId === 'string' && tx.chainId.startsWith('0x') ? parseInt(tx.chainId, 16) : Number(tx.chainId);
       
-      // Safely parse value to BigInt string, or null if invalid
       let valueWei = null;
       if (tx.value && /^(0x)?[0-9a-fA-F]+$/.test(tx.value)) {
           try { valueWei = BigInt(tx.value).toString(); } catch { valueWei = null; }
       }
 
-      // THE FIX: Directly and correctly map the fetched `valueUsd` to the `value_usd` column.
       const valueUsd = tx.valueUsd ? parseFloat(tx.valueUsd) : null;
 
       return {
@@ -75,11 +72,10 @@ serve(async (req) => {
         to_address: tx.to,
         value_wei: valueWei,
         asset_symbol: tx.tokenSymbol || 'ETH', 
-        value_usd: valueUsd, // Correctly mapped from Ankr's response
+        usd_value_at_tx: valueUsd, // THE FIX: Changed `value_usd` to `usd_value_at_tx` to match the actual DB column name.
         raw: tx,
       };
     });
-    // --- END OF REWRITTEN LOGIC ---
 
     console.log(`Attempting to upsert ${recordsToUpsert.length} valid records...`);
 
