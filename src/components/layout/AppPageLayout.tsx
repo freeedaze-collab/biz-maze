@@ -24,10 +24,6 @@ const mainLinks = [
   { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
   { label: "Transactions", href: "/transactions", icon: ListOrdered },
   { label: "Accounting", href: "/accounting", icon: Table2 },
-  { label: "Wallets", href: "/wallets", icon: Wallet2 },
-  { label: "Virtual Custody Exchange", href: "/vce", icon: ArrowLeftRight },
-  { label: "Payment Gateway", href: "/payment-gateway", icon: CreditCard },
-  { label: "Profile", href: "/profile", icon: UserRound },
 ];
 
 const quickButtons = [
