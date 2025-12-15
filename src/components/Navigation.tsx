@@ -26,9 +26,6 @@ export default function Navigation() {
               <NavLink to="/dashboard" className={({isActive})=>`${item} ${isActive?active:""}`}>
                 Dashboard
               </NavLink>
-              <NavLink to="/wallet" className={({isActive})=>`${item} ${isActive?active:""}`}>
-                Wallets
-              </NavLink>
               <NavLink to="/transactions" className={({isActive})=>`${item} ${isActive?active:""}`}>
                 History
               </NavLink>
@@ -40,12 +37,6 @@ export default function Navigation() {
               </NavLink>
               <NavLink to="/accounting" className={({isActive})=>`${item} ${isActive?active:""}`}>
                 Accounting/Tax
-              </NavLink>
-              <NavLink to="/payment-gateway" className={({isActive})=>`${item} ${isActive?active:""}`}>
-                Payment Gateway
-              </NavLink>
-              <NavLink to="/profile" className={({isActive})=>`${item} ${isActive?active:""}`}>
-                Profile
               </NavLink>
               <button onClick={signOut} className={`${item} text-muted-foreground`}>
                 Sign out
