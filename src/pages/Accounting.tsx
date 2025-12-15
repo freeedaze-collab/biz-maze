@@ -1,14 +1,19 @@
 
 // src/pages/Accounting.tsx
-// FINAL VERSION: Correctly transforms normalized data from views into the pivoted format expected by the UI.
+// FINAL VERSION: Includes Date Pickers for filtering and correctly transforms data.
 import React, { useState, useEffect, useCallback } from 'react';
 import { supabase } from "../integrations/supabase/client";
 import { useAuth } from '../hooks/useAuth';
 import AppPageLayout from "@/components/layout/AppPageLayout";
 import { Link } from 'react-router-dom';
+import { format } from "date-fns";
+import { Calendar as CalendarIcon } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { Calendar } from "@/components/ui/calendar";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 // --- Data Transformation Helper ---
-// Transforms an array of { account, balance } rows into a single pivoted object.
 const transformData = (data: any[], accountMapping: Record<string, string>) => {
     if (!data || data.length === 0) return null;
     const transformed = Object.values(accountMapping).reduce((acc, key) => {
@@ -26,7 +31,6 @@ const transformData = (data: any[], accountMapping: Record<string, string>) => {
 };
 
 // --- Helper Functions & Components ---
-
 const formatCurrency = (value: number | null | undefined) => {
     const numericValue = value ?? 0;
     return numericValue.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
@@ -62,7 +66,7 @@ const FinancialCard: React.FC<FinancialCardProps> = ({ title, items, totalLabel,
 
 const NoDataComponent = () => (
     <div className="surface-card p-6 w-full lg:col-span-3 text-center">
-        <h3 className="text-xl font-bold mb-4 text-slate-900">No Accounting Data Found</h3>
+        <h3 className="text-xl font-bold mb-4 text-slate-900">No Accounting Data Found for the Selected Period</h3>
         <p className="text-muted-foreground mb-4">
             Financial statements are generated based on the 'usage' labels assigned to your transactions.
         </p>
@@ -74,7 +78,6 @@ const NoDataComponent = () => (
 
 
 // --- Main Accounting Page Component ---
-
 export default function Accounting() {
     const { user } = useAuth();
     const [plData, setPlData] = useState<any>(null);
@@ -82,6 +85,8 @@ export default function Accounting() {
     const [cfData, setCfData] = useState<any>(null);
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    const [startDate, setStartDate] = useState<Date | undefined>();
+    const [endDate, setEndDate] = useState<Date | undefined>();
 
     const fetchData = useCallback(async () => {
         if (!user) return;
@@ -89,11 +94,24 @@ export default function Accounting() {
         setError(null);
 
         try {
-            const [plRes, bsRes, cfRes] = await Promise.all([
-                supabase.from('v_profit_loss_statement').select('account, balance').eq('user_id', user.id),
-                supabase.from('v_balance_sheet').select('account, balance').eq('user_id', user.id),
-                supabase.from('v_cash_flow_statement').select('item, amount').eq('user_id', user.id)
-            ]);
+            let plQuery = supabase.from('v_profit_loss_statement').select('account, balance').eq('user_id', user.id);
+            let bsQuery = supabase.from('v_balance_sheet').select('account, balance').eq('user_id', user.id);
+            let cfQuery = supabase.from('v_cash_flow_statement').select('item, amount').eq('user_id', user.id);
+
+            // Apply date filters if they exist
+            // Note: v_balance_sheet is a snapshot and typically not filtered by date range, 
+            // but we filter it by endDate for consistency.
+            if (startDate) {
+                plQuery = plQuery.gte('date', startDate.toISOString());
+                cfQuery = cfQuery.gte('date', startDate.toISOString());
+            }
+            if (endDate) {
+                plQuery = plQuery.lte('date', endDate.toISOString());
+                bsQuery = bsQuery.lte('date', endDate.toISOString()); // Filter balance sheet up to end date
+                cfQuery = cfQuery.lte('date', endDate.toISOString());
+            }
+
+            const [plRes, bsRes, cfRes] = await Promise.all([plQuery, bsQuery, cfQuery]);
 
             if (plRes.error) throw new Error(`Profit & Loss Error: ${plRes.error.message}`);
             if (bsRes.error) throw new Error(`Balance Sheet Error: ${bsRes.error.message}`);
@@ -135,7 +153,7 @@ export default function Accounting() {
         } finally {
             setIsLoading(false);
         }
-    }, [user]);
+    }, [user, startDate, endDate]);
 
     useEffect(() => {
         fetchData();
@@ -192,14 +210,36 @@ export default function Accounting() {
         >
             <div className="space-y-6">
                 <div className="feature-banner">
-                    <div className="flex flex-col gap-1">
-                        <p className="section-title">Reporting</p>
-                        <p className="text-sm text-slate-600">Refresh to capture the latest synced exchanges and wallets.</p>
+                     <div className="flex flex-col gap-1">
+                        <p className="section-title">Reporting Period</p>
+                        <p className="text-sm text-slate-600">Select a date range to generate financial statements.</p>
                     </div>
                     <div className="flex items-center gap-3">
-                        <button onClick={fetchData} className="px-4 py-2 bg-primary text-primary-foreground rounded-md shadow-sm hover:shadow-md transition" disabled={isLoading}>
-                            {isLoading ? 'Refreshing...' : 'Refresh Data'}
-                        </button>
+                        <Popover>
+                            <PopoverTrigger asChild>
+                                <Button variant={"outline"} className={cn("w-[280px] justify-start text-left font-normal", !startDate && "text-muted-foreground")}>
+                                    <CalendarIcon className="mr-2 h-4 w-4" />
+                                    {startDate ? format(startDate, "PPP") : <span>Pick a start date</span>}
+                                </Button>
+                            </PopoverTrigger>
+                            <PopoverContent className="w-auto p-0">
+                                <Calendar mode="single" selected={startDate} onSelect={setStartDate} initialFocus />
+                            </PopoverContent>
+                        </Popover>
+                         <Popover>
+                            <PopoverTrigger asChild>
+                                <Button variant={"outline"} className={cn("w-[280px] justify-start text-left font-normal", !endDate && "text-muted-foreground")}>
+                                    <CalendarIcon className="mr-2 h-4 w-4" />
+                                    {endDate ? format(endDate, "PPP") : <span>Pick an end date</span>}
+                                </Button>
+                            </PopoverTrigger>
+                            <PopoverContent className="w-auto p-0">
+                                <Calendar mode="single" selected={endDate} onSelect={setEndDate} initialFocus />
+                            </PopoverContent>
+                        </Popover>
+                        <Button onClick={fetchData} className="px-4 py-2 bg-primary text-primary-foreground rounded-md shadow-sm hover:shadow-md transition" disabled={isLoading}>
+                            {isLoading ? 'Refreshing...' : 'Apply Filter'}
+                        </Button>
                     </div>
                 </div>
 
@@ -298,3 +338,4 @@ export default function Accounting() {
         </AppPageLayout>
     );
 }
+
