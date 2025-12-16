@@ -256,7 +256,9 @@ export default function WalletSelection() {
               <p className="text-sm font-semibold">Linked wallets</p>
               <p className="text-xs text-muted-foreground">Only addresses linked to this account are shown.</p>
             </div>
-            {loading && <span className="text-xs text-muted-foreground\">Loading...</span>}
+            // 正しいコード
+            {loading && <span className="text-xs text-muted-foreground">Loading...</span>}
+
           </div>
           {loading ? null : rows.length === 0 ? (
             <div className="text-sm text-muted-foreground">No linked wallets yet.</div>
