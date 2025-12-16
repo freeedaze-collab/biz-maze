@@ -1,15 +1,13 @@
 
 // supabase/functions/verify-2/index.ts
-// --- ROBUST & FINAL FIX: Handles all identified issues (auth, column name, flexible inputs) ---
+// --- FINAL & DIRECT AUTH FIX: Manually decode JWT to get user ID --- 
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { decode } from 'https://deno.land/x/djwt@v3.0.2/mod.ts';
 import {
   isAddress,
   recoverMessageAddress,
 } from 'https://esm.sh/viem@2.18.8';
-
-const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
-const SUPABASE_ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY')!;
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -23,30 +21,27 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // --- AUTHENTICATION (FIX for foreign key constraint) ---
+    // --- STEP 1: Get User ID directly from JWT --- 
     const authHeader = req.headers.get('Authorization')!;
-    const userClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-      global: { headers: { Authorization: authHeader } },
-    });
-    const { data: { user }, error: userError } = await userClient.auth.getUser();
-    if (userError) throw userError;
-    if (!user) throw new Error('User not found via token.');
+    if (!authHeader) throw new Error('Missing Authorization header');
+    const jwt = authHeader.replace('Bearer ', '');
+    const [, payload] = decode(jwt);
+    const userId = payload?.sub;
+    if (!userId) throw new Error('Could not extract user ID from token.');
 
-    // --- GET request: Issue a nonce (Flexible) ---
+    // --- STEP 2: Handle GET (Nonce) vs POST (Verify) ---
     if (req.method === 'GET') {
       const nonce = crypto.randomUUID().replace(/-/g, '');
       return new Response(JSON.stringify({ nonce }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
-    // --- POST request: Verify signature and link wallet (Flexible) ---
     if (req.method === 'POST') {
       const body = await req.json();
       const { address, signature } = body;
-      // Flexible message field: accept 'nonce' or 'message'
-      const messageToVerify = body.nonce || body.message;
+      const messageToVerify = body.message || body.nonce;
 
       if (!isAddress(address) || !signature || !messageToVerify) {
-        throw new Error('Invalid POST body: address, signature, and (nonce or message) are required.');
+        throw new Error('Invalid POST body');
       }
 
       const recovered = await recoverMessageAddress({ message: messageToVerify, signature });
@@ -54,11 +49,11 @@ Deno.serve(async (req) => {
       if (recovered.toLowerCase() !== address.toLowerCase()) {
         return new Response(JSON.stringify({ ok: false, error: 'Signature mismatch' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
       }
-      
+
+      // --- STEP 3: Upsert with the directly decoded user ID ---
       const adminClient = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
       const { error: dbError } = await adminClient.from('wallets').upsert(
-        // FIX for schema cache: Use `verified: true`
-        { address: address.toLowerCase(), user_id: user.id, verified: true },
+        { address: address.toLowerCase(), user_id: userId, verified: true },
         { onConflict: 'user_id,address' }
       );
       if (dbError) throw dbError;
