@@ -1,3 +1,4 @@
+
 // src/pages/wallet/WalletSelection.tsx
 import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
@@ -199,7 +200,7 @@ export default function WalletSelection() {
       console.error("[wallets] wc error:", e);
       alert(e?.message ?? String(e));
     } finally {
-      try { await provider?.disconnect?.(); } catch {}\
+      try { await provider?.disconnect?.(); } catch {}
       setLinking(null);
     }
   };
@@ -256,9 +257,7 @@ export default function WalletSelection() {
               <p className="text-sm font-semibold">Linked wallets</p>
               <p className="text-xs text-muted-foreground">Only addresses linked to this account are shown.</p>
             </div>
-            // 正しいコード
             {loading && <span className="text-xs text-muted-foreground">Loading...</span>}
-
           </div>
           {loading ? null : rows.length === 0 ? (
             <div className="text-sm text-muted-foreground">No linked wallets yet.</div>
