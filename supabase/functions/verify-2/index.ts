@@ -1,6 +1,6 @@
 
 // supabase/functions/verify-2/index.ts
-// --- THE GRAND FINALE: Matching the exact schema of `wallet_connections` ---
+// --- THE GRAND FINALE v2: Satisfying the not-null constraint for wallet_type. ---
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { decode } from 'https://deno.land/x/djwt@v3.0.2/mod.ts';
@@ -37,13 +37,12 @@ Deno.serve(async (req) => {
 
     if (req.method === 'POST') {
       const body = await req.json();
-      // The address from the client is the `wallet_address` in the DB
       const wallet_address = body.address;
       const { signature } = body;
       const messageToVerify = body.message || body.nonce;
 
       if (!isAddress(wallet_address) || !signature || !messageToVerify) {
-        throw new Error('Invalid POST body: address, signature, and message/nonce are required.');
+        throw new Error('Invalid POST body');
       }
 
       const recovered = await recoverMessageAddress({ message: messageToVerify, signature });
@@ -52,14 +51,15 @@ Deno.serve(async (req) => {
         return new Response(JSON.stringify({ ok: false, error: 'Signature mismatch' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
       }
 
-      // --- STEP 3: Upsert with correct table and column names ---
+      // --- STEP 3: Upsert with all required fields ---
       const adminClient = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
       const { error: dbError } = await adminClient.from('wallet_connections').upsert(
         {
           user_id: userId,
           wallet_address: wallet_address.toLowerCase(),
           verified_at: new Date().toISOString(),
-          verification_status: 'verified'
+          verification_status: 'verified',
+          wallet_type: 'ethereum' // Satisfy the NOT NULL constraint
         },
         { onConflict: 'user_id,wallet_address' }
       );
