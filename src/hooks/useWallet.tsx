@@ -27,7 +27,7 @@ export function useWallet(opts: Options = {}) {
       throw new Error('No Supabase session. Please login first.')
     }
 
-    const resp = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/verify-wallet-signature`, {
+    const resp = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/verify-2`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
