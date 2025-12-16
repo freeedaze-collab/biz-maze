@@ -144,11 +144,11 @@ function AddNewConnectionForm() {
             <option value="okx">OKX</option>
           </select>
 
-          <Input placeholder="API Key" value={apiKey} onChange={e => setApiKey(e.target.value)} required />
-          <Input placeholder="API Secret" type="password" value={apiSecret} onChange={e => setApiSecret(e.target.value)} required />
+          <Input placeholder="API Key" value={apiKey} onChange={e => setApiKey(e.target.value)} required autoComplete="off" />
+          <Input placeholder="API Secret" type="password" value={apiSecret} onChange={e => setApiSecret(e.target.value)} required autoComplete="off" />
 
           {exchange === "okx" && (
-            <Input placeholder="API Passphrase (for OKX only)" type="password" value={passphrase} onChange={e => setPassphrase(e.target.value)} required />
+            <Input placeholder="API Passphrase (for OKX only)" type="password" value={passphrase} onChange={e => setPassphrase(e.target.value)} required autoComplete="off" />
           )}
 
           <Button type="submit" disabled={loading} className="w-full">
