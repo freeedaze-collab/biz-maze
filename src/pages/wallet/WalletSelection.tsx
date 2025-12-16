@@ -1,213 +1,282 @@
 
-// supabase Edge Function: sync_wallet_history (MULTI-WALLET-V3)
-// - Fetches all verified wallets from 'wallet_connections' for the user.
-// - For each wallet, fetches new transactions from Alchemy since the last sync.
-// - Manages sync state (last_block) on a per-wallet basis in 'wallet_sync_state'.
-// - Verify JWT: ON (required)
-// - Secrets: SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY / ALCHEMY_API_URL
+// src/pages/wallet/WalletSelection.tsx
+import { useEffect, useMemo, useState } from "react";
+import { useAuth } from "@/hooks/useAuth";
+import { supabase } from "@/integrations/supabase/client";
+import { isAddress, toHex, recoverMessageAddress } from "viem";
+import { createWCProvider, WCProvider } from "@/lib/walletconnect";
+import AppPageLayout from "@/components/layout/AppPageLayout";
+import { Button } from "@/components/ui/button";
 
-import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const ALCHEMY_URL = Deno.env.get("ALCHEMY_API_URL")!;
-
-function json(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
-}
-function bad(msg: string, status = 400) {
-  return json({ error: msg }, status);
-}
-
-type AlchemyTransfer = {
-  blockNum: string;  // hex
-  hash: string;
-  from: string;
-  to: string | null;
-  value?: string;    // "0.0123" (native ETH)
-  asset?: string;    // "ETH" / "USDC" etc.
-  category: "external" | "internal" | "erc20" | "erc721" | "erc1155";
-  rawContract?: { value?: string };
-  metadata?: { blockTimestamp?: string };
+// Updated type to match the 'wallet_connections' table schema
+type WalletRow = {
+  id: number;
+  user_id: string;
+  wallet_address: string; // Renamed from 'address'
+  verified_at?: string | null; // This field indicates verification
 };
 
-async function fetchTransfers(direction: "in" | "out", address: string, fromBlockHex: string) {
-  const baseParams: any = {
-    fromBlock: fromBlockHex,
-    withMetadata: true,
-    excludeZeroValue: false,
-    maxCount: "0x64", // 100 per page
-    category: ["external", "internal", "erc20", "erc721", "erc1155"],
-  };
-  if (direction === "in") baseParams.toAddress = address;
-  if (direction === "out") baseParams.fromAddress = address;
+const FN_URL = "https://ymddtgbsybvxfitgupqy.supabase.co/functions/v1/verify-2";
 
-  const results: AlchemyTransfer[] = [];
-  let pageKey: string | undefined;
+export default function WalletSelection() {
+  const { user } = useAuth();
 
-  do {
-    const body = {
-      id: 1,
-      jsonrpc: "2.0",
-      method: "alchemy_getAssetTransfers",
-      params: [{ ...baseParams, pageKey }],
-    };
-    const r = await fetch(ALCHEMY_URL, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!r.ok) throw new Error(`Alchemy HTTP ${r.status}`);
-    const j = await r.json();
-    const res = j?.result;
-    if (res?.transfers?.length) results.push(...res.transfers);
-    pageKey = res?.pageKey;
-  } while (pageKey);
+  const [rows, setRows] = useState<WalletRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [linking, setLinking] = useState<"mm" | "wc" | null>(null);
+  const [addressInput, setAddressInput] = useState("");
 
-  return results;
-}
+  const normalizedInput = useMemo(() => addressInput?.trim(), [addressInput]);
 
-function hexToNum(hex?: string | null): number | null {
-  if (!hex) return null;
-  try { return Number(BigInt(hex)); } catch { return null; }
-}
+  const alreadyLinked = useMemo(() => {
+    if (!normalizedInput) return false;
+    // Use 'wallet_address' for comparison
+    return rows.some(
+      (r) => r.wallet_address?.toLowerCase() === normalizedInput.toLowerCase()
+    );
+  }, [rows, normalizedInput]);
 
-function toWeiString(nativeValue?: string, rawHex?: string): string | null {
-  if (nativeValue && /^[0-9.]+$/.test(nativeValue)) {
-    const [i, f = ""] = nativeValue.split(".");
-    const wei = BigInt(i + (f + "0".repeat(18)).slice(0, 18));
-    return wei.toString();
-  }
-  if (rawHex && /^0x[0-9a-fA-F]+$/.test(rawHex)) {
-    try { return BigInt(rawHex).toString(); } catch {}
-  }
-  return null;
-}
-
-serve(async (req) => {
-  try {
-    const auth = req.headers.get("authorization") || "";
-    const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
-    if (!token) return bad("Missing Bearer token", 401);
-
-    const svc = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { persistSession: false } });
-
-    const { data: userRes, error: ue } = await svc.auth.getUser(token);
-    if (ue || !userRes?.user) return bad("Not authenticated", 401);
-    const user = userRes.user;
-
-    // 1. Fetch all connected and verified wallet addresses for the user
-    const { data: wallets, error: walletsError } = await svc
+  const load = async () => {
+    if (!user?.id) return;
+    setLoading(true);
+    // Read from the correct 'wallet_connections' table and select the correct columns
+    const { data, error } = await supabase
       .from("wallet_connections")
-      .select("wallet_address")
+      .select("id,user_id,wallet_address,verified_at")
       .eq("user_id", user.id)
-      .not("verified_at", "is", null);
+      .order("verified_at", { ascending: false });
 
-    if (walletsError) return bad(walletsError.message, 500);
-    if (!wallets || wallets.length === 0) {
-      return json({ ok: true, message: "No verified wallets to sync." });
+    if (error) {
+      console.error("[wallets] load error:", error);
+      setRows([]);
+    } else {
+      setRows((data as WalletRow[]) ?? []);
     }
-    
-    let totalSynced = 0;
-    const walletsProcessed: string[] = [];
+    setLoading(false);
+  };
 
-    // 2. Loop through each connected wallet
-    for (const wallet of wallets) {
-      const walletAddress = wallet.wallet_address.toLowerCase();
-      walletsProcessed.push(walletAddress);
-      
-      try {
-        // 3. Get the last sync state for this specific wallet
-        const { data: state } = await svc
-          .from("wallet_sync_state")
-          .select("last_block")
-          .eq("user_id", user.id)
-          .eq("wallet_address", walletAddress)
-          .maybeSingle();
-        
-        const fromBlock = state?.last_block ?? 0;
-        const fromBlockHex = "0x" + (fromBlock >= 0 ? fromBlock.toString(16) : "0");
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
 
-        // 4. Fetch incoming and outgoing transfers
-        const [ins, outs] = await Promise.all([
-          fetchTransfers("in", walletAddress, fromBlockHex),
-          fetchTransfers("out", walletAddress, fromBlockHex),
-        ]);
-        const all = [...ins, ...outs];
-        if (all.length === 0) {
-            console.log(`No new txs for ${walletAddress} since block ${fromBlock}`);
-            continue;
-        }
-
-        const rows = all.map((t) => {
-          const bn = hexToNum(t.blockNum);
-          const ts = t.metadata?.blockTimestamp ? new Date(t.metadata.blockTimestamp).toISOString() : null;
-          const dir =
-            t.from?.toLowerCase() === walletAddress && t.to?.toLowerCase() === walletAddress ? "self"
-            : t.to?.toLowerCase() === walletAddress ? "in"
-            : "out";
-          const wei = toWeiString(t.value, t.rawContract?.value);
-          return {
-            user_id: user.id,
-            wallet_address: walletAddress,
-            chain_id: 1, // Assuming ETH mainnet from Alchemy URL
-            direction: dir,
-            tx_hash: t.hash,
-            block_number: bn,
-            timestamp: ts,
-            from_address: t.from?.toLowerCase() ?? null,
-            to_address: t.to?.toLowerCase() ?? null,
-            value_wei: wei,
-            asset_symbol: t.asset ?? null,
-            raw: t as unknown as Record<string, unknown>,
-          };
-        });
-        
-        if (rows.length === 0) continue;
-
-        // 5. Upsert transactions into the database
-        const chunk = 100;
-        for (let i = 0; i < rows.length; i += chunk) {
-          const batch = rows.slice(i, i + chunk);
-          const { error } = await svc
-            .from("wallet_transactions")
-            .upsert(batch, { onConflict: "tx_hash, user_id" });
-          if (error) throw new Error(`DB upsert error for ${walletAddress}: ${error.message}`);
-        }
-
-        // 6. Update the sync state for this specific wallet
-        const maxBlock = Math.max(fromBlock, ...rows.map((r) => r.block_number ?? 0));
-        const { error: se } = await svc.from("wallet_sync_state").upsert({
-          user_id: user.id,
-          wallet_address: walletAddress,
-          chain_id: 1,
-          last_block: Number.isFinite(maxBlock) ? maxBlock : fromBlock,
-          updated_at: new Date().toISOString(),
-        });
-        if (se) throw new Error(`Sync state update error for ${walletAddress}: ${se.message}`);
-
-        totalSynced += rows.length;
-        console.log(`Synced ${rows.length} new txs for ${walletAddress} up to block ${maxBlock}`);
-
-      } catch (walletError) {
-          console.error(`Failed to sync wallet ${walletAddress}:`, (walletError as Error).message);
-      }
-    }
-
-    return json({ 
-      ok: true, 
-      message: "Sync process completed.",
-      total_transactions_synced: totalSynced, 
-      wallets_processed: walletsProcessed
+  // ---- Nonce and Verify logic remains the same ----
+  const getNonce = async (token?: string) => {
+    const r = await fetch(FN_URL, {
+      method: "GET",
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok || !body?.nonce) {
+      throw new Error(
+        `Nonce failed. status=${r.status}, body=${JSON.stringify(body)}`
+      );
+    }
+    return body.nonce as string;
+  };
 
-  } catch (e) {
-    console.error("CRITICAL ERROR in sync_wallet_history:", (e as Error).stack);
-    return bad((e as Error).message || String(e), 500);
-  }
-});
+  const postVerify = async (
+    payload: { address: string; signature: string; message: string },
+    token?: string
+  ) => {
+    const r = await fetch(FN_URL, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ action: "verify", ...payload }),
+    });
+    const text = await r.text();
+    let body: any = null;
+    try { body = JSON.parse(text); } catch { body = text; }
+    if (!r.ok || !body?.ok) {
+      throw new Error(`Verify failed. status=${r.status}, body=${text}`);
+    }
+    return body;
+  };
+  
+  // ---- MetaMask and WalletConnect handlers remain the same ----
+    const handleLinkWithMetaMask = async () => {
+    try {
+      if (!user?.id) { alert("Please login again."); return; }
+      if (!normalizedInput || !isAddress(normalizedInput)) {
+        alert("Please input a valid Ethereum address."); return;
+      }
+      if (alreadyLinked) { alert("This wallet is already linked."); return; }
+      if (!(window as any).ethereum) { alert("MetaMask not found."); return; }
 
+      const { data: sess } = await supabase.auth.getSession();
+      const token = sess?.session?.access_token;
+
+      setLinking("mm");
+
+      const [current] = await (window as any).ethereum.request({
+        method: "eth_requestAccounts",
+      });
+      if (!current) throw new Error("No MetaMask account. Please unlock MetaMask.");
+
+      if (current.toLowerCase() !== normalizedInput.toLowerCase()) {
+        alert("The currently selected MetaMask account differs from the input address.");
+        return;
+      }
+
+      const message = await getNonce(token);
+
+      const hexMsg = toHex(message);
+      const signature = await (window as any).ethereum.request({
+        method: "personal_sign",
+        params: [hexMsg, current],
+      });
+
+      const recovered = await recoverMessageAddress({ message, signature });
+      if (recovered.toLowerCase() !== current.toLowerCase()) {
+        throw new Error(`Local recover mismatch: ${recovered} != ${current}`);
+      }
+
+      await postVerify({ address: current, signature, message }, token);
+      setAddressInput("");
+      await load();
+      alert("Wallet linked (MetaMask).");
+    } catch (e: any) {
+      console.error("[wallets] mm error:", e);
+      alert(e?.message ?? String(e));
+    } finally {
+      setLinking(null);
+    }
+  };
+
+  const handleLinkWithWalletConnect = async () => {
+    let provider: WCProvider | null = null;
+    try {
+      if (!user?.id) { alert("Please login again."); return; }
+      if (!normalizedInput || !isAddress(normalizedInput)) {
+        alert("Please input a valid Ethereum address."); return;
+      }
+      if (alreadyLinked) { alert("This wallet is already linked."); return; }
+
+      const { data: sess } = await supabase.auth.getSession();
+      const token = sess?.session?.access_token;
+
+      setLinking("wc");
+
+      provider = await createWCProvider();
+
+      if (typeof provider.connect === "function") {
+        await provider.connect();
+      } else {
+        await provider.request({ method: "eth_requestAccounts" });
+      }
+
+      const accounts = (await provider.request({
+        method: "eth_accounts",
+      })) as string[];
+      const current = accounts?.[0];
+      if (!current) throw new Error("WalletConnect: no accounts.");
+
+      if (current.toLowerCase() !== normalizedInput.toLowerCase()) {
+        alert("Selected account differs from the input address.");
+        return;
+      }
+
+      const message = await getNonce(token);
+
+      const hexMsg = toHex(message);
+      const signature = (await provider.request({
+        method: "personal_sign",
+        params: [hexMsg, current],
+      })) as string;
+
+      const recovered = await recoverMessageAddress({ message, signature });
+      if (recovered.toLowerCase() !== current.toLowerCase()) {
+        throw new Error(`Local recover mismatch: ${recovered} != ${current}`);
+      }
+
+      await postVerify({ address: current, signature, message }, token);
+      setAddressInput("");
+      await load();
+      alert("Wallet linked (WalletConnect).");
+    } catch (e: any) {
+      console.error("[wallets] wc error:", e);
+      alert(e?.message ?? String(e));
+    } finally {
+      try { await provider?.disconnect?.(); } catch {}
+      setLinking(null);
+    }
+  };
+
+  return (
+    <AppPageLayout
+      title="Wallets"
+      description="Link wallets to your account, verify ownership, and keep your ledger in sync."
+    >
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+        <div className="border rounded-2xl p-5 bg-white/80 shadow-sm space-y-3">
+          <div>
+            <p className="text-sm font-semibold">Add a wallet</p>
+            <p className="text-sm text-muted-foreground">Enter the address, sign the nonce, and confirm.</p>
+          </div>
+          <div className="flex flex-col gap-3">
+            <label className="text-sm font-medium">Wallet Address</label>
+            <input
+              className="flex-1 border rounded px-3 py-2"
+              placeholder="0x..."
+              value={addressInput}
+              onChange={(e) => setAddressInput(e.target.value)}
+              autoComplete="off"
+            />
+            <div className="flex flex-wrap gap-2">
+              <Button
+                onClick={handleLinkWithMetaMask}
+                disabled={linking !== null}
+                title="Sign with MetaMask"
+              >
+                {linking === "mm" ? "Linking..." : "Link (MetaMask)"}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={handleLinkWithWalletConnect}
+                disabled={linking !== null}
+                title="Sign with WalletConnect (mobile / no extension)"
+              >
+                {linking === "wc" ? "Linking..." : "Link (WalletConnect)"}
+              </Button>
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            The signing message is a server-issued nonce. Make sure the input address and signer address match exactly.
+          </p>
+          {alreadyLinked && (
+            <p className="text-xs text-green-700">This address is already linked.</p>
+          )}
+        </div>
+
+        <div className="border rounded-2xl p-5 bg-white/80 shadow-sm">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <p className="text-sm font-semibold">Linked wallets</p>
+              <p className="text-xs text-muted-foreground">Only addresses linked to this account are shown.</p>
+            </div>
+            {loading && <span className="text-xs text-muted-foreground">Loading...</span>}
+          </div>
+          {loading ? null : rows.length === 0 ? (
+            <div className="text-sm text-muted-foreground">No linked wallets yet.</div>
+          ) : (
+            <ul className="space-y-2">
+              {rows.map((w) => (
+                <li key={w.id} className="border rounded-xl p-3 bg-white/70">
+                  {/* Display 'wallet_address' */}
+                  <div className="font-mono break-all">{w.wallet_address}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {/* Determine status from 'verified_at' and display the date */}
+                    {w.verified_at ? `verified • ${new Date(w.verified_at).toLocaleString()}` : "unverified"}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </AppPageLayout>
+  );
+}
