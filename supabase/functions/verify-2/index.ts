@@ -1,6 +1,6 @@
 
 // supabase/functions/verify-2/index.ts
-// --- FINAL & DIRECT AUTH FIX: Manually decode JWT to get user ID --- 
+// --- FINAL FIX: Targeting the CORRECT table `wallet_connections` as per user instruction. ---
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { decode } from 'https://deno.land/x/djwt@v3.0.2/mod.ts';
@@ -50,9 +50,9 @@ Deno.serve(async (req) => {
         return new Response(JSON.stringify({ ok: false, error: 'Signature mismatch' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
       }
 
-      // --- STEP 3: Upsert with the directly decoded user ID ---
+      // --- STEP 3: Upsert into the CORRECT table `wallet_connections` ---
       const adminClient = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
-      const { error: dbError } = await adminClient.from('wallets').upsert(
+      const { error: dbError } = await adminClient.from('wallet_connections').upsert(
         { address: address.toLowerCase(), user_id: userId, verified: true },
         { onConflict: 'user_id,address' }
       );
