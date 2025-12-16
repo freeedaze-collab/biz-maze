@@ -1,6 +1,9 @@
 
 // supabase/functions/verify-2/index.ts
-// --- FINAL VERSION: Dynamically accepts `wallet_type` from the client. ---
+// --- FINAL, SIMPLIFIED & ROBUST version ---
+// Based on the user's proven code, combined with all learned DB schema requirements.
+// This version hardcodes `wallet_type` to remove client-side dependencies.
+
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { decode } from 'https://deno.land/x/djwt@v3.0.2/mod.ts';
@@ -21,8 +24,8 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // --- STEP 1: Get User ID directly from JWT --- 
-    const authHeader = req.headers.get('Authorization')!;
+    // --- STEP 1: Get User ID directly from JWT (Robust Method) ---
+    const authHeader = req.headers.get('Authorization');
     if (!authHeader) throw new Error('Missing Authorization header');
     const jwt = authHeader.replace('Bearer ', '');
     const [, payload] = decode(jwt);
@@ -35,41 +38,43 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({ nonce }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
-    if (req.method === 'POST') {
-      const body = await req.json();
-      const wallet_address = body.address;
-      const { signature, wallet_type } = body; // `wallet_type` をbodyから取得
-      const messageToVerify = body.message || body.nonce;
-
-      // `wallet_type` の存在チェックを追加
-      if (!isAddress(wallet_address) || !signature || !messageToVerify || !wallet_type) {
-        throw new Error('Invalid POST body: address, signature, nonce, and wallet_type are required.');
-      }
-
-      const recovered = await recoverMessageAddress({ message: messageToVerify, signature });
-
-      if (recovered.toLowerCase() !== wallet_address.toLowerCase()) {
-        return new Response(JSON.stringify({ ok: false, error: 'Signature mismatch' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-      }
-
-      // --- STEP 3: Upsert with the DYNAMIC wallet_type ---
-      const adminClient = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
-      const { error: dbError } = await adminClient.from('wallet_connections').upsert(
-        {
-          user_id: userId,
-          wallet_address: wallet_address.toLowerCase(),
-          verified_at: new Date().toISOString(),
-          verification_status: 'verified',
-          wallet_type: wallet_type // 受け取った`wallet_type`を使用
-        },
-        { onConflict: 'user_id,wallet_address' }
-      );
-      if (dbError) throw dbError;
-
-      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    if (req.method !== 'POST') {
+      return new Response('Method Not Allowed', { status: 405, headers: corsHeaders });
     }
 
-    return new Response('Method Not Allowed', { status: 405, headers: corsHeaders });
+    // --- STEP 3: Verify Signature (using logic from user's trusted code) ---
+    const body = await req.json();
+    const address = body.address;
+    const signature = body.signature;
+    const messageToVerify = body.message || body.nonce; // Accept both for wide compatibility
+
+    if (!isAddress(address) || !signature || !messageToVerify) {
+      // This is a simplified check. The error the user saw was more complex.
+      // This version focuses on the core data needed for verification.
+      throw new Error(`Invalid POST body. address, signature, and message/nonce are required.`);
+    }
+
+    const recovered = await recoverMessageAddress({ message: messageToVerify, signature });
+
+    if (recovered.toLowerCase() !== address.toLowerCase()) {
+      return new Response(JSON.stringify({ ok: false, error: 'Signature mismatch' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
+
+    // --- STEP 4: Upsert into DB with all known schema requirements ---
+    const adminClient = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+    const { error: dbError } = await adminClient.from('wallet_connections').upsert(
+      {
+        user_id: userId,
+        wallet_address: address.toLowerCase(), // Correct column name
+        verified_at: new Date().toISOString(),
+        verification_status: 'verified',
+        wallet_type: 'ethereum' // Hardcoded to satisfy NOT NULL constraint
+      },
+      { onConflict: 'user_id,wallet_address' } // Correct composite key
+    );
+    if (dbError) throw dbError;
+
+    return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
   } catch (e) {
     return new Response(JSON.stringify({ error: `Function error: ${e.message}` }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
