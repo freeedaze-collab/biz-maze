@@ -49,8 +49,6 @@ Deno.serve(async (req) => {
     const messageToVerify = body.message || body.nonce; // Accept both for wide compatibility
 
     if (!isAddress(address) || !signature || !messageToVerify) {
-      // This is a simplified check. The error the user saw was more complex.
-      // This version focuses on the core data needed for verification.
       throw new Error(`Invalid POST body. address, signature, and message/nonce are required.`);
     }
 
@@ -65,10 +63,13 @@ Deno.serve(async (req) => {
     const { error: dbError } = await adminClient.from('wallet_connections').upsert(
       {
         user_id: userId,
-        wallet_address: address.toLowerCase(), // Correct column name
+        wallet_address: address.toLowerCase(),
         verified_at: new Date().toISOString(),
         verification_status: 'verified',
-        wallet_type: 'ethereum' // Hardcoded to satisfy NOT NULL constraint
+        wallet_type: 'ethereum',
+        // --- FIX: Add default values for columns likely required by the UI ---
+        chain: 'ethereum',
+        wallet_name: `${address.substring(0, 6)}...${address.substring(address.length - 4)}`,
       },
       { onConflict: 'user_id,wallet_address' } // Correct composite key
     );
