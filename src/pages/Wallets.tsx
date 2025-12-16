@@ -32,8 +32,9 @@ export default function WalletsPage() {
   useEffect(() => { load(); }, [user?.id]);
 
   const getNonce = async () => {
-    const { data, error } = await supabase.functions.invoke("verify-2", {
-      body: JSON.stringify({ action: "nonce" }),
+    // Use GET with a query parameter for fetching the nonce
+    const { data, error } = await supabase.functions.invoke("verify-2?action=nonce", {
+      method: 'GET',
     });
     if (error) throw error;
     return (data as any)?.nonce as string;
@@ -70,8 +71,9 @@ export default function WalletsPage() {
 
       const sig = await signWithMetaMask(n);
 
+      // Use POST with a body for the verification step
       const { data, error } = await supabase.functions.invoke("verify-2", {
-        body: JSON.stringify({ action: "verify", address: addr, nonce: n, signature: sig }),
+        body: { action: "verify", address: addr, nonce: n, signature: sig },
       });
 
       if (error) {
@@ -93,13 +95,9 @@ export default function WalletsPage() {
       await load();
     } catch (e: any) {
       console.error("[wallets] link exception:", e);
-      const msg = (e as any)?.message ?? String(e);
-      // Nonce failed. status=500, body={"error":"Unexpected end of JSON input"}
-      if (typeof msg === 'string' && msg.includes('Unexpected end of JSON input')) {
-          setMessage(`Nonce failed. status=500, body={"error":"Unexpected end of JSON input"}`);
-      } else {
-          setMessage(`Link failed: ${msg}`);
-      }
+      // Update the error message to reflect the new server responses
+      const msg = e.message || String(e);
+      setMessage(`Link failed: ${msg}`);
     } finally {
       setBusy(false);
     }
@@ -164,4 +162,4 @@ export default function WalletsPage() {
     </div>
   );
 }
-""
+"""
