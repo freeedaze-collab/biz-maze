@@ -101,29 +101,24 @@ export default function TransactionHistory() {
         }
     };
 
-    const handleSync = async (syncFunction: 'sync-wallet-transactions' | 'exchange-sync-all' | 'sync-historical-exchange-rates', syncType: string) => {
+    const handleSync = async (syncFunction: 'sync_wallet_history' | 'exchange-sync-all' | 'sync-historical-exchange-rates', syncType: string) => {
         setIsSyncing(true);
         setSyncMessage(`Initiating ${syncType} sync...`);
         setError(null);
         try {
-            if (syncFunction === 'sync-wallet-transactions') {
+            if (syncFunction === 'sync_wallet_history') {
                 const { data: { user } } = await supabase.auth.getUser();
                 if (!user) throw new Error("User not authenticated");
 
-                const { data: wallets, error: walletsError } = await supabase.from('wallets').select('address').eq('user_id', user.id);
+                const { data: wallets, error: walletsError } = await supabase.from('wallet_connections').select('wallet_address').eq('user_id', user.id).not('verified_at', 'is', null);
                 if (walletsError) throw walletsError;
-                if (!wallets || wallets.length === 0) { setSyncMessage("No linked wallets found."); return; }
+                if (!wallets || wallets.length === 0) { setSyncMessage("No verified wallets found to sync."); return; }
 
                 setSyncMessage(`Syncing all chains for ${wallets.length} wallet(s)...`);
-                let syncErrors: string[] = [];
-
-                for (const wallet of wallets) {
-                    try {
-                        const { error: invokeError } = await supabase.functions.invoke('sync-wallet-transactions', { body: { walletAddress: wallet.address } });
-                        if (invokeError) syncErrors.push(invokeError.message);
-                    } catch (e: any) { syncErrors.push(e.message); }
+                const { error: invokeError } = await supabase.functions.invoke('sync_wallet_history');
+                if (invokeError) {
+                  throw new Error(`Sync invocation failed: ${invokeError.message}`);
                 }
-                if (syncErrors.length > 0) setError(`Sync completed with issues: ${syncErrors.join("; ")}`);
                 
             } else {
                 const { error } = await supabase.functions.invoke(syncFunction, { body: {} });
@@ -169,7 +164,7 @@ export default function TransactionHistory() {
                         <div className="flex flex-wrap items-center gap-2">
                             <Button variant="outline" size="sm" onClick={handleUpdatePrices} disabled={isUpdatingPrices || isSyncing || isSaving}>{isUpdatingPrices ? 'Updating...' : 'Update Prices'}</Button>
                             <Button variant="outline" size="sm" onClick={() => handleSync('exchange-sync-all', 'Exchanges')} disabled={isSyncing || isUpdatingPrices || isSaving}>{isSyncing ? 'Syncing...' : 'Sync Exchanges'}</Button>
-                            <Button variant="outline" size="sm" onClick={() => handleSync('sync-wallet-transactions', 'Wallets')} disabled={isSyncing || isUpdatingPrices || isSaving}>{isSyncing ? 'Syncing...' : 'Sync Wallets'}</Button>
+                            <Button variant="outline" size="sm" onClick={() => handleSync('sync_wallet_history', 'Wallets')} disabled={isSyncing || isUpdatingPrices || isSaving}>{isSyncing ? 'Syncing...' : 'Sync Wallets'}</Button>
                             <Button size="sm" onClick={handleSaveChanges} disabled={isSaving || isSyncing || Object.keys(editedTransactions).length === 0}>{isSaving ? 'Saving...' : 'Save Changes'}</Button>
                         </div>
                     </div>
