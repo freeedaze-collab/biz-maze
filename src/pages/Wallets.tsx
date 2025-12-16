@@ -1,4 +1,4 @@
-// src/pages/Wallets.tsx
+"""// src/pages/Wallets.tsx
 import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
@@ -33,7 +33,7 @@ export default function WalletsPage() {
 
   const getNonce = async () => {
     const { data, error } = await supabase.functions.invoke("verify-2", {
-      body: { action: "nonce" },
+      body: JSON.stringify({ action: "nonce" }),
     });
     if (error) throw error;
     return (data as any)?.nonce as string;
@@ -71,7 +71,7 @@ export default function WalletsPage() {
       const sig = await signWithMetaMask(n);
 
       const { data, error } = await supabase.functions.invoke("verify-2", {
-        body: { action: "verify", address: addr, nonce: n, signature: sig },
+        body: JSON.stringify({ action: "verify", address: addr, nonce: n, signature: sig }),
       });
 
       if (error) {
@@ -93,7 +93,13 @@ export default function WalletsPage() {
       await load();
     } catch (e: any) {
       console.error("[wallets] link exception:", e);
-      setMessage(`Link failed: ${e?.message ?? String(e)}`);
+      const msg = (e as any)?.message ?? String(e);
+      // Nonce failed. status=500, body={"error":"Unexpected end of JSON input"}
+      if (typeof msg === 'string' && msg.includes('Unexpected end of JSON input')) {
+          setMessage(`Nonce failed. status=500, body={"error":"Unexpected end of JSON input"}`);
+      } else {
+          setMessage(`Link failed: ${msg}`);
+      }
     } finally {
       setBusy(false);
     }
@@ -158,3 +164,4 @@ export default function WalletsPage() {
     </div>
   );
 }
+""
