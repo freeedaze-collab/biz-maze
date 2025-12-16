@@ -33,7 +33,6 @@ export default function TransactionHistory() {
             const { data: { user } } = await supabase.auth.getUser();
             if (!user) throw new Error("User not authenticated");
 
-            // Select statement now fetches the correct columns from the new v_holdings view.
             const holdingsSelect = 'asset, current_amount, current_price, current_value, "Avg. Buy Price", "Unrealized P&L"';
             const transactionsSelect = 'id, user_id, reference_id, date, source, chain, description, amount, asset, price, value_in_usd, type, usage, note';
 
@@ -45,7 +44,6 @@ export default function TransactionHistory() {
             if (holdingsRes.error) throw new Error(`Holdings Error: ${holdingsRes.error.message}`);
             if (transactionsRes.error) throw new Error(`Transactions Error: ${transactionsRes.error.message}`);
 
-            // Map the snake_case columns from the DB to the camelCase properties of the Holding interface.
             const mappedHoldings = (holdingsRes.data || []).map(h => ({
                 asset: h.asset,
                 currentAmount: h.current_amount,
@@ -101,12 +99,12 @@ export default function TransactionHistory() {
         }
     };
 
-    const handleSync = async (syncFunction: 'sync_wallet_history' | 'exchange-sync-all' | 'sync-historical-exchange-rates', syncType: string) => {
+    const handleSync = async (syncFunction: 'sync-wallet-transactions' | 'exchange-sync-all' | 'sync-historical-exchange-rates', syncType: string) => {
         setIsSyncing(true);
         setSyncMessage(`Initiating ${syncType} sync...`);
         setError(null);
         try {
-            if (syncFunction === 'sync_wallet_history') {
+            if (syncFunction === 'sync-wallet-transactions') {
                 const { data: { user } } = await supabase.auth.getUser();
                 if (!user) throw new Error("User not authenticated");
 
@@ -115,10 +113,15 @@ export default function TransactionHistory() {
                 if (!wallets || wallets.length === 0) { setSyncMessage("No verified wallets found to sync."); return; }
 
                 setSyncMessage(`Syncing all chains for ${wallets.length} wallet(s)...`);
-                const { error: invokeError } = await supabase.functions.invoke('sync_wallet_history');
-                if (invokeError) {
-                  throw new Error(`Sync invocation failed: ${invokeError.message}`);
+                let syncErrors: string[] = [];
+
+                for (const wallet of wallets) {
+                    try {
+                        const { error: invokeError } = await supabase.functions.invoke('sync-wallet-transactions', { body: { walletAddress: wallet.wallet_address } });
+                        if (invokeError) syncErrors.push(invokeError.message);
+                    } catch (e: any) { syncErrors.push(e.message); }
                 }
+                if (syncErrors.length > 0) setError(`Sync completed with issues: ${syncErrors.join("; ")}`);
                 
             } else {
                 const { error } = await supabase.functions.invoke(syncFunction, { body: {} });
@@ -164,7 +167,7 @@ export default function TransactionHistory() {
                         <div className="flex flex-wrap items-center gap-2">
                             <Button variant="outline" size="sm" onClick={handleUpdatePrices} disabled={isUpdatingPrices || isSyncing || isSaving}>{isUpdatingPrices ? 'Updating...' : 'Update Prices'}</Button>
                             <Button variant="outline" size="sm" onClick={() => handleSync('exchange-sync-all', 'Exchanges')} disabled={isSyncing || isUpdatingPrices || isSaving}>{isSyncing ? 'Syncing...' : 'Sync Exchanges'}</Button>
-                            <Button variant="outline" size="sm" onClick={() => handleSync('sync_wallet_history', 'Wallets')} disabled={isSyncing || isUpdatingPrices || isSaving}>{isSyncing ? 'Syncing...' : 'Sync Wallets'}</Button>
+                            <Button variant="outline" size="sm" onClick={() => handleSync('sync-wallet-transactions', 'Wallets')} disabled={isSyncing || isUpdatingPrices || isSaving}>{isSyncing ? 'Syncing...' : 'Sync Wallets'}</Button>
                             <Button size="sm" onClick={handleSaveChanges} disabled={isSaving || isSyncing || Object.keys(editedTransactions).length === 0}>{isSaving ? 'Saving...' : 'Save Changes'}</Button>
                         </div>
                     </div>
