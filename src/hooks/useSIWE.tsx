@@ -27,7 +27,7 @@ export function useSIWE() {
       }
 
       // 1) ノンス取得（サーバに保存される）
-      const { data: nonceResp, error: nErr } = await supabase.functions.invoke('verify-wallet-signature', {
+      const { data: nonceResp, error: nErr } = await supabase.functions.invoke('verify-2', {
         body: { action: 'nonce' },
       });
       if (nErr) {
@@ -75,7 +75,7 @@ export function useSIWE() {
       }
 
       // 3) 検証実行（recover → wallets upsert → nonce クリア）
-      const { data, error } = await supabase.functions.invoke('verify-wallet-signature', {
+      const { data, error } = await supabase.functions.invoke('verify-2', {
         body: { action: 'verify', address, signature, nonce },
       });
       if (error) {
