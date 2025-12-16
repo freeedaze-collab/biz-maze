@@ -7,15 +7,15 @@ import { createWCProvider, WCProvider } from "@/lib/walletconnect";
 import AppPageLayout from "@/components/layout/AppPageLayout";
 import { Button } from "@/components/ui/button";
 
+// Updated type to match the 'wallet_connections' table schema
 type WalletRow = {
   id: number;
   user_id: string;
-  address: string;
-  created_at?: string | null;
-  verified?: boolean | null;
+  wallet_address: string; // Renamed from 'address'
+  verified_at?: string | null; // This field indicates verification
 };
 
-const FN_URL = import.meta.env.VITE_FUNCTION_VERIFY_WALLET as string;
+const FN_URL = "https://ymddtgbsybvxfitgupqy.supabase.co/functions/v1/verify-2";
 
 export default function WalletSelection() {
   const { user } = useAuth();
@@ -29,19 +29,21 @@ export default function WalletSelection() {
 
   const alreadyLinked = useMemo(() => {
     if (!normalizedInput) return false;
+    // Use 'wallet_address' for comparison
     return rows.some(
-      (r) => r.address?.toLowerCase() === normalizedInput.toLowerCase()
+      (r) => r.wallet_address?.toLowerCase() === normalizedInput.toLowerCase()
     );
   }, [rows, normalizedInput]);
 
   const load = async () => {
     if (!user?.id) return;
     setLoading(true);
+    // Read from the correct 'wallet_connections' table and select the correct columns
     const { data, error } = await supabase
-      .from("wallets")
-      .select("id,user_id,address,created_at,verified")
+      .from("wallet_connections")
+      .select("id,user_id,wallet_address,verified_at")
       .eq("user_id", user.id)
-      .order("created_at", { ascending: false });
+      .order("verified_at", { ascending: false });
 
     if (error) {
       console.error("[wallets] load error:", error);
@@ -57,7 +59,7 @@ export default function WalletSelection() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
-  // ---- 共通：nonce取得（GET）
+  // ---- Nonce and Verify logic remains the same ----
   const getNonce = async (token?: string) => {
     const r = await fetch(FN_URL, {
       method: "GET",
@@ -69,11 +71,9 @@ export default function WalletSelection() {
         `Nonce failed. status=${r.status}, body=${JSON.stringify(body)}`
       );
     }
-    // サーバは nonce を “素の文字列” として返す → これを message としてそのまま署名する
     return body.nonce as string;
   };
 
-  // ---- 共通：verify（POST）
   const postVerify = async (
     payload: { address: string; signature: string; message: string },
     token?: string
@@ -94,9 +94,9 @@ export default function WalletSelection() {
     }
     return body;
   };
-
-  // ---- MetaMask（拡張機能）
-  const handleLinkWithMetaMask = async () => {
+  
+  // ---- MetaMask and WalletConnect handlers remain the same ----
+    const handleLinkWithMetaMask = async () => {
     try {
       if (!user?.id) { alert("Please login again."); return; }
       if (!normalizedInput || !isAddress(normalizedInput)) {
@@ -122,14 +122,12 @@ export default function WalletSelection() {
 
       const message = await getNonce(token);
 
-      // ★ hex で personal_sign（順序は [hexMessage, account]）
       const hexMsg = toHex(message);
       const signature = await (window as any).ethereum.request({
         method: "personal_sign",
         params: [hexMsg, current],
       });
 
-      // 署名直後のローカル recover 検証
       const recovered = await recoverMessageAddress({ message, signature });
       if (recovered.toLowerCase() !== current.toLowerCase()) {
         throw new Error(`Local recover mismatch: ${recovered} != ${current}`);
@@ -147,7 +145,6 @@ export default function WalletSelection() {
     }
   };
 
-  // ---- WalletConnect（モバイル／拡張機能なし）
   const handleLinkWithWalletConnect = async () => {
     let provider: WCProvider | null = null;
     try {
@@ -164,7 +161,6 @@ export default function WalletSelection() {
 
       provider = await createWCProvider();
 
-      // ユーザー操作中にモーダルを開く
       if (typeof provider.connect === "function") {
         await provider.connect();
       } else {
@@ -184,14 +180,12 @@ export default function WalletSelection() {
 
       const message = await getNonce(token);
 
-      // ★ hex で personal_sign（順序は [hexMessage, account]）
       const hexMsg = toHex(message);
       const signature = (await provider.request({
         method: "personal_sign",
         params: [hexMsg, current],
       })) as string;
 
-      // 署名直後のローカル recover 検証
       const recovered = await recoverMessageAddress({ message, signature });
       if (recovered.toLowerCase() !== current.toLowerCase()) {
         throw new Error(`Local recover mismatch: ${recovered} != ${current}`);
@@ -205,7 +199,7 @@ export default function WalletSelection() {
       console.error("[wallets] wc error:", e);
       alert(e?.message ?? String(e));
     } finally {
-      try { await provider?.disconnect?.(); } catch {}
+      try { await provider?.disconnect?.(); } catch {}\
       setLinking(null);
     }
   };
@@ -262,7 +256,7 @@ export default function WalletSelection() {
               <p className="text-sm font-semibold">Linked wallets</p>
               <p className="text-xs text-muted-foreground">Only addresses linked to this account are shown.</p>
             </div>
-            {loading && <span className="text-xs text-muted-foreground">Loading...</span>}
+            {loading && <span className="text-xs text-muted-foreground\">Loading...</span>}
           </div>
           {loading ? null : rows.length === 0 ? (
             <div className="text-sm text-muted-foreground">No linked wallets yet.</div>
@@ -270,9 +264,11 @@ export default function WalletSelection() {
             <ul className="space-y-2">
               {rows.map((w) => (
                 <li key={w.id} className="border rounded-xl p-3 bg-white/70">
-                  <div className="font-mono break-all">{w.address}</div>
+                  {/* Display 'wallet_address' */}
+                  <div className="font-mono break-all">{w.wallet_address}</div>
                   <div className="text-xs text-muted-foreground">
-                    {w.verified ? "verified" : "unverified"} • {w.created_at ?? "—"}
+                    {/* Determine status from 'verified_at' and display the date */}
+                    {w.verified_at ? `verified • ${new Date(w.verified_at).toLocaleString()}` : "unverified"}
                   </div>
                 </li>
               ))}
