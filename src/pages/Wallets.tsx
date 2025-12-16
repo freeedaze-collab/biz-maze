@@ -32,7 +32,7 @@ export default function WalletsPage() {
   useEffect(() => { load(); }, [user?.id]);
 
   const getNonce = async () => {
-    const { data, error } = await supabase.functions.invoke("verify-wallet-signature", {
+    const { data, error } = await supabase.functions.invoke("verify-2", {
       body: { action: "nonce" },
     });
     if (error) throw error;
@@ -70,7 +70,7 @@ export default function WalletsPage() {
 
       const sig = await signWithMetaMask(n);
 
-      const { data, error } = await supabase.functions.invoke("verify-wallet-signature", {
+      const { data, error } = await supabase.functions.invoke("verify-2", {
         body: { action: "verify", address: addr, nonce: n, signature: sig },
       });
 
