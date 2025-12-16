@@ -1,4 +1,4 @@
-import { useState } from 'react';
+"""import { useState } from 'react';
 import { supabase } from '../integrations/supabase/client';
 import { useToast } from './use-toast';
 
@@ -26,9 +26,9 @@ export function useSIWE() {
         return false;
       }
 
-      // 1) ノンス取得（サーバに保存される）
-      const { data: nonceResp, error: nErr } = await supabase.functions.invoke('verify-2', {
-        body: { action: 'nonce' },
+      // 1) ノンス取得（サーバに保存される） - GET request with query param
+      const { data: nonceResp, error: nErr } = await supabase.functions.invoke('verify-2?action=nonce', {
+        method: 'GET',
       });
       if (nErr) {
         console.error('nonce error:', nErr);
@@ -74,7 +74,7 @@ export function useSIWE() {
         return false;
       }
 
-      // 3) 検証実行（recover → wallets upsert → nonce クリア）
+      // 3) 検証実行（recover → wallets upsert → nonce クリア） - POST request with body
       const { data, error } = await supabase.functions.invoke('verify-2', {
         body: { action: 'verify', address, signature, nonce },
       });
@@ -120,3 +120,4 @@ export function useSIWE() {
     verifyWalletOwnership,
   };
 }
+"""
