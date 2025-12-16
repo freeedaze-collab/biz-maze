@@ -1,6 +1,6 @@
 
 // supabase/functions/verify-2/index.ts
-// --- DEFINITIVE FIX: Using user-preferred logic inside verify-2 to avoid client-side call changes. ---
+// --- DEFINITIVE FIX v2: Correcting column name from verified_at back to verified. ---
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import {
@@ -55,7 +55,8 @@ Deno.serve(async (req) => {
       // Use the SERVICE_ROLE only for admin-level writes to the DB.
       const adminClient = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
       const { error: dbError } = await adminClient.from('wallets').upsert(
-        { address: address.toLowerCase(), user_id: user.id, verified_at: new Date().toISOString() },
+        // CORRECTED: The column is named `verified`, not `verified_at`.
+        { address: address.toLowerCase(), user_id: user.id, verified: true },
         { onConflict: 'user_id,address' }
       );
       if (dbError) throw dbError;
