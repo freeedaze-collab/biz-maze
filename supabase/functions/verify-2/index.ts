@@ -1,6 +1,6 @@
 
 // supabase/functions/verify-2/index.ts
-// --- FINAL FIX: Targeting the CORRECT table `wallet_connections` as per user instruction. ---
+// --- THE GRAND FINALE: Matching the exact schema of `wallet_connections` ---
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { decode } from 'https://deno.land/x/djwt@v3.0.2/mod.ts';
@@ -37,24 +37,31 @@ Deno.serve(async (req) => {
 
     if (req.method === 'POST') {
       const body = await req.json();
-      const { address, signature } = body;
+      // The address from the client is the `wallet_address` in the DB
+      const wallet_address = body.address;
+      const { signature } = body;
       const messageToVerify = body.message || body.nonce;
 
-      if (!isAddress(address) || !signature || !messageToVerify) {
-        throw new Error('Invalid POST body');
+      if (!isAddress(wallet_address) || !signature || !messageToVerify) {
+        throw new Error('Invalid POST body: address, signature, and message/nonce are required.');
       }
 
       const recovered = await recoverMessageAddress({ message: messageToVerify, signature });
 
-      if (recovered.toLowerCase() !== address.toLowerCase()) {
+      if (recovered.toLowerCase() !== wallet_address.toLowerCase()) {
         return new Response(JSON.stringify({ ok: false, error: 'Signature mismatch' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
       }
 
-      // --- STEP 3: Upsert into the CORRECT table `wallet_connections` ---
+      // --- STEP 3: Upsert with correct table and column names ---
       const adminClient = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
       const { error: dbError } = await adminClient.from('wallet_connections').upsert(
-        { address: address.toLowerCase(), user_id: userId, verified: true },
-        { onConflict: 'user_id,address' }
+        {
+          user_id: userId,
+          wallet_address: wallet_address.toLowerCase(),
+          verified_at: new Date().toISOString(),
+          verification_status: 'verified'
+        },
+        { onConflict: 'user_id,wallet_address' }
       );
       if (dbError) throw dbError;
 
