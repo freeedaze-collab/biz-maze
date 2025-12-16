@@ -19,6 +19,7 @@ import TransactionHistory from "@/pages/TransactionHistory";
 import Accounting from "@/pages/Accounting";
 import Profile from "@/pages/Profile";
 import WalletSelection from "@/pages/wallet/WalletSelection";
+import EntityAndTax from "@/pages/onboarding/EntityAndTax"; // ★ 追加
 
 // Exchanges (VCE)
 import VCE from "@/pages/exchange/VCE";
@@ -79,6 +80,16 @@ export default function App() {
         element={
           <AuthGuard>
             <WalletSelection />
+          </AuthGuard>
+        }
+      />
+
+      {/* ★ 追加: Onboarding route */}
+      <Route
+        path="/onboarding/entity-and-tax"
+        element={
+          <AuthGuard>
+            <EntityAndTax />
           </AuthGuard>
         }
       />
