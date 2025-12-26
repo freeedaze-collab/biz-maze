@@ -1,32 +1,105 @@
-project_id = "ymddtgbsybvxfitgupqy"
+project_id = "yelkjimxejmrkfzeumos"
 
-[functions.sync-wallet-balance]
-verify_jwt = false
+[functions.payment-create-checkout]
+  import_map = "./import_map.json"
+  verify_jwt = false
 
-[functions.send-crypto-payment] 
-verify_jwt = false
-
-[functions.generate-ifrs-report]
-verify_jwt = false
+[functions.calculate-taxable-income]
+  import_map = "./import_map.json"
+  verify_jwt = false
 
 [functions.calculate-us-tax]
-verify_jwt = false
+  import_map = "./import_map.json"
+  verify_jwt = false
 
-# 既存の [functions] セクションはそのまま残す
+[functions.create-checkout]
+  import_map = "./import_map.json"
+  verify_jwt = false
 
-[functions."build-statements"]
-verify_jwt = false
+[functions.exchange-binance-proxy]
+  import_map = "./import_map.json"
+  verify_jwt = false
 
-[functions."classify-usage"]
-verify_jwt = false
+[functions.exchange-coinbase-proxy]
+  import_map = "./import_map.json"
+  verify_jwt = false
 
-[functions."verify-wallet-signature"]
-verify_jwt = false
+[functions.exchange-save-keys]
+  import_map = "./import_map.json"
+  verify_jwt = false
 
-[functions.exchange-sync-daily]
-verify_jwt = false
-schedule = "0 3 * * *"   # 毎日 03:00 UTC
+[functions.exchange-sync-all]
+  import_map = "./import_map.json"
+  verify_jwt = false
 
-[functions.wallet-sync-daily]
-verify_jwt = false
-schedule = "30 3 * * *"  # 毎日 03:30 UTC
+[functions.exchange-sync-prep]
+  import_map = "./import_map.json"
+  verify_jwt = false
+
+[functions.exchange-sync-save]
+  import_map = "./import_map.json"
+  verify_jwt = false
+
+[functions.exchange-sync-worker]
+  import_map = "./import_map.json"
+  verify_jwt = false
+
+[functions.generate-ifrs-report]
+  import_map = "./import_map.json"
+  verify_jwt = false
+
+[functions.generate-journal-entries]
+  import_map = "./import_map.json"
+  verify_jwt = false
+
+[functions.payment-create-link]
+  import_map = "./import_map.json"
+  verify_jwt = false
+
+[functions.predict-usage]
+  import_map = "./import_map.json"
+  verify_jwt = false
+
+[functions.preflight_transfer]
+  import_map = "./import_map.json"
+  verify_jwt = false
+
+[functions.send-invoice-email]
+  import_map = "./import_map.json"
+  verify_jwt = false
+
+[functions.send-crypto-payment]
+  import_map = "./import_map.json"
+  verify_jwt = false
+
+[functions.sync-historical-exchange-rates]
+  import_map = "./import_map.json"
+  verify_jwt = true
+
+[functions.sync-wallet-balance]
+  import_map = "./import_map.json"
+  verify_jwt = false
+
+[functions.sync-wallet-transactions]
+  import_map = "./import_map.json"
+  verify_jwt = false
+
+[functions.sync_wallet_history]
+  import_map = "./import_map.json"
+  verify_jwt = false
+
+[functions.update-prices]
+  import_map = "./import_map.json"
+  verify_jwt = false
+
+[functions.verify-wallet-signature]
+  import_map = "./import_map.json"
+  verify_jwt = false
+
+[functions.verify-2]
+  import_map = "./import_map.json"
+  verify_jwt = false
+
+[functions.verify_wallet]
+  import_map = "./import_map.json"
+  verify_jwt = false
