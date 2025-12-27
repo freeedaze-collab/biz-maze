@@ -1,102 +1,143 @@
 
-// supabase/functions/verify_wallet/index.ts
-// --- FIX: This version correctly handles user authentication ---
+// supabase/functions/verify-wallet/index.ts
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts';
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import {
-  isAddress,
-  recoverMessageAddress,
-} from 'https://esm.sh/viem@2.18.8';
+import { createClient, SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { decode } from 'https://deno.land/x/djwt@v3.0.2/mod.ts';
 
-const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
-const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+// EVM verification
+import { isAddress as isEVMAddress, recoverMessageAddress } from 'https://esm.sh/viem@2.18.8';
 
-const ALLOW_ORIGIN = '*';
+// Solana verification
+import nacl from 'https://esm.sh/tweetnacl@1.0.3';
+import { decode as bs58Decode } from 'https://esm.sh/bs58@5.0.0';
 
-function cors(res: Response) {
-  const h = new Headers(res.headers);
-  h.set('Access-Control-Allow-Origin', ALLOW_ORIGIN);
-  h.set('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-  h.set('Access-Control-Allow-Headers', 'authorization,content-type');
-  return new Response(res.body, { status: res.status, headers: h });
-}
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'authorization, content-type',
+};
 
+// --- Main Handler ---
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
-    return cors(new Response(null, { status: 204 }));
+    return new Response('ok', { headers: corsHeaders });
   }
 
-  // --- ★ FIX START: Handle user authentication correctly ---
-  let user: any = null;
   try {
-    const authHeader = req.headers.get('Authorization');
-    if (!authHeader) {
-      return cors(new Response(JSON.stringify({ error: 'Missing auth token' }), { status: 401 }));
+    // --- Auth & User ID ---
+    const { userId } = await getUser(req);
+    const adminClient = createAdminClient();
+
+    // --- Nonce Generation (GET) ---
+    if (req.method === 'GET') {
+      const nonce = crypto.randomUUID().replace(/-/g, '');
+      return new Response(JSON.stringify({ nonce }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
-    const userClient = createClient(SUPABASE_URL, SERVICE_ROLE, {
-      global: { headers: { Authorization: authHeader } },
+
+    // --- Signature Verification (POST) ---
+    const body = await req.json();
+    const { address, signature, message, chain, walletType } = body;
+
+    if (!address || !signature || !message || !chain || !walletType) {
+      throw new Error('address, signature, message, chain, and walletType are required.');
+    }
+
+    // --- Route to correct verification logic ---
+    let isValidSignature = false;
+    switch (chain.toLowerCase()) {
+      case 'solana':
+      case 'sol':
+        isValidSignature = await verifySolanaSignature(address, signature, message);
+        break;
+      
+      // Default to EVM for all other listed chains
+      case 'ethereum':
+      case 'polygon':
+      case 'bnb chain':
+      case 'avalanche':
+      case 'arbitrum':
+      case 'optimism':
+      case 'base':
+      case 'linea':
+      case 'zksync':
+        isValidSignature = await verifyEVMSignature(address, signature, message);
+        break;
+
+      default:
+        throw new Error(`Unsupported chain: ${chain}`);
+    }
+
+    if (!isValidSignature) {
+      return new Response(JSON.stringify({ ok: false, error: 'Signature mismatch' }), { status: 400, headers: corsHeaders });
+    }
+
+    // --- Upsert into DB ---
+    await upsertWalletConnection(adminClient, {
+      userId,
+      address: address.toLowerCase(), // Store addresses lowercase for consistency
+      chain: chain.toLowerCase(),
+      walletType: walletType.toLowerCase(),
     });
-    const { data, error } = await userClient.auth.getUser();
-    if (error || !data.user) {
-      return cors(new Response(JSON.stringify({ error: 'Invalid token' }), { status: 401 }));
-    }
-    user = data.user;
+
+    return new Response(JSON.stringify({ ok: true }), { status: 200, headers: corsHeaders });
+
   } catch (e) {
-    return cors(new Response(JSON.stringify({ error: 'Auth error: ' + e.message }), { status: 500 }));
-  }
-  // --- ★ FIX END ---
-
-  if (req.method === 'GET') {
-    const nonce = crypto.randomUUID().replace(/-/g, '');
-    return cors(new Response(JSON.stringify({ nonce }), { status: 200, headers: { 'content-type': 'application/json' } }));
-  }
-
-  if (req.method !== 'POST') {
-    return cors(new Response('Method Not Allowed', { status: 405 }));
-  }
-
-  let body: any = {};
-  try {
-    body = await req.json();
-  } catch {
-    return cors(new Response(JSON.stringify({ error: 'Invalid JSON' }), { status: 400, headers: { 'content-type': 'application/json' } }));
-  }
-
-  const { action, address, signature, message: nonce } = body ?? {}; // client sends `message`, we call it `nonce`
-  if (action !== 'verify') {
-    return cors(new Response(JSON.stringify({ error: 'Bad request (action)' }), { status: 400, headers: { 'content-type': 'application/json' } }));
-  }
-
-  if (!isAddress(address) || typeof signature !== 'string' || typeof nonce !== 'string') {
-    return cors(new Response(JSON.stringify({ error: 'Bad request (params)' }), { status: 400, headers: { 'content-type': 'application/json' } }));
-  }
-
-  try {
-    const recovered = await recoverMessageAddress({ message: nonce, signature });
-
-    if (recovered.toLowerCase() !== address.toLowerCase()) {
-      return cors(new Response(JSON.stringify({ error: 'Signature mismatch', recovered, address }), { status: 400, headers: { 'content-type': 'application/json' } }));
-    }
-
-    // ★ FIX: Use the authenticated user.id for the database operation
-    const admin = createClient(SUPABASE_URL, SERVICE_ROLE);
-    const { error: dbError } = await admin.from('wallets').upsert(
-      {
-        address: address.toLowerCase(),
-        user_id: user.id, // Now this is a valid UUID
-        verified: true,
-      },
-      { onConflict: 'address' },
-    );
-
-    if (dbError) {
-       console.error('Database error:', dbError.message);
-       return cors(new Response(JSON.stringify({ ok: false, error: dbError.message }), { status: 500 }));
-    }
-
-    return cors(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } }));
-  } catch (e) {
-    console.error('Unexpected error:', e.message);
-    return cors(new Response(JSON.stringify({ error: String(e) }), { status: 500, headers: { 'content-type': 'application/json' } }));
+    console.error('Function Error:', e);
+    return new Response(JSON.stringify({ error: `Function error: ${e.message}` }), { status: 500, headers: corsHeaders });
   }
 });
+
+// --- Verification Logic ---
+
+async function verifyEVMSignature(address: string, signature: `0x${string}`, message: string): Promise<boolean> {
+  if (!isEVMAddress(address)) return false;
+  const recoveredAddress = await recoverMessageAddress({ message, signature });
+  return recoveredAddress.toLowerCase() === address.toLowerCase();
+}
+
+function verifySolanaSignature(address: string, signature: string, message: string): Promise<boolean> {
+  try {
+    const signatureBytes = bs58Decode(signature);
+    const addressBytes = bs58Decode(address);
+    const messageBytes = new TextEncoder().encode(message);
+    
+    // Solana uses Ed25519, so we use `nacl.sign.detached.verify`
+    const isVerified = nacl.sign.detached.verify(messageBytes, signatureBytes, addressBytes);
+    return Promise.resolve(isVerified);
+  } catch (error) {
+    console.error("Solana verification error:", error);
+    return Promise.resolve(false); // If any decoding or verification fails
+  }
+}
+
+// --- Database & Auth Helpers ---
+
+function createAdminClient(): SupabaseClient {
+  return createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+}
+
+async function getUser(req: Request): Promise<{ userId: string }> {
+  const authHeader = req.headers.get('Authorization');
+  if (!authHeader) throw new Error('Missing Authorization header');
+  const jwt = authHeader.replace('Bearer ', '');
+  const [, payload] = decode(jwt);
+  const userId = payload?.sub;
+  if (!userId) throw new Error('Could not extract user ID from token.');
+  return { userId };
+}
+
+async function upsertWalletConnection(client: SupabaseClient, { userId, address, chain, walletType }: { userId: string, address: string, chain: string, walletType: string }) {
+  const { error } = await client.from('wallet_connections').upsert(
+    {
+      user_id: userId,
+      wallet_address: address,
+      verified_at: new Date().toISOString(),
+      verification_status: 'verified',
+      wallet_type: walletType,
+      chain: chain,
+      wallet_name: `${address.substring(0, 6)}...${address.substring(address.length - 4)}`, // Generic name
+    },
+    { onConflict: 'user_id,wallet_address' }
+  );
+  if (error) throw error;
+}
