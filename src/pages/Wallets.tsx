@@ -1,282 +1,204 @@
 
-// src/pages/wallet/WalletSelection.tsx
-import { useEffect, useMemo, useState } from "react";
-import { useAuth } from "@/hooks/useAuth";
-import { supabase } from "@/integrations/supabase/client";
-import { isAddress, toHex, recoverMessageAddress } from "viem";
-import { createWCProvider, WCProvider } from "@/lib/walletconnect";
-import AppPageLayout from "@/components/layout/AppPageLayout";
-import { Button } from "@/components/ui/button";
+// src/pages/Wallets.tsx
+import { useState, useEffect } from 'react';
+import { supabase } from '@/lib/supabaseClient';
+import { useAuth } from '@/hooks/useAuth';
+import { useSIWE } from "@/hooks/useSIWE";
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { useToast } from '@/components/ui/use-toast';
+import AppPageLayout from '@/components/layout/AppPageLayout';
+import { PlusCircle, Trash2 } from 'lucide-react';
+import { Input } from '@/components/ui/input';
 
-// Updated type to match the 'wallet_connections' table schema
-type WalletRow = {
-  id: number;
-  user_id: string;
-  wallet_address: string; // Renamed from 'address'
-  verified_at?: string | null; // This field indicates verification
-};
+// --- (New) Data Structure for Future Wallets ---
+const FUTURE_WALLET_PROVIDERS = [
+  {
+    name: 'Phantom',
+    slug: 'phantom',
+    chains: [
+      { name: 'Solana', slug: 'sol', description: 'Connect your native Solana wallet.' },
+      { name: 'Ethereum (EVM)', slug: 'eth-evm', description: 'Connect using Phantom\'s EVM compatibility.' },
+    ]
+  }
+];
 
-const FN_URL = "https://yelkjimxejmrkfzeumos.supabase.co/functions/v1/verify-2";
+// --- Components ---
 
-export default function WalletSelection() {
-  const { user } = useAuth();
+// Component to list existing wallet connections (shared by all)
+function ExistingWallets({ updateTrigger, onConnectionDelete }) {
+  const { session } = useAuth();
+  const { toast } = useToast();
+  const [wallets, setWallets] = useState<any[]>([]);
 
-  const [rows, setRows] = useState<WalletRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [linking, setLinking] = useState<"mm" | "wc" | null>(null);
-  const [addressInput, setAddressInput] = useState("");
-
-  const normalizedInput = useMemo(() => addressInput?.trim(), [addressInput]);
-
-  const alreadyLinked = useMemo(() => {
-    if (!normalizedInput) return false;
-    // Use 'wallet_address' for comparison
-    return rows.some(
-      (r) => r.wallet_address?.toLowerCase() === normalizedInput.toLowerCase()
-    );
-  }, [rows, normalizedInput]);
-
-  const load = async () => {
-    if (!user?.id) return;
-    setLoading(true);
-    // Read from the correct 'wallet_connections' table and select the correct columns
+  async function fetchWallets() {
+    if (!session) return;
     const { data, error } = await supabase
-      .from("wallet_connections")
-      .select("id,user_id,wallet_address,verified_at")
-      .eq("user_id", user.id)
-      .order("verified_at", { ascending: false });
+      .from('wallet_connections')
+      .select('id, wallet_address, wallet_type, verified_at')
+      .eq('user_id', session.user.id)
+      .order('created_at', { ascending: false });
 
     if (error) {
-      console.error("[wallets] load error:", error);
-      setRows([]);
+      toast({ variant: 'destructive', title: 'Failed to load wallets', description: error.message });
     } else {
-      setRows((data as WalletRow[]) ?? []);
+      setWallets(data);
     }
-    setLoading(false);
-  };
+  }
 
   useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.id]);
+    if (session) fetchWallets();
+  }, [session, updateTrigger]);
 
-  // ---- Nonce and Verify logic remains the same ----
-  const getNonce = async (token?: string) => {
-    const r = await fetch(FN_URL, {
-      method: "GET",
-      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-    });
-    const body = await r.json().catch(() => ({}));
-    if (!r.ok || !body?.nonce) {
-      throw new Error(
-        `Nonce failed. status=${r.status}, body=${JSON.stringify(body)}`
-      );
-    }
-    return body.nonce as string;
-  };
-
-  const postVerify = async (
-    payload: { address: string; signature: string; message: string },
-    token?: string
-  ) => {
-    const r = await fetch(FN_URL, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify({ action: "verify", ...payload }),
-    });
-    const text = await r.text();
-    let body: any = null;
-    try { body = JSON.parse(text); } catch { body = text; }
-    if (!r.ok || !body?.ok) {
-      throw new Error(`Verify failed. status=${r.status}, body=${text}`);
-    }
-    return body;
-  };
-  
-  // ---- MetaMask and WalletConnect handlers remain the same ----
-    const handleLinkWithMetaMask = async () => {
-    try {
-      if (!user?.id) { alert("Please login again."); return; }
-      if (!normalizedInput || !isAddress(normalizedInput)) {
-        alert("Please input a valid Ethereum address."); return;
-      }
-      if (alreadyLinked) { alert("This wallet is already linked."); return; }
-      if (!(window as any).ethereum) { alert("MetaMask not found."); return; }
-
-      const { data: sess } = await supabase.auth.getSession();
-      const token = sess?.session?.access_token;
-
-      setLinking("mm");
-
-      const [current] = await (window as any).ethereum.request({
-        method: "eth_requestAccounts",
-      });
-      if (!current) throw new Error("No MetaMask account. Please unlock MetaMask.");
-
-      if (current.toLowerCase() !== normalizedInput.toLowerCase()) {
-        alert("The currently selected MetaMask account differs from the input address.");
-        return;
-      }
-
-      const message = await getNonce(token);
-
-      const hexMsg = toHex(message);
-      const signature = await (window as any).ethereum.request({
-        method: "personal_sign",
-        params: [hexMsg, current],
-      });
-
-      const recovered = await recoverMessageAddress({ message, signature });
-      if (recovered.toLowerCase() !== current.toLowerCase()) {
-        throw new Error(`Local recover mismatch: ${recovered} != ${current}`);
-      }
-
-      await postVerify({ address: current, signature, message }, token);
-      setAddressInput("");
-      await load();
-      alert("Wallet linked (MetaMask).");
-    } catch (e: any) {
-      console.error("[wallets] mm error:", e);
-      alert(e?.message ?? String(e));
-    } finally {
-      setLinking(null);
-    }
-  };
-
-  const handleLinkWithWalletConnect = async () => {
-    let provider: WCProvider | null = null;
-    try {
-      if (!user?.id) { alert("Please login again."); return; }
-      if (!normalizedInput || !isAddress(normalizedInput)) {
-        alert("Please input a valid Ethereum address."); return;
-      }
-      if (alreadyLinked) { alert("This wallet is already linked."); return; }
-
-      const { data: sess } = await supabase.auth.getSession();
-      const token = sess?.session?.access_token;
-
-      setLinking("wc");
-
-      provider = await createWCProvider();
-
-      if (typeof provider.connect === "function") {
-        await provider.connect();
-      } else {
-        await provider.request({ method: "eth_requestAccounts" });
-      }
-
-      const accounts = (await provider.request({
-        method: "eth_accounts",
-      })) as string[];
-      const current = accounts?.[0];
-      if (!current) throw new Error("WalletConnect: no accounts.");
-
-      if (current.toLowerCase() !== normalizedInput.toLowerCase()) {
-        alert("Selected account differs from the input address.");
-        return;
-      }
-
-      const message = await getNonce(token);
-
-      const hexMsg = toHex(message);
-      const signature = (await provider.request({
-        method: "personal_sign",
-        params: [hexMsg, current],
-      })) as string;
-
-      const recovered = await recoverMessageAddress({ message, signature });
-      if (recovered.toLowerCase() !== current.toLowerCase()) {
-        throw new Error(`Local recover mismatch: ${recovered} != ${current}`);
-      }
-
-      await postVerify({ address: current, signature, message }, token);
-      setAddressInput("");
-      await load();
-      alert("Wallet linked (WalletConnect).");
-    } catch (e: any) {
-      console.error("[wallets] wc error:", e);
-      alert(e?.message ?? String(e));
-    } finally {
-      try { await provider?.disconnect?.(); } catch {}
-      setLinking(null);
+  const handleDelete = async (walletId: string) => {
+    if (!window.confirm("Are you sure you want to delete this wallet connection?")) return;
+    const { error } = await supabase.from('wallet_connections').delete().eq('id', walletId);
+    if (error) {
+      toast({ variant: 'destructive', title: 'Failed to delete wallet', description: error.message });
+    } else {
+      toast({ title: "Wallet connection deleted." });
+      onConnectionDelete();
     }
   };
 
   return (
-    <AppPageLayout
-      title="Wallets"
-      description="Link wallets to your account, verify ownership, and keep your ledger in sync."
-    >
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
-        <div className="border rounded-2xl p-5 bg-white/80 shadow-sm space-y-3">
-          <div>
-            <p className="text-sm font-semibold">Add a wallet</p>
-            <p className="text-sm text-muted-foreground">Enter the address, sign the nonce, and confirm.</p>
-          </div>
-          <div className="flex flex-col gap-3">
-            <label className="text-sm font-medium">Wallet Address</label>
-            <input
-              className="flex-1 border rounded px-3 py-2"
-              placeholder="0x..."
-              value={addressInput}
-              onChange={(e) => setAddressInput(e.target.value)}
-              autoComplete="off"
-            />
-            <div className="flex flex-wrap gap-2">
-              <Button
-                onClick={handleLinkWithMetaMask}
-                disabled={linking !== null}
-                title="Sign with MetaMask"
-              >
-                {linking === "mm" ? "Linking..." : "Link (MetaMask)"}
-              </Button>
-              <Button
-                variant="outline"
-                onClick={handleLinkWithWalletConnect}
-                disabled={linking !== null}
-                title="Sign with WalletConnect (mobile / no extension)"
-              >
-                {linking === "wc" ? "Linking..." : "Link (WalletConnect)"}
+    <Card>
+      <CardHeader>
+        <CardTitle>Your Linked Wallets</CardTitle>
+        <CardDescription>Manage your existing wallet connections.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {wallets.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No wallets linked yet.</p>
+        ) : (
+          wallets.map(wallet => (
+            <div key={wallet.id} className="flex items-center justify-between p-3 border rounded-lg bg-background">
+              <div>
+                <span className="capitalize bg-muted text-muted-foreground px-2 py-1 rounded-md text-xs mr-2">{wallet.wallet_type || 'ethereum'}</span>
+                <span className="font-mono text-sm break-all">{wallet.wallet_address}</span>
+              </div>
+              <Button size="sm" variant="outline" onClick={() => handleDelete(wallet.id)}>
+                <Trash2 className="h-4 w-4" />
               </Button>
             </div>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            The signing message is a server-issued nonce. Make sure the input address and signer address match exactly.
-          </p>
-          {alreadyLinked && (
-            <p className="text-xs text-green-700">This address is already linked.</p>
-          )}
-        </div>
+          ))
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
-        <div className="border rounded-2xl p-5 bg-white/80 shadow-sm">
-          <div className="flex items-center justify-between mb-3">
-            <div>
-              <p className="text-sm font-semibold">Linked wallets</p>
-              <p className="text-xs text-muted-foreground">Only addresses linked to this account are shown.</p>
-            </div>
-            {loading && <span className="text-xs text-muted-foreground">Loading...</span>}
-          </div>
-          {loading ? null : rows.length === 0 ? (
-            <div className="text-sm text-muted-foreground">No linked wallets yet.</div>
-          ) : (
-            <ul className="space-y-2">
-              {rows.map((w) => (
-                <li key={w.id} className="border rounded-xl p-3 bg-white/70">
-                  {/* Display 'wallet_address' */}
-                  <div className="font-mono break-all">{w.wallet_address}</div>
-                  <div className="text-xs text-muted-foreground">
-                    {/* Determine status from 'verified_at' and display the date */}
-                    {w.verified_at ? `verified • ${new Date(w.verified_at).toLocaleString()}` : "unverified"}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
+// (Original) Simple component for linking EVM wallets like MetaMask
+function ExistingEvmLinker({ onLinkSuccess }) {
+  const { verifyWalletOwnership, isVerifying } = useSIWE();
+  const [addressInput, setAddressInput] = useState("");
+  const { toast } = useToast();
+
+  const handleLink = async () => {
+    const address = addressInput.trim();
+    if (!address) {
+      toast({ variant: 'destructive', title: 'Address Required', description: 'Please enter a wallet address.' });
+      return;
+    }
+    
+    const success = await verifyWalletOwnership(address, 'metamask'); // Keep original logic
+    if (success) {
+      toast({ title: 'Wallet Linked!', description: `Successfully verified and linked ${address}.`});
+      setAddressInput("");
+      onLinkSuccess();
+    }
+    // Failure is handled by useSIWE hook
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Link EVM Wallet (MetaMask, etc.)</CardTitle>
+        <CardDescription>Connect your primary EVM wallet. A signature will be requested to verify ownership.</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="flex flex-col sm:flex-row gap-2">
+          <Input
+            placeholder="0x..."
+            value={addressInput}
+            onChange={e => setAddressInput(e.target.value)}
+            disabled={isVerifying}
+          />
+          <Button onClick={handleLink} disabled={isVerifying} className="w-full sm:w-auto">
+            {isVerifying ? 'Verifying...' : 'Link Wallet'}
+          </Button>
         </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// (New) Dummy component for future wallet integrations
+function FutureWalletManager() {
+  const { toast } = useToast();
+
+  const handleDummyClick = (walletName: string, chainName: string) => {
+    toast({ title: 'Coming Soon!', description: `${walletName} (${chainName}) integration is under development.` });
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Add Other Wallets</CardTitle>
+        <CardDescription>Integrations for other wallets and blockchains are coming soon.</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <Accordion type="single" collapsible className="w-full">
+          {FUTURE_WALLET_PROVIDERS.map(provider => (
+            <AccordionItem key={provider.slug} value={provider.slug}>
+              <AccordionTrigger className="text-lg">{provider.name}</AccordionTrigger>
+              <AccordionContent className="p-2">
+                <Accordion type="single" collapsible className="w-full">
+                  {provider.chains.map(chain => (
+                    <AccordionItem key={chain.slug} value={chain.slug}>
+                      <AccordionTrigger>{chain.name}</AccordionTrigger>
+                      <AccordionContent className="p-2">
+                         <div className="border-t pt-4 mt-4">
+                            <p className="text-sm text-muted-foreground mb-3">{chain.description}</p>
+                            <Button onClick={() => handleDummyClick(provider.name, chain.name)} className="w-full">
+                                <PlusCircle className="mr-2 h-4 w-4" />
+                                Connect {chain.name}
+                            </Button>
+                        </div>
+                      </AccordionContent>
+                    </AccordionItem>
+                  ))}
+                </Accordion>
+              </AccordionContent>
+            </AccordionItem>
+          ))}
+        </Accordion>
+      </CardContent>
+    </Card>
+  );
+}
+
+// Main Page Component
+export function WalletsPage() {
+  const [updateTrigger, setUpdateTrigger] = useState(0);
+
+  const handleConnectionUpdate = () => {
+    setUpdateTrigger(c => c + 1); // Increment to trigger re-fetch in ExistingWallets
+  };
+
+  return (
+    <AppPageLayout
+      title="Wallet Connections"
+      description="Link wallets to your account by verifying ownership. This allows for balance and transaction syncing."
+    >
+      <div className="space-y-6">
+        <ExistingWallets updateTrigger={updateTrigger} onConnectionDelete={handleConnectionUpdate} />
+        <ExistingEvmLinker onLinkSuccess={handleConnectionUpdate} />
+        <FutureWalletManager />
       </div>
     </AppPageLayout>
   );
 }
+
+export default WalletsPage;
