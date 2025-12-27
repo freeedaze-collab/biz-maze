@@ -11,7 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { useToast } from "@/components/ui/use-toast";
-import { encode, decode } from "https://esm.sh/bs58@5.0.0";
+import { encode, decode } from "@/lib/bs58";
 
 type WalletRow = { id: number; user_id: string; wallet_address: string; verified_at?: string | null; };
 
