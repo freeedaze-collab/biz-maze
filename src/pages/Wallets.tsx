@@ -12,21 +12,37 @@ import AppPageLayout from '@/components/layout/AppPageLayout';
 import { PlusCircle, Trash2 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 
-// --- (New) Data Structure for Future Wallets ---
-const FUTURE_WALLET_PROVIDERS = [
+// --- Data Structures ---
+const WALLET_PROVIDERS = [
+  {
+    name: 'MetaMask',
+    slug: 'metamask',
+    isAddressRequired: true,
+    chains: [
+      { name: 'Ethereum (EVM)', slug: 'eth-evm', description: 'Connect using the standard MetaMask browser provider.', isDummy: false },
+    ]
+  },
+  {
+    name: 'WalletConnect',
+    slug: 'walletconnect',
+    isAddressRequired: true,
+    chains: [
+        { name: 'Ethereum (EVM)', slug: 'eth-evm', description: 'Connect using WalletConnect modal.', isDummy: true },
+    ]
+  },
   {
     name: 'Phantom',
     slug: 'phantom',
+    isAddressRequired: false, // Phantom manages its own address discovery
     chains: [
-      { name: 'Solana', slug: 'sol', description: 'Connect your native Solana wallet.' },
-      { name: 'Ethereum (EVM)', slug: 'eth-evm', description: 'Connect using Phantom\'s EVM compatibility.' },
+      { name: 'Solana', slug: 'sol', description: 'Connect your native Solana wallet.', isDummy: true },
+      { name: 'Ethereum (EVM)', slug: 'eth-evm', description: 'Connect using Phantom\'s EVM compatibility.', isDummy: true },
     ]
   }
 ];
 
 // --- Components ---
 
-// Component to list existing wallet connections (shared by all)
 function ExistingWallets({ updateTrigger, onConnectionDelete }) {
   const { session } = useAuth();
   const { toast } = useToast();
@@ -39,11 +55,10 @@ function ExistingWallets({ updateTrigger, onConnectionDelete }) {
       .select('id, wallet_address, wallet_type, verified_at')
       .eq('user_id', session.user.id)
       .order('created_at', { ascending: false });
-
     if (error) {
       toast({ variant: 'destructive', title: 'Failed to load wallets', description: error.message });
     } else {
-      setWallets(data);
+      setWallets(data || []);
     }
   }
 
@@ -64,23 +79,18 @@ function ExistingWallets({ updateTrigger, onConnectionDelete }) {
 
   return (
     <Card>
-      <CardHeader>
-        <CardTitle>Your Linked Wallets</CardTitle>
-        <CardDescription>Manage your existing wallet connections.</CardDescription>
-      </CardHeader>
+      <CardHeader><CardTitle>Your Linked Wallets</CardTitle></CardHeader>
       <CardContent className="space-y-3">
         {wallets.length === 0 ? (
           <p className="text-sm text-muted-foreground">No wallets linked yet.</p>
         ) : (
           wallets.map(wallet => (
-            <div key={wallet.id} className="flex items-center justify-between p-3 border rounded-lg bg-background">
+            <div key={wallet.id} className="flex items-center justify-between p-3 border rounded-lg">
               <div>
                 <span className="capitalize bg-muted text-muted-foreground px-2 py-1 rounded-md text-xs mr-2">{wallet.wallet_type || 'ethereum'}</span>
                 <span className="font-mono text-sm break-all">{wallet.wallet_address}</span>
               </div>
-              <Button size="sm" variant="outline" onClick={() => handleDelete(wallet.id)}>
-                <Trash2 className="h-4 w-4" />
-              </Button>
+              <Button size="sm" variant="outline" onClick={() => handleDelete(wallet.id)}><Trash2 className="h-4 w-4" /></Button>
             </div>
           ))
         )}
@@ -89,81 +99,70 @@ function ExistingWallets({ updateTrigger, onConnectionDelete }) {
   );
 }
 
-// (Original) Simple component for linking EVM wallets like MetaMask
-function ExistingEvmLinker({ onLinkSuccess }) {
+function AddNewWalletManager({ onLinkSuccess }) {
   const { verifyWalletOwnership, isVerifying } = useSIWE();
   const [addressInput, setAddressInput] = useState("");
   const { toast } = useToast();
 
-  const handleLink = async () => {
-    const address = addressInput.trim();
-    if (!address) {
-      toast({ variant: 'destructive', title: 'Address Required', description: 'Please enter a wallet address.' });
+  const handleConnect = async (provider, chain) => {
+    if (chain.isDummy) {
+      toast({ title: 'Coming Soon!', description: `${provider.name} (${chain.name}) integration is under development.` });
       return;
     }
-    
-    const success = await verifyWalletOwnership(address, 'metamask'); // Keep original logic
-    if (success) {
-      toast({ title: 'Wallet Linked!', description: `Successfully verified and linked ${address}.`});
-      setAddressInput("");
-      onLinkSuccess();
+
+    // --- The one working feature: MetaMask --- 
+    if (provider.slug === 'metamask' && !chain.isDummy) {
+        const address = addressInput.trim();
+        if (!address) {
+            toast({ variant: 'destructive', title: 'Address Required', description: 'Please enter a wallet address to verify with MetaMask.' });
+            return;
+        }
+        const success = await verifyWalletOwnership(address, 'metamask');
+        if (success) {
+            toast({ title: 'Wallet Linked!', description: `Successfully verified and linked ${address}.`});
+            setAddressInput("");
+            onLinkSuccess();
+        }
     }
-    // Failure is handled by useSIWE hook
   };
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Link EVM Wallet (MetaMask, etc.)</CardTitle>
-        <CardDescription>Connect your primary EVM wallet. A signature will be requested to verify ownership.</CardDescription>
+        <CardTitle>Add a Wallet</CardTitle>
+        <CardDescription>Enter an address, then choose a wallet to sign and verify ownership.</CardDescription>
       </CardHeader>
-      <CardContent>
-        <div className="flex flex-col sm:flex-row gap-2">
-          <Input
-            placeholder="0x..."
-            value={addressInput}
-            onChange={e => setAddressInput(e.target.value)}
-            disabled={isVerifying}
-          />
-          <Button onClick={handleLink} disabled={isVerifying} className="w-full sm:w-auto">
-            {isVerifying ? 'Verifying...' : 'Link Wallet'}
-          </Button>
+      <CardContent className='space-y-4'>
+        <div>
+            <label className='text-sm font-medium'>Wallet Address</label>
+            <Input
+                placeholder="0x..."
+                value={addressInput}
+                onChange={e => setAddressInput(e.target.value)}
+                disabled={isVerifying}
+                className="mt-1"
+            />
         </div>
-      </CardContent>
-    </Card>
-  );
-}
 
-// (New) Dummy component for future wallet integrations
-function FutureWalletManager() {
-  const { toast } = useToast();
-
-  const handleDummyClick = (walletName: string, chainName: string) => {
-    toast({ title: 'Coming Soon!', description: `${walletName} (${chainName}) integration is under development.` });
-  };
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Add Other Wallets</CardTitle>
-        <CardDescription>Integrations for other wallets and blockchains are coming soon.</CardDescription>
-      </CardHeader>
-      <CardContent>
         <Accordion type="single" collapsible className="w-full">
-          {FUTURE_WALLET_PROVIDERS.map(provider => (
+          {WALLET_PROVIDERS.map(provider => (
             <AccordionItem key={provider.slug} value={provider.slug}>
               <AccordionTrigger className="text-lg">{provider.name}</AccordionTrigger>
               <AccordionContent className="p-2">
                 <Accordion type="single" collapsible className="w-full">
                   {provider.chains.map(chain => (
-                    <AccordionItem key={chain.slug} value={chain.slug}>
+                    <AccordionItem key={chain.slug} value={`${provider.slug}-${chain.slug}`}>
                       <AccordionTrigger>{chain.name}</AccordionTrigger>
                       <AccordionContent className="p-2">
-                         <div className="border-t pt-4 mt-4">
-                            <p className="text-sm text-muted-foreground mb-3">{chain.description}</p>
-                            <Button onClick={() => handleDummyClick(provider.name, chain.name)} className="w-full">
-                                <PlusCircle className="mr-2 h-4 w-4" />
-                                Connect {chain.name}
+                         <div className="border-t pt-4 mt-4 space-y-3">
+                            <p className="text-sm text-muted-foreground">{chain.description}</p>
+                            {provider.isAddressRequired && !addressInput && <p className='text-xs text-destructive'>Please enter a wallet address above.</p>}
+                            <Button 
+                                onClick={() => handleConnect(provider, chain)} 
+                                disabled={isVerifying || (provider.isAddressRequired && !addressInput)}
+                                className="w-full"
+                            >
+                                {isVerifying && !chain.isDummy ? 'Verifying...' : `Link (${provider.name})`}
                             </Button>
                         </div>
                       </AccordionContent>
@@ -179,23 +178,18 @@ function FutureWalletManager() {
   );
 }
 
-// Main Page Component
 export function WalletsPage() {
   const [updateTrigger, setUpdateTrigger] = useState(0);
-
-  const handleConnectionUpdate = () => {
-    setUpdateTrigger(c => c + 1); // Increment to trigger re-fetch in ExistingWallets
-  };
+  const handleConnectionUpdate = () => setUpdateTrigger(c => c + 1);
 
   return (
     <AppPageLayout
       title="Wallet Connections"
-      description="Link wallets to your account by verifying ownership. This allows for balance and transaction syncing."
+      description="Link wallets to your account by verifying ownership."
     >
       <div className="space-y-6">
         <ExistingWallets updateTrigger={updateTrigger} onConnectionDelete={handleConnectionUpdate} />
-        <ExistingEvmLinker onLinkSuccess={handleConnectionUpdate} />
-        <FutureWalletManager />
+        <AddNewWalletManager onLinkSuccess={handleConnectionUpdate} />
       </div>
     </AppPageLayout>
   );
