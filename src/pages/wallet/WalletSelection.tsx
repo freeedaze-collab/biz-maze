@@ -3,27 +3,73 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
-import { isAddress as isEVMAddress } from "viem";
+import { isAddress as isEVMAddress, toHex } from "viem";
+import { createWCProvider, WCProvider } from "@/lib/walletconnect";
 import AppPageLayout from "@/components/layout/AppPageLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { useToast } from "@/components/ui/use-toast";
+import { encode, decode } from "@/lib/bs58";
 
 type WalletRow = { id: number; user_id: string; wallet_address: string; verified_at?: string | null; };
+
+// --- Data Structures for Accordion ---
+const WALLET_PROVIDERS = [
+  {
+    name: 'MetaMask',
+    slug: 'metamask',
+    chains: [
+      { name: 'Ethereum', slug: 'metamask-eth', description: 'Sign with your Ethereum wallet.', handler: 'metamask', chain: 'ethereum' },
+      { name: 'Polygon', slug: 'metamask-polygon', description: 'Sign with your Polygon wallet.', handler: 'metamask', chain: 'polygon' },
+      { name: 'BNB Chain', slug: 'metamask-bnb', description: 'Sign with your BNB Chain wallet.', handler: 'metamask', chain: 'bnb chain' },
+      { name: 'Avalanche', slug: 'metamask-avax', description: 'Sign with your Avalanche wallet.', handler: 'metamask', chain: 'avalanche' },
+      { name: 'Arbitrum', slug: 'metamask-arb', description: 'Sign with your Arbitrum wallet.', handler: 'metamask', chain: 'arbitrum' },
+      { name: 'Optimism', slug: 'metamask-op', description: 'Sign with your Optimism wallet.', handler: 'metamask', chain: 'optimism' },
+      { name: 'Base', slug: 'metamask-base', description: 'Sign with your Base wallet.', handler: 'metamask', chain: 'base' },
+    ]
+  },
+  {
+    name: 'WalletConnect',
+    slug: 'walletconnect',
+    chains: [
+      { name: 'Ethereum (EVM)', slug: 'walletconnect-eth', description: 'Sign via QR code or mobile wallet.', handler: 'walletconnect', chain: 'ethereum' },
+    ]
+  },
+  {
+    name: 'Phantom',
+    slug: 'phantom',
+    chains: [
+      { name: 'Solana', slug: 'phantom-sol', description: 'Sign with your Phantom wallet.', handler: 'phantom-solana', chain: 'solana' },
+    ]
+  }
+];
+
+const FN_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/verify-wallet`;
+
+// Basic check for Solana-like addresses (base58)
+const isSolanaAddress = (address: string): boolean => {
+  try {
+    const decoded = decode(address);
+    return decoded.length === 32;
+  } catch (e) {
+    return false;
+  }
+};
 
 export default function WalletSelection() {
   const { user } = useAuth();
   const { toast } = useToast();
   const [rows, setRows] = useState<WalletRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [linking, setLinking] = useState(false);
-  const [address, setAddress] = useState("");
+  const [linking, setLinking] = useState<string | null>(null);
+  const [addressInputs, setAddressInputs] = useState<{ [key: string]: string }>({});
 
   const load = async () => {
     if (!user?.id) return;
     setLoading(true);
-    const { data, error } = await supabase.from("wallet_connections").select("id,user_id,wallet_address,verified_at").eq("user_id", user.id);
+    const { data, error } = await supabase.from("wallet_connections").select("id,user_id,wallet_address,verified_at").eq("user_id", user.id).order("verified_at", { ascending: false });
     if (error) {
       toast({ variant: "destructive", title: "Error loading wallets", description: error.message });
     } else {
@@ -34,25 +80,102 @@ export default function WalletSelection() {
 
   useEffect(() => { load(); }, [user?.id]);
 
-  const handleLink = async () => {
-    if (!user?.id) { toast({ variant: "destructive", title: "Please login again." }); return; }
-    if (!address.trim()) { toast({ variant: "destructive", title: "Address is required" }); return; }
-    if (!isEVMAddress(address.trim())) { toast({ variant: "destructive", title: "Invalid EVM Address" }); return; }
-    if (rows.some(r => r.wallet_address?.toLowerCase() === address.trim().toLowerCase())) { toast({ variant: "destructive", title: "Already Linked" }); return; }
+  const getNonce = async (token: string) => {
+    const r = await fetch(FN_URL, { method: "GET", headers: { Authorization: `Bearer ${token}` } });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok || !body?.nonce) throw new Error(`Nonce failed. status=${r.status}, body=${JSON.stringify(body)}`);
+    return body.nonce as string;
+  };
 
-    setLinking(true);
+  const postVerify = async (payload: object, token: string) => {
+    const r = await fetch(FN_URL, { method: "POST", headers: { "content-type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify(payload) });
+    const text = await r.text();
+    let body: any = null;
+    try { body = JSON.parse(text); } catch { body = text; }
+    if (!r.ok || !body?.ok) throw new Error(`Verify failed. status=${r.status}, body=${text}`);
+    return body;
+  };
+
+  const handleInputChange = (slug: string, value: string) => {
+    setAddressInputs(prev => ({ ...prev, [slug]: value }));
+  };
+
+  const handleLink = async (chain: { slug: string; handler?: string; chain?: string }) => {
+    const { slug: chainSlug, handler, chain: chainName } = chain;
+    const address = addressInputs[chainSlug]?.trim();
+    const isEVM = handler === 'metamask' || handler === 'walletconnect';
+    const isSol = handler === 'phantom-solana';
+
+    if (!user?.id) { toast({ variant: "destructive", title: "Please login again." }); return; }
+    if (!address) { toast({ variant: "destructive", title: "Address is required" }); return; }
+    if (isEVM && !isEVMAddress(address)) { toast({ variant: "destructive", title: "Invalid EVM Address" }); return; }
+    if (isSol && !isSolanaAddress(address)) { toast({ variant: "destructive", title: "Invalid Solana Address" }); return; }
+    if (rows.some(r => r.wallet_address?.toLowerCase() === address.toLowerCase())) { toast({ variant: "destructive", title: "Already Linked" }); return; }
+
+    if (handler === 'metamask') await handleLinkWithMetaMask(address, chainSlug, chainName!);
+    else if (handler === 'walletconnect') await handleLinkWithWalletConnect(address, chainSlug, chainName!);
+    else if (handler === 'phantom-solana') await handleLinkWithPhantom(address, chainSlug);
+    else toast({ title: "Coming Soon", description: "This wallet provider is not yet supported." });
+  }
+
+  const sharedLinkLogic = async (chainSlug: string, action: (token: string) => Promise<any>) => {
+    setLinking(chainSlug);
     try {
-      const { error } = await supabase.from("wallet_connections").insert({ user_id: user.id, wallet_address: address.trim() });
-      if (error) throw error;
-      setAddress("");
+      const { data: { session }, error: sessErr } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      if (sessErr || !token) throw new Error(sessErr?.message ?? "Couldn't get session");
+      await action(token);
+      setAddressInputs(prev => ({ ...prev, [chainSlug]: '' }));
       await load();
       toast({ title: "Wallet Linked!", description: "Successfully linked wallet." });
     } catch (e: any) {
-      console.error(`[wallets] link error:`, e);
+      console.error(`[wallets] ${chainSlug} error:`, e);
       toast({ variant: "destructive", title: "Linking Error", description: e?.message ?? String(e) });
     } finally {
-      setLinking(false);
+      setLinking(null);
     }
+  }
+
+  const handleLinkWithMetaMask = async (address: string, chainSlug: string, chainName: string) => {
+    await sharedLinkLogic(chainSlug, async (token) => {
+      if (!(window as any).ethereum) throw new Error("MetaMask not found.");
+      const [current] = await (window as any).ethereum.request({ method: "eth_requestAccounts" });
+      if (current.toLowerCase() !== address.toLowerCase()) throw new Error("Selected account differs from input address.");
+      const message = await getNonce(token);
+      const signature = await (window as any).ethereum.request({ method: "personal_sign", params: [toHex(message), current] });
+      return postVerify({ address, signature, message, chain: chainName, walletType: 'metamask' }, token);
+    });
+  }
+  
+  const handleLinkWithWalletConnect = async (address: string, chainSlug: string, chainName: string) => {
+      let provider: WCProvider | null = null;
+      await sharedLinkLogic(chainSlug, async (token) => {
+          provider = await createWCProvider();
+          await provider.connect();
+          const [current] = (await provider.request({ method: "eth_accounts" })) as string[];
+          if (current.toLowerCase() !== address.toLowerCase()) throw new Error("Selected account differs from input address.");
+          const message = await getNonce(token);
+          const signature = (await provider.request({ method: "personal_sign", params: [toHex(message), current] })) as string;
+          return postVerify({ address, signature, message, chain: chainName, walletType: 'walletconnect' }, token);
+      }).finally(async () => { await provider?.disconnect?.(); });
+  }
+
+  const handleLinkWithPhantom = async (address: string, chainSlug: string) => {
+    await sharedLinkLogic(chainSlug, async (token) => {
+      const phantom = (window as any).phantom?.solana;
+      if (!phantom) throw new Error("Phantom extension not found.");
+      
+      await phantom.connect();
+      const publicKey = phantom.publicKey;
+      if (publicKey.toString() !== address) throw new Error("Connected Phantom wallet does not match the input address.");
+      
+      const message = await getNonce(token);
+      const encodedMessage = new TextEncoder().encode(message);
+      const { signature: sigBytes } = await phantom.signMessage(encodedMessage, "utf8");
+      const signature = encode(sigBytes); // bs58 encode signature
+
+      return postVerify({ address, signature, message, chain: 'solana', walletType: 'phantom' }, token);
+    });
   }
 
   return (
@@ -61,29 +184,57 @@ export default function WalletSelection() {
         <Card>
           <CardHeader>
             <CardTitle>Add a wallet</CardTitle>
-            <CardDescription>Enter your EVM wallet address below to link it to your account.</CardDescription>
+            <CardDescription>Choose a provider, select a network, enter your address, and sign.</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-1">
-              <label className="text-xs font-medium">Wallet Address</label>
-              <Input
-                placeholder="0x..."
-                value={address}
-                onChange={(e) => setAddress(e.target.value)}
-                autoComplete="off"
-                disabled={linking}
-              />
-            </div>
-            <Button
-              onClick={handleLink}
-              disabled={linking || !address}
-              className="w-full"
-            >
-              {linking ? 'Linking...' : `Link Wallet`}
-            </Button>
+          <CardContent>
+            <Accordion type="single" collapsible className="w-full">
+              {WALLET_PROVIDERS.map(provider => (
+                <AccordionItem key={provider.slug} value={provider.slug}>
+                  <AccordionTrigger>{provider.name}</AccordionTrigger>
+                  <AccordionContent className="p-1">
+                    <Accordion type="single" collapsible className="w-full">
+                      {provider.chains.map(chain => {
+                        const address = addressInputs[chain.slug] || '';
+                        const isLinked = !!address && rows.some(r => r.wallet_address?.toLowerCase() === address.toLowerCase());
+                        return (
+                          <AccordionItem key={chain.slug} value={chain.slug}>
+                            <AccordionTrigger className="text-sm">{chain.name}</AccordionTrigger>
+                            <AccordionContent className="space-y-4 pt-3 px-1">
+                              <div className="space-y-1">
+                                <label className="text-xs font-medium">Wallet Address</label>
+                                <Input
+                                  placeholder={chain.chain === 'solana' ? "Solana address..." : "0x..."}
+                                  value={address}
+                                  onChange={(e) => handleInputChange(chain.slug, e.target.value)}
+                                  autoComplete="off"
+                                  disabled={!!linking}
+                                />
+                                {isLinked && <p className="text-xs text-green-700 mt-1">This address is already linked.</p>}
+                              </div>
+                              <div className="pt-3 border-t">
+                                <p className="text-xs text-muted-foreground mb-2">{chain.description}</p>
+                                <Button
+                                  onClick={() => handleLink(chain)}
+                                  disabled={!!linking || !address || isLinked}
+                                  className="w-full"
+                                  size="sm"
+                                >
+                                  {linking === chain.slug ? 'Linking...' : `Link Wallet`}
+                                </Button>
+                              </div>
+                            </AccordionContent>
+                          </AccordionItem>
+                        )
+                      })}
+                    </Accordion>
+                  </AccordionContent>
+                </AccordionItem>
+              ))}
+            </Accordion>
           </CardContent>
         </Card>
 
+        {/* Linked wallets display */}
         <div className="border rounded-2xl p-5 bg-white/80 shadow-sm">
           <div className="flex items-center justify-between mb-3">
             <div>
