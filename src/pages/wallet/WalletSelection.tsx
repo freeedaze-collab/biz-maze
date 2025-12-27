@@ -11,7 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { useToast } from "@/components/ui/use-toast";
-import { encode } from "https://esm.sh/bs58@5.0.0";
+import { encode, decode } from "https://esm.sh/bs58@5.0.0";
 
 type WalletRow = { id: number; user_id: string; wallet_address: string; verified_at?: string | null; };
 
@@ -52,12 +52,14 @@ const WALLET_PROVIDERS = [
 
 const FN_URL = "https://yelkjimxejmrkfzeumos.supabase.co/functions/v1/verify-wallet";
 
-// Basic check for Solana-like addresses (base58, 32-44 chars)
+// Basic check for Solana-like addresses (base58)
 const isSolanaAddress = (address: string): boolean => {
   try {
-    const decoded = Buffer.from(encode(address));
-    return decoded.length >= 32 && decoded.length <= 44;
+    // A valid Solana address is a base58-encoded 32-byte public key.
+    const decoded = decode(address);
+    return decoded.length === 32;
   } catch (e) {
+    // bs58.decode will throw an error if the string is not valid base58
     return false;
   }
 };
