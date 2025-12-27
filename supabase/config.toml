@@ -74,7 +74,7 @@ project_id = "yelkjimxejmrkfzeumos"
 
 [functions.sync-historical-exchange-rates]
   import_map = "./import_map.json"
-  verify_jwt = true
+  verify_jwt = false
 
 [functions.sync-wallet-balance]
   import_map = "./import_map.json"
