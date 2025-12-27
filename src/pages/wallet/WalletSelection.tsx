@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
-import { isAddress, toHex } from "viem";
+import { isAddress as isEVMAddress, toHex } from "viem";
 import { createWCProvider, WCProvider } from "@/lib/walletconnect";
 import AppPageLayout from "@/components/layout/AppPageLayout";
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { useToast } from "@/components/ui/use-toast";
+import { encode } from "https://esm.sh/bs58@5.0.0";
 
 type WalletRow = { id: number; user_id: string; wallet_address: string; verified_at?: string | null; };
 
@@ -20,27 +21,46 @@ const WALLET_PROVIDERS = [
     name: 'MetaMask',
     slug: 'metamask',
     chains: [
-      { name: 'Ethereum (EVM)', slug: 'metamask-eth', description: 'Sign with the browser extension.', handler: 'metamask' },
+      { name: 'Ethereum', slug: 'metamask-eth', description: 'Sign with your Ethereum wallet.', handler: 'metamask', chain: 'ethereum' },
+      { name: 'Polygon', slug: 'metamask-polygon', description: 'Sign with your Polygon wallet.', handler: 'metamask', chain: 'polygon' },
+      { name: 'BNB Chain', slug: 'metamask-bnb', description: 'Sign with your BNB Chain wallet.', handler: 'metamask', chain: 'bnb chain' },
+      { name: 'Avalanche', slug: 'metamask-avax', description: 'Sign with your Avalanche wallet.', handler: 'metamask', chain: 'avalanche' },
+      { name: 'Arbitrum', slug: 'metamask-arb', description: 'Sign with your Arbitrum wallet.', handler: 'metamask', chain: 'arbitrum' },
+      { name: 'Optimism', slug: 'metamask-op', description: 'Sign with your Optimism wallet.', handler: 'metamask', chain: 'optimism' },
+      { name: 'Base', slug: 'metamask-base', description: 'Sign with your Base wallet.', handler: 'metamask', chain: 'base' },
+      { name: 'Solana', slug: 'metamask-sol', description: 'Solana support is coming soon.' },
+      { name: 'Bitcoin', slug: 'metamask-btc', description: 'Bitcoin support is coming soon.' },
     ]
   },
   {
     name: 'WalletConnect',
     slug: 'walletconnect',
     chains: [
-      { name: 'Ethereum (EVM)', slug: 'walletconnect-eth', description: 'Sign via QR code or mobile wallet.', handler: 'walletconnect' },
+      { name: 'Ethereum (EVM)', slug: 'walletconnect-eth', description: 'Sign via QR code or mobile wallet.', handler: 'walletconnect', chain: 'ethereum' },
     ]
   },
   {
     name: 'Phantom',
     slug: 'phantom',
     chains: [
-      { name: 'Solana', slug: 'phantom-sol', description: 'Native Solana signing (coming soon).' },
-      { name: 'Ethereum (EVM)', slug: 'phantom-eth', description: 'EVM signing via Phantom (coming soon).' },
+      { name: 'Solana', slug: 'phantom-sol', description: 'Sign with your Phantom wallet.', handler: 'phantom-solana', chain: 'solana' },
+      { name: 'Ethereum', slug: 'phantom-eth', description: 'Coming soon.' },
+      { name: 'Bitcoin', slug: 'phantom-btc', description: 'Coming soon.' },
     ]
   }
 ];
 
-const FN_URL = "https://yelkjimxejmrkfzeumos.supabase.co/functions/v1/verify-2";
+const FN_URL = "https://yelkjimxejmrkfzeumos.supabase.co/functions/v1/verify-wallet";
+
+// Basic check for Solana-like addresses (base58, 32-44 chars)
+const isSolanaAddress = (address: string): boolean => {
+  try {
+    const decoded = Buffer.from(encode(address));
+    return decoded.length >= 32 && decoded.length <= 44;
+  } catch (e) {
+    return false;
+  }
+};
 
 export default function WalletSelection() {
   const { user } = useAuth();
@@ -71,8 +91,8 @@ export default function WalletSelection() {
     return body.nonce as string;
   };
 
-  const postVerify = async (payload: { address: string; signature: string; message: string }, token?: string) => {
-    const r = await fetch(FN_URL, { method: "POST", headers: { "content-type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ action: "verify", ...payload }) });
+  const postVerify = async (payload: object, token?: string) => {
+    const r = await fetch(FN_URL, { method: "POST", headers: { "content-type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(payload) });
     const text = await r.text();
     let body: any = null;
     try { body = JSON.parse(text); } catch { body = text; }
@@ -84,26 +104,30 @@ export default function WalletSelection() {
     setAddressInputs(prev => ({ ...prev, [slug]: value }));
   };
 
-  const handleLink = async (chain: { slug: string; handler?: string; }) => {
-    const { slug: chainSlug, handler } = chain;
+  const handleLink = async (chain: { slug: string; handler?: string; chain?: string }) => {
+    const { slug: chainSlug, handler, chain: chainName } = chain;
     const address = addressInputs[chainSlug]?.trim();
-    const alreadyLinked = rows.some(r => r.wallet_address?.toLowerCase() === address?.toLowerCase());
+    const isEVM = handler === 'metamask' || handler === 'walletconnect';
+    const isSol = handler === 'phantom-solana';
 
     if (!user?.id) { toast({ variant: "destructive", title: "Please login again." }); return; }
-    if (!address || !isAddress(address)) { toast({ variant: "destructive", title: "Invalid Address", description: "Please input a valid Ethereum address." }); return; }
-    if (alreadyLinked) { toast({ variant: "destructive", title: "Already Linked", description: "This wallet is already linked to your account." }); return; }
+    if (!address) { toast({ variant: "destructive", title: "Address is required" }); return; }
+    if (isEVM && !isEVMAddress(address)) { toast({ variant: "destructive", title: "Invalid EVM Address" }); return; }
+    if (isSol && !isSolanaAddress(address)) { toast({ variant: "destructive", title: "Invalid Solana Address" }); return; }
+    if (rows.some(r => r.wallet_address?.toLowerCase() === address.toLowerCase())) { toast({ variant: "destructive", title: "Already Linked" }); return; }
 
-    if (handler === 'metamask') await handleLinkWithMetaMask(address, chainSlug);
-    else if (handler === 'walletconnect') await handleLinkWithWalletConnect(address, chainSlug);
+    if (handler === 'metamask') await handleLinkWithMetaMask(address, chainSlug, chainName!);
+    else if (handler === 'walletconnect') await handleLinkWithWalletConnect(address, chainSlug, chainName!);
+    else if (handler === 'phantom-solana') await handleLinkWithPhantom(address, chainSlug);
     else toast({ title: "Coming Soon", description: "This wallet provider is not yet supported." });
   }
 
-  const sharedLinkLogic = async (address: string, chainSlug: string, action: (address: string, token: string | undefined) => Promise<any>) => {
+  const sharedLinkLogic = async (chainSlug: string, action: (token: string | undefined) => Promise<any>) => {
     setLinking(chainSlug);
     try {
       const { data: sess } = await supabase.auth.getSession();
       const token = sess?.session?.access_token;
-      await action(address, token);
+      await action(token);
       setAddressInputs(prev => ({ ...prev, [chainSlug]: '' }));
       await load();
       toast({ title: "Wallet Linked!", description: "Successfully linked wallet." });
@@ -115,34 +139,45 @@ export default function WalletSelection() {
     }
   }
 
-  const handleLinkWithMetaMask = async (address: string, chainSlug: string) => {
-    await sharedLinkLogic(address, chainSlug, async (address, token) => {
-      if (!(window as any).ethereum) throw new Error("MetaMask not found. Please install the browser extension.");
+  const handleLinkWithMetaMask = async (address: string, chainSlug: string, chainName: string) => {
+    await sharedLinkLogic(chainSlug, async (token) => {
+      if (!(window as any).ethereum) throw new Error("MetaMask not found.");
       const [current] = await (window as any).ethereum.request({ method: "eth_requestAccounts" });
-      if (!current) throw new Error("No MetaMask account. Please unlock MetaMask.");
-      if (current.toLowerCase() !== address.toLowerCase()) throw new Error("The currently selected MetaMask account differs from the input address.");
+      if (current.toLowerCase() !== address.toLowerCase()) throw new Error("Selected account differs from input address.");
       const message = await getNonce(token);
-      const hexMsg = toHex(message);
-      const signature = await (window as any).ethereum.request({ method: "personal_sign", params: [hexMsg, current] });
-      return postVerify({ address: current, signature, message }, token);
+      const signature = await (window as any).ethereum.request({ method: "personal_sign", params: [toHex(message), current] });
+      return postVerify({ address, signature, message, chain: chainName, walletType: 'metamask' }, token);
     });
   }
+  
+  const handleLinkWithWalletConnect = async (address: string, chainSlug: string, chainName: string) => {
+      let provider: WCProvider | null = null;
+      await sharedLinkLogic(chainSlug, async (token) => {
+          provider = await createWCProvider();
+          await provider.connect();
+          const [current] = (await provider.request({ method: "eth_accounts" })) as string[];
+          if (current.toLowerCase() !== address.toLowerCase()) throw new Error("Selected account differs from input address.");
+          const message = await getNonce(token);
+          const signature = (await provider.request({ method: "personal_sign", params: [toHex(message), current] })) as string;
+          return postVerify({ address, signature, message, chain: chainName, walletType: 'walletconnect' }, token);
+      }).finally(async () => { await provider?.disconnect?.(); });
+  }
 
-  const handleLinkWithWalletConnect = async (address: string, chainSlug: string) => {
-    let provider: WCProvider | null = null;
-    await sharedLinkLogic(address, chainSlug, async (address, token) => {
-        provider = await createWCProvider();
-        if (typeof provider.connect === "function") await provider.connect(); else await provider.request({ method: "eth_requestAccounts" });
-        const accounts = (await provider.request({ method: "eth_accounts" })) as string[];
-        const current = accounts?.[0];
-        if (!current) throw new Error("WalletConnect: no accounts found.");
-        if (current.toLowerCase() !== address.toLowerCase()) throw new Error("Selected account in WalletConnect differs from the input address.");
-        const message = await getNonce(token);
-        const hexMsg = toHex(message);
-        const signature = (await provider.request({ method: "personal_sign", params: [hexMsg, current] })) as string;
-        await postVerify({ address: current, signature, message }, token);
-    }).finally(async () => {
-        try { await provider?.disconnect?.(); } catch {}
+  const handleLinkWithPhantom = async (address: string, chainSlug: string) => {
+    await sharedLinkLogic(chainSlug, async (token) => {
+      const phantom = (window as any).phantom?.solana;
+      if (!phantom) throw new Error("Phantom extension not found.");
+      
+      await phantom.connect();
+      const publicKey = phantom.publicKey;
+      if (publicKey.toString() !== address) throw new Error("Connected Phantom wallet does not match the input address.");
+      
+      const message = await getNonce(token);
+      const encodedMessage = new TextEncoder().encode(message);
+      const { signature: sigBytes } = await phantom.signMessage(encodedMessage, "utf8");
+      const signature = encode(sigBytes); // bs58 encode signature
+
+      return postVerify({ address, signature, message, chain: 'solana', walletType: 'phantom' }, token);
     });
   }
 
@@ -171,7 +206,7 @@ export default function WalletSelection() {
                               <div className="space-y-1">
                                 <label className="text-xs font-medium">Wallet Address</label>
                                 <Input
-                                  placeholder="0x..."
+                                  placeholder={chain.chain === 'solana' ? "Solana address..." : "0x..."}
                                   value={address}
                                   onChange={(e) => handleInputChange(chain.slug, e.target.value)}
                                   autoComplete="off"
@@ -202,6 +237,7 @@ export default function WalletSelection() {
           </CardContent>
         </Card>
 
+        {/* Linked wallets display - no changes here */}
         <div className="border rounded-2xl p-5 bg-white/80 shadow-sm">
           <div className="flex items-center justify-between mb-3">
             <div>
