@@ -1,0 +1,8 @@
+{
+  "imports": {
+    "@supabase/supabase-js": "npm:@supabase/supabase-js@2.43.4",
+    "itty-router-cors": "npm:itty-router-cors@0.4.3",
+    "jsr:@supabase/functions-js/edge-runtime.d.ts": "https://esm.sh/jsr:@supabase/functions-js/edge-runtime.d.ts",
+    "shared/": "./functions/_shared/"
+  }
+}
