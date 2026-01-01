@@ -10,7 +10,6 @@ import AppPageLayout from "@/components/layout/AppPageLayout";
 
 const accountingUsageOptions = [{ value: 'investment_acquisition_ias38', label: 'Investment Acquisition (IAS 38)' }, { value: 'trading_acquisition_ias2', label: 'Trading Acquisition (IAS 2)' }, { value: 'mining_rewards', label: 'Mining Rewards' }, { value: 'staking_rewards', label: 'Staking Rewards' }, { value: 'revenue_ifrs15', label: 'Received as Consideration (IFRS 15)' }, { value: 'impairment_ias38', label: 'Impairment (IAS 38)' }, { value: 'revaluation_increase_ias38', label: 'Revaluation Increase (IAS 38)' }, { value: 'revaluation_decrease_ias38', label: 'Revaluation Decrease (IAS 38)' }, { value: 'lcnrv_ias2', label: 'LCNRV Adjustment (IAS 2)' }, { value: 'fvlcs_ias2', label: 'FVLCS Adjustment (IAS 2)' }, { value: 'sale_ias38', label: 'Sale of Intangible Asset (IAS 38)' }, { value: 'sale_ias2', label: 'Sale of Inventory (IAS 2)' }, { value: 'crypto_to_crypto_exchange', label: 'Crypto-to-Crypto Exchange' }, { value: 'gas_fees', label: 'Gas / Network Fee' }, { value: 'loss_unrecoverable', label: 'Loss of Crypto (Unrecoverable)' }, { value: 'unspecified', label: 'Unspecified' }];
 
-// This interface now perfectly matches the new v_holdings view and the UI table.
 interface Holding { asset: string; currentAmount: number; currentPrice: number; currentValueUsd: number; averageBuyPrice: number; capitalGain: number; }
 interface Transaction { id: string; user_id: string; reference_id: string; date: string; source: string; chain: string; description: string; amount: number; asset: string; price: number; value_in_usd: number; type: string; usage: string | null; note: string | null; }
 type EditedTransaction = Partial<Pick<Transaction, 'usage' | 'note'>>;
@@ -33,8 +32,8 @@ export default function TransactionHistory() {
             const { data: { user } } = await supabase.auth.getUser();
             if (!user) throw new Error("User not authenticated");
 
-            // ★★★ FIX: Query `current_price_usd` and alias it to `current_price` for frontend compatibility.
-            const holdingsSelect = 'asset, current_amount, current_price:current_price_usd, current_value, "Avg. Buy Price", "Unrealized P&L"';
+            // ★★★ FIX: Use the correct column names `avg_buy_price` and `unrealized_pnl` from the view.
+            const holdingsSelect = 'asset, current_amount, current_price:current_price_usd, current_value, avg_buy_price, unrealized_pnl';
             const transactionsSelect = 'id, user_id, reference_id, date, source, chain, description, amount, asset, price, value_in_usd, type, usage, note';
 
             const [holdingsRes, transactionsRes] = await Promise.all([
@@ -48,10 +47,11 @@ export default function TransactionHistory() {
             const mappedHoldings = (holdingsRes.data || []).map(h => ({
                 asset: h.asset,
                 currentAmount: h.current_amount,
-                currentPrice: h.current_price, // This now correctly receives data from the `current_price_usd` column.
+                currentPrice: h.current_price,
                 currentValueUsd: h.current_value,
-                averageBuyPrice: h['Avg. Buy Price'],
-                capitalGain: h['Unrealized P&L'],
+                 // ★★★ FIX: Use the correct properties from the returned data.
+                averageBuyPrice: h.avg_buy_price,
+                capitalGain: h.unrealized_pnl,
             }));
 
             setHoldings(mappedHoldings as Holding[]);
@@ -228,4 +228,3 @@ export default function TransactionHistory() {
         </AppPageLayout>
     );
 }
-
