@@ -33,7 +33,8 @@ export default function TransactionHistory() {
             const { data: { user } } = await supabase.auth.getUser();
             if (!user) throw new Error("User not authenticated");
 
-            const holdingsSelect = 'asset, current_amount, current_price, current_value, "Avg. Buy Price", "Unrealized P&L"';
+            // ★★★ FIX: Query `current_price_usd` and alias it to `current_price` for frontend compatibility.
+            const holdingsSelect = 'asset, current_amount, current_price:current_price_usd, current_value, "Avg. Buy Price", "Unrealized P&L"';
             const transactionsSelect = 'id, user_id, reference_id, date, source, chain, description, amount, asset, price, value_in_usd, type, usage, note';
 
             const [holdingsRes, transactionsRes] = await Promise.all([
@@ -47,7 +48,7 @@ export default function TransactionHistory() {
             const mappedHoldings = (holdingsRes.data || []).map(h => ({
                 asset: h.asset,
                 currentAmount: h.current_amount,
-                currentPrice: h.current_price,
+                currentPrice: h.current_price, // This now correctly receives data from the `current_price_usd` column.
                 currentValueUsd: h.current_value,
                 averageBuyPrice: h['Avg. Buy Price'],
                 capitalGain: h['Unrealized P&L'],
