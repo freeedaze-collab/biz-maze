@@ -1,119 +1,130 @@
+
 // supabase/functions/sync-wallet-transactions/index.ts
-// ROBUST VERSION 3: Implements a fallback using the 'asset_prices' table with current prices.
 
-import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
-export const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
+const corsHeaders = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+    'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
+};
 
-const ANKR_API_KEY = Deno.env.get('ANKR_API_KEY') ?? '';
-const chainIdMap: { [key: string]: number } = { eth: 1, polygon: 137, bsc: 56, arbitrum: 42161, optimism: 10, avalanche: 43114 };
+const nativeSymbols: { [key: string]: string } = {
+    'eth': 'ETH',
+    'polygon': 'MATIC',
+    'bsc': 'BNB',
+    'avalanche': 'AVAX',
+    'arbitrum': 'ETH',
+    'optimism': 'ETH'
+};
 
-interface WalletRequestBody { walletAddress: string; }
-
-serve(async (req) => {
-  if (req.method === 'OPTIONS') { return new Response('ok', { headers: corsHeaders }); }
-
-  try {
-    const supabaseClient = createClient( Deno.env.get('SUPABASE_URL') ?? '', Deno.env.get('SUPABASE_ANON_KEY') ?? '', { global: { headers: { Authorization: req.headers.get('Authorization')! } } });
-    const { data: { user } } = await supabaseClient.auth.getUser();
-    if (!user) { return new Response(JSON.stringify({ error: 'User not authenticated' }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }); }
-
-    const { walletAddress }: WalletRequestBody = await req.json();
-    if (!walletAddress) { return new Response(JSON.stringify({ error: 'walletAddress is required' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }); }
-
-    const chainsToSync = ['eth', 'polygon', 'bsc', 'arbitrum', 'optimism', 'avalanche'];
-    let allTransactions: any[] = [];
-
-    for (const chain of chainsToSync) {
-      try {
-        const ankrRequestBody = { jsonrpc: '2.0', method: 'ankr_getTransactionsByAddress', params: { address: walletAddress, blockchain: [chain], limit: 1000, includeLogs: false, includePrice: true }, id: 1 };
-        const response = await fetch(`https://rpc.ankr.com/multichain/${ANKR_API_KEY}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ankrRequestBody) });
-        if (!response.ok) { console.error(`Ankr API failed for [${chain}]: ${response.statusText}`); continue; }
-        const result = await response.json();
-        if (result.error) { console.error(`Ankr API Error for [${chain}]: ${result.error.message}`); continue; }
-
-        let transactions = result.result?.transactions || [];
-        transactions = transactions.map(tx => {
-            if (!tx.chainId && tx.blockchain && chainIdMap[tx.blockchain]) {
-                return { ...tx, chainId: chainIdMap[tx.blockchain] };
-            }
-            return tx;
-        });
-        allTransactions = allTransactions.concat(transactions);
-      } catch (e) { console.error(`Error processing chain [${chain}]:`, e.message); }
+Deno.serve(async (req) => {
+    if (req.method === 'OPTIONS') {
+        return new Response('ok', { headers: corsHeaders });
     }
 
-    const validTransactions = allTransactions.filter(tx => (tx && tx.hash && tx.timestamp && tx.chainId));
-    if (validTransactions.length === 0) {
-        return new Response(JSON.stringify({ message: 'No valid transactions found to save.' }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-    }
+    try {
+        // 1. Authenticate user
+        const authHeader = req.headers.get('Authorization');
+        if (!authHeader) {
+            return new Response(JSON.stringify({ error: 'Missing authorization header' }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+        }
+        const supabaseClient = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+        const jwt = authHeader.replace('Bearer ', '');
+        const { data: { user }, error: userError } = await supabaseClient.auth.getUser(jwt);
+        if (userError || !user) {
+            return new Response(JSON.stringify({ error: userError?.message || 'User not authenticated' }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+        }
 
-    const recordsToUpsert = await Promise.all(validTransactions.map(async (tx) => {
-        const timestamp = new Date(parseInt(tx.timestamp, 16) * 1000).toISOString();
-        const assetSymbol = tx.tokenSymbol || 'ETH';
-        let valueUsd = null;
+        // 2. Get wallet address
+        const { walletAddress } = await req.json();
+        if (!walletAddress) {
+            return new Response(JSON.stringify({ error: 'walletAddress is required' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+        }
 
-        if (tx.valueUsd && !isNaN(parseFloat(tx.valueUsd))) {
-            valueUsd = parseFloat(tx.valueUsd);
-        } else {
-            const decimals = tx.tokenDecimal ? parseInt(tx.tokenDecimal, 16) : 18;
-            const amount = tx.value && tx.value !== '0x0' ? Number(BigInt(tx.value)) / Math.pow(10, decimals) : 0;
+        // 3. Check for Moralis API Key
+        const MORALIS_API_KEY = Deno.env.get('MORALIS_API_KEY');
+        if (!MORALIS_API_KEY) {
+            console.warn(`MORALIS_API_KEY is not set. Skipping sync for wallet ${walletAddress}.`);
+            return new Response(JSON.stringify({ message: 'Sync skipped: Moralis integration is not configured.' }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+        }
+
+        // 4. Fetch transactions from Moralis for multiple chains
+        console.log(`Starting Moralis sync for wallet: ${walletAddress}`);
+        const supportedChains = ['eth', 'polygon', 'bsc', 'avalanche', 'arbitrum', 'optimism'];
+        let recordsToUpsert: any[] = [];
+
+        for (const chain of supportedChains) {
+            console.log(`Fetching for chain: ${chain}`);
             
-            if (assetSymbol && timestamp && amount > 0) {
-                console.log(`[Fallback] Ankr USD not found for ${amount} ${assetSymbol}. Querying current price from 'asset_prices'...`);
-                // --- FIX: Corrected table and column names, and removed historical logic ---
-                const { data: priceData, error: priceError } = await supabaseClient
-                    .from('asset_prices')
-                    .select('current_price')
-                    .eq('asset', assetSymbol.toUpperCase())
-                    .limit(1)
-                    .single();
+            // --- A: Get Native Currency Transactions ---
+            const nativeTxUrl = `https://deep-index.moralis.io/api/v2.2/${walletAddress}?chain=${chain}`;
+            const nativeResponse = await fetch(nativeTxUrl, { headers: { 'Accept': 'application/json', 'X-API-Key': MORALIS_API_KEY } });
+            
+            if (nativeResponse.ok) {
+                const nativeData = await nativeResponse.json();
+                const nativeTxs = nativeData.result.map((tx: any) => ({
+                    user_id: user.id,
+                    wallet_address: walletAddress,
+                    tx_hash: tx.hash,
+                    chain: chain,
+                    date: new Date(tx.block_timestamp),
+                    from_address: tx.from_address,
+                    to_address: tx.to_address,
+                    amount: parseFloat(tx.value) / (10 ** 18),
+                    asset: nativeSymbols[chain] || 'UNKNOWN',
+                    value_in_usd: null, // Moralis basic endpoints don't provide this directly
+                    type: tx.from_address.toLowerCase() === walletAddress.toLowerCase() ? 'WITHDRAWAL' : 'DEPOSIT',
+                    description: `Native transaction on ${chain}`,
+                    source: 'wallet',
+                }));
+                recordsToUpsert.push(...nativeTxs);
+            } else {
+                 console.warn(`Moralis (Native) API call failed for chain ${chain}. Status: ${nativeResponse.status}`);
+            }
 
-                if (priceError && priceError.code !== 'PGRST116') { // PGRST116: "No rows found"
-                    console.error(`[Fallback] Price lookup failed for ${assetSymbol}:`, priceError.message);
-                }
+            // --- B: Get ERC20 Token Transfers ---
+            const erc20TxUrl = `https://deep-index.moralis.io/api/v2.2/${walletAddress}/erc20/transfers?chain=${chain}`;
+            const erc20Response = await fetch(erc20TxUrl, { headers: { 'Accept': 'application/json', 'X-API-Key': MORALIS_API_KEY } });
 
-                if (priceData) {
-                    valueUsd = priceData.current_price * amount;
-                    console.log(`[Fallback] Found current price ${priceData.current_price}. Calculated approx. USD value: ${valueUsd}`);
-                } else {
-                    console.log(`[Fallback] No price found in asset_prices for ${assetSymbol}`);
-                }
+            if (erc20Response.ok) {
+                const erc20Data = await erc20Response.json();
+                const erc20Txs = erc20Data.result.map((tx: any) => ({
+                    user_id: user.id,
+                    wallet_address: walletAddress,
+                    tx_hash: tx.transaction_hash,
+                    chain: chain,
+                    date: new Date(tx.block_timestamp),
+                    from_address: tx.from_address,
+                    to_address: tx.to_address,
+                    amount: parseFloat(tx.value) / (10 ** parseInt(tx.token_decimals)),
+                    asset: tx.token_symbol,
+                    value_in_usd: null, // Moralis basic endpoints don't provide this directly
+                    type: tx.from_address.toLowerCase() === walletAddress.toLowerCase() ? 'WITHDRAWAL' : 'DEPOSIT',
+                    description: `ERC20 transfer of ${tx.token_name}`,
+                    source: 'wallet',
+                }));
+                recordsToUpsert.push(...erc20Txs);
+            } else {
+                console.warn(`Moralis (ERC20) API call failed for chain ${chain}. Status: ${erc20Response.status}`);
             }
         }
 
-        const direction = tx.from && tx.from.toLowerCase() === walletAddress.toLowerCase() ? 'OUT' : 'IN';
-        const chainId = typeof tx.chainId === 'string' && tx.chainId.startsWith('0x') ? parseInt(tx.chainId, 16) : Number(tx.chainId);
-        let valueWei = null;
-        if (tx.value && /^(0x)?[0-9a-fA-F]+$/.test(tx.value)) {
-            try { valueWei = BigInt(tx.value).toString(); } catch { valueWei = null; }
+        // 5. Upsert records to Supabase
+        if (recordsToUpsert.length === 0) {
+            return new Response(JSON.stringify({ message: 'No new transactions found.' }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
         }
         
-        return {
-          user_id: user.id,
-          wallet_address: walletAddress,
-          tx_hash: tx.hash, 
-          chain_id: chainId,
-          direction: direction,
-          timestamp: timestamp,
-          from_address: tx.from,
-          to_address: tx.to,
-          value_wei: valueWei,
-          asset_symbol: assetSymbol, 
-          value_usd: valueUsd, 
-          raw: tx,
-        };
-    }));
-    
-    console.log(`Attempting to upsert ${recordsToUpsert.length} valid records...`);
-    const { error: upsertError } = await supabaseClient.from('wallet_transactions').upsert(recordsToUpsert, { onConflict: 'tx_hash, user_id' });
-    if (upsertError) { throw new Error(`Supabase upsert error: ${upsertError.message}`); }
+        console.log(`Attempting to upsert ${recordsToUpsert.length} records...`);
+        const { error: upsertError } = await supabaseClient.from('wallet_transactions').upsert(recordsToUpsert, { onConflict: 'tx_hash,user_id' });
+        if (upsertError) {
+            throw new Error(`Supabase upsert error: ${upsertError.message}`);
+        }
 
-    return new Response(JSON.stringify({ message: `Sync successful. ${recordsToUpsert.length} valid transactions processed.` }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+        return new Response(JSON.stringify({ message: `Sync successful. ${recordsToUpsert.length} transactions processed.` }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
-  } catch (err) {
-    console.error('CRITICAL ERROR in sync-wallet-transactions:', err.message, err.stack);
-    return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-  }
+    } catch (err) {
+        console.error('CRITICAL ERROR in sync-wallet-transactions:', err);
+        return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
 });
