@@ -10,7 +10,8 @@ import AppPageLayout from "@/components/layout/AppPageLayout";
 
 const accountingUsageOptions = [{ value: 'investment_acquisition_ias38', label: 'Investment Acquisition (IAS 38)' }, { value: 'trading_acquisition_ias2', label: 'Trading Acquisition (IAS 2)' }, { value: 'mining_rewards', label: 'Mining Rewards' }, { value: 'staking_rewards', label: 'Staking Rewards' }, { value: 'revenue_ifrs15', label: 'Received as Consideration (IFRS 15)' }, { value: 'impairment_ias38', label: 'Impairment (IAS 38)' }, { value: 'revaluation_increase_ias38', label: 'Revaluation Increase (IAS 38)' }, { value: 'revaluation_decrease_ias38', label: 'Revaluation Decrease (IAS 38)' }, { value: 'lcnrv_ias2', label: 'LCNRV Adjustment (IAS 2)' }, { value: 'fvlcs_ias2', label: 'FVLCS Adjustment (IAS 2)' }, { value: 'sale_ias38', label: 'Sale of Intangible Asset (IAS 38)' }, { value: 'sale_ias2', label: 'Sale of Inventory (IAS 2)' }, { value: 'crypto_to_crypto_exchange', label: 'Crypto-to-Crypto Exchange' }, { value: 'gas_fees', label: 'Gas / Network Fee' }, { value: 'loss_unrecoverable', label: 'Loss of Crypto (Unrecoverable)' }, { value: 'unspecified', label: 'Unspecified' }];
 
-interface Holding { asset: string; currentAmount: number; currentPrice: number; currentValueUsd: number; averageBuyPrice: number; capitalGain: number; }
+// ★★★ FIX: Interface updated to match the v_holdings view schema.
+interface Holding { asset: string; currentAmount: number; currentPrice: number; currentValueUsd: number; }
 interface Transaction { id: string; user_id: string; reference_id: string; date: string; source: string; chain: string; description: string; amount: number; asset: string; price: number; value_in_usd: number; type: string; usage: string | null; note: string | null; }
 type EditedTransaction = Partial<Pick<Transaction, 'usage' | 'note'>>;
 
@@ -32,8 +33,8 @@ export default function TransactionHistory() {
             const { data: { user } } = await supabase.auth.getUser();
             if (!user) throw new Error("User not authenticated");
 
-            // ★★★ FIX: Use the correct column names `avg_buy_price` and `unrealized_pnl` from the view.
-            const holdingsSelect = 'asset, current_amount, current_price:current_price_usd, current_value, avg_buy_price, unrealized_pnl';
+            // ★★★ FIX: Select only the columns that exist in the v_holdings view.
+            const holdingsSelect = 'asset, current_amount, current_price, current_value_usd';
             const transactionsSelect = 'id, user_id, reference_id, date, source, chain, description, amount, asset, price, value_in_usd, type, usage, note';
 
             const [holdingsRes, transactionsRes] = await Promise.all([
@@ -44,14 +45,12 @@ export default function TransactionHistory() {
             if (holdingsRes.error) throw new Error(`Holdings Error: ${holdingsRes.error.message}`);
             if (transactionsRes.error) throw new Error(`Transactions Error: ${transactionsRes.error.message}`);
 
+            // ★★★ FIX: Map the data using the correct column names from the query.
             const mappedHoldings = (holdingsRes.data || []).map(h => ({
                 asset: h.asset,
                 currentAmount: h.current_amount,
                 currentPrice: h.current_price,
-                currentValueUsd: h.current_value,
-                 // ★★★ FIX: Use the correct properties from the returned data.
-                averageBuyPrice: h.avg_buy_price,
-                capitalGain: h.unrealized_pnl,
+                currentValueUsd: h.current_value_usd,
             }));
 
             setHoldings(mappedHoldings as Holding[]);
@@ -157,7 +156,6 @@ export default function TransactionHistory() {
 
     const formatCurrency = (val: number | null | undefined) => (val ?? 0).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
     const formatNumber = (val: number | null | undefined) => (val ?? 0).toFixed(6);
-    const getPnlClass = (pnl: number | null) => (pnl ?? 0) === 0 ? 'text-gray-500' : pnl > 0 ? 'text-green-500' : 'text-red-500';
 
     return (
         <AppPageLayout title="Transactions & Portfolio" description="Keep your exchanges, wallets, and ledger notes perfectly aligned.">
@@ -182,26 +180,24 @@ export default function TransactionHistory() {
                              <table className="min-w-full text-sm text-left">
                                 <thead className="font-mono text-gray-500">
                                     <tr>
+                                        {/* ★★★ FIX: Removed columns that don't exist in the view. */}
                                         <th className="p-2 font-semibold">Asset</th>
                                         <th className="p-2 font-semibold text-right">Amount</th>
-                                        <th className="p-2 font-semibold text-right">Avg. Buy Price</th>
                                         <th className="p-2 font-semibold text-right">Current Price</th>
                                         <th className="p-2 font-semibold text-right">Current Value</th>
-                                        <th className="p-2 font-semibold text-right">Unrealized P&L</th>
                                     </tr>
                                 </thead>
                                 <tbody className="font-mono">
                                     {holdings.length > 0 ? holdings.map((h) => (
                                         <tr key={h.asset} className="border-b border-gray-200 dark:border-gray-700">
+                                            {/* ★★★ FIX: Removed cells for non-existent columns. */}
                                             <td className="p-2 font-bold whitespace-nowrap">{h.asset}</td>
                                             <td className="p-2 text-right whitespace-nowrap">{formatNumber(h.currentAmount)}</td>
-                                            <td className="p-2 text-right whitespace-nowrap">{formatCurrency(h.averageBuyPrice)}</td>
                                             <td className="p-2 text-right whitespace-nowrap">{formatCurrency(h.currentPrice)}</td>
                                             <td className="p-2 text-right whitespace-nowrap font-semibold">{formatCurrency(h.currentValueUsd)}</td>
-                                            <td className={`p-2 text-right whitespace-nowrap ${getPnlClass(h.capitalGain)}`}>{formatCurrency(h.capitalGain)}</td>
                                         </tr>
                                     )) : (
-                                        <tr><td colSpan={6} className="text-center text-gray-500 py-4">No holdings found.</td></tr>
+                                        <tr><td colSpan={4} className="text-center text-gray-500 py-4">No holdings found.</td></tr>
                                     )}
                                 </tbody>
                             </table>
