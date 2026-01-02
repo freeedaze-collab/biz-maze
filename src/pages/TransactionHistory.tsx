@@ -1,4 +1,3 @@
-
 // src/pages/TransactionHistory.tsx
 // FINAL VERSION: Correctly formatted and corresponds to the new v_holdings view.
 import React, { useState, useEffect, useCallback } from 'react';
@@ -12,7 +11,8 @@ const accountingUsageOptions = [{ value: 'investment_acquisition_ias38', label: 
 
 // ★★★ FIX: Interface updated to match the v_holdings view schema.
 interface Holding { asset: string; currentAmount: number; currentPrice: number; currentValueUsd: number; }
-interface Transaction { id: string; user_id: string; reference_id: string; date: string; source: string; chain: string; description: string; amount: number; asset: string; price: number; value_in_usd: number; type: string; usage: string | null; note: string | null; }
+// ★★★ FIX: Interface updated to match the all_transactions view schema.
+interface Transaction { id: string; user_id: string; reference_id: string; date: string; source: string; chain: string; description: string; amount: number; asset: string; price: number; value_usd: number; type: string; usage: string | null; note: string | null; }
 type EditedTransaction = Partial<Pick<Transaction, 'usage' | 'note'>>;
 
 export default function TransactionHistory() {
@@ -35,7 +35,8 @@ export default function TransactionHistory() {
 
             // ★★★ FIX: Select only the columns that exist in the v_holdings view.
             const holdingsSelect = 'asset, current_amount, current_price, current_value_usd';
-            const transactionsSelect = 'id, user_id, reference_id, date, source, chain, description, amount, asset, price, value_in_usd, type, usage, note';
+            // ★★★ FIX: Select only the columns that exist in the all_transactions view.
+            const transactionsSelect = 'id, user_id, reference_id, date, source, chain, description, amount, asset, price, value_usd, type, usage, note';
 
             const [holdingsRes, transactionsRes] = await Promise.all([
                 supabase.from('v_holdings').select(holdingsSelect).eq('user_id', user.id),
@@ -213,7 +214,7 @@ export default function TransactionHistory() {
                                 <th className="p-2 font-semibold">Date</th><th className="p-2 font-semibold">Description</th><th className="p-2 font-semibold text-right">Amount</th><th className="p-2 font-semibold text-right">Value (USD)</th><th className="p-2 font-semibold">Usage</th><th className="p-2 font-semibold">Note</th>
                             </tr></thead>
                             <tbody className="font-mono">{transactions.length > 0 ? transactions.map((tx) => (
-                                <tr key={tx.id}><td className="p-2">{new Date(tx.date).toLocaleString()}</td><td className="p-2">{tx.description}</td><td className="p-2 text-right">{formatNumber(tx.amount)} {tx.asset}</td><td className="p-2 text-right">{formatCurrency(tx.value_in_usd)}</td>
+                                <tr key={tx.id}><td className="p-2">{new Date(tx.date).toLocaleString()}</td><td className="p-2">{tx.description}</td><td className="p-2 text-right">{formatNumber(tx.amount)} {tx.asset}</td><td className="p-2 text-right">{formatCurrency(tx.value_usd)}</td>
                                 <td className="p-2" style={{minWidth: '200px'}}><Select value={editedTransactions[tx.id]?.usage ?? tx.usage ?? 'unspecified'} onValueChange={(v) => handleInputChange(tx.id, 'usage', v)}><SelectTrigger><SelectValue/></SelectTrigger><SelectContent>{accountingUsageOptions.map(opt => <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>)}</SelectContent></Select></td>
                                 <td className="p-2" style={{minWidth: '200px'}}><Input type="text" placeholder="Add a note..." value={editedTransactions[tx.id]?.note ?? tx.note ?? ''} onChange={(e) => handleInputChange(tx.id, 'note', e.target.value)} /></td></tr>
                                 )) : <tr><td colSpan={6} className="text-center py-4 text-muted-foreground">No transactions found.</td></tr>}</tbody></table>
