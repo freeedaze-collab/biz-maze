@@ -107,3 +107,4 @@ project_id = "yelkjimxejmrkfzeumos"
 [functions.verify_wallet]
   import_map = "./import_map.json"
   verify_jwt = false
+
