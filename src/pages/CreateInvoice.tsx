@@ -24,6 +24,8 @@ export default function CreateInvoice() {
   ]);
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
+  const [wallets, setWallets] = useState<{ address: string; name: string }[]>([]);
+  const [receivingWallet, setReceivingWallet] = useState("");
 
   const subTotal = useMemo(
     () => items.reduce((acc, it) => acc + (Number(it.qty) || 0) * (Number(it.unitPrice) || 0), 0),
@@ -36,8 +38,30 @@ export default function CreateInvoice() {
     if (!customerName.trim()) return false;
     if (!customerEmail.trim()) return false;
     if (!invoiceNo.trim()) return false;
+    if (!receivingWallet) return false;
     return items.every((it) => it.name.trim() && it.qty > 0 && it.unitPrice >= 0);
-  }, [customerName, customerEmail, invoiceNo, items]);
+  }, [customerName, customerEmail, invoiceNo, items, receivingWallet]);
+
+  const fetchWallets = async () => {
+    if (!user) return;
+    try {
+      const { data, error } = await supabase
+        .from("wallet_connections")
+        .select("wallet_address, wallet_name")
+        .eq("user_id", user.id);
+      if (error) throw error;
+      setWallets((data || []).map(w => ({ address: w.wallet_address, name: w.wallet_name || "Unnamed Wallet" })));
+      if (data && data.length > 0) {
+        setReceivingWallet(data[0].wallet_address);
+      }
+    } catch (e) {
+      console.error("Failed to fetch wallets:", e);
+    }
+  };
+
+  useMemo(() => {
+    fetchWallets();
+  }, [user]);
 
   const addItem = () => setItems((prev) => [
     ...prev,
@@ -58,6 +82,13 @@ export default function CreateInvoice() {
     }
 
     setSaving(true);
+    if (status === "open" && total <= 0) {
+      if (!confirm("The total amount is 0. Are you sure you want to issue this invoice?")) {
+        setSaving(false);
+        return;
+      }
+    }
+
     try {
       const { data, error } = await supabase
         .from("invoices")
@@ -75,6 +106,7 @@ export default function CreateInvoice() {
           tax,
           total: total,
           amount: total,
+          company_wallet_address: receivingWallet,
         })
         .select()
         .single();
@@ -200,6 +232,24 @@ export default function CreateInvoice() {
               required
             />
           </div>
+        </div>
+
+        <div>
+          <label className="block text-sm mb-1 font-medium text-slate-700">Receiving Wallet Address (Payment Destination)</label>
+          <select
+            className="w-full border rounded-lg px-3 py-2 bg-background focus:ring-2 focus:ring-primary/20 outline-none transition-all"
+            value={receivingWallet}
+            onChange={(e) => setReceivingWallet(e.target.value)}
+            required
+          >
+            <option value="">-- Select a wallet --</option>
+            {wallets.map((w) => (
+              <option key={w.address} value={w.address}>
+                {w.name} ({w.address.slice(0, 6)}...{w.address.slice(-4)})
+              </option>
+            ))}
+          </select>
+          <p className="text-xs text-muted-foreground mt-1">Select one of your linked wallets to receive crypto payments for this invoice.</p>
         </div>
 
         <div className="space-y-3">
