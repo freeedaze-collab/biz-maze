@@ -137,19 +137,7 @@ export default function Checkout() {
         setStep("success");
       }
 
-      // Update timer
-      if (intent.expires_at) {
-        const remaining = new Date(intent.expires_at).getTime() - Date.now();
-        if (remaining <= 0) {
-          setTimer("Expired");
-          setStep("select"); // Go back if expired
-          toast.error("Payment session expired.");
-        } else {
-          const mins = Math.floor(remaining / 60000);
-          const secs = Math.floor((remaining % 60000) / 1000);
-          setTimer(`${mins}:${secs.toString().padStart(2, "0")}`);
-        }
-      }
+      // Expiry check removed as per user request
     }, 2000);
 
     return () => clearInterval(interval);
@@ -237,9 +225,9 @@ export default function Checkout() {
 
                 {/* QR Code Placeholder (Using Google Chart for now) */}
                 <div className="relative group">
-                  <div className="aspect-square w-full max-w-[200px] mx-auto bg-white border-4 border-slate-50 rounded-2xl overflow-hidden p-2 flex items-center justify-center shadow-inner">
+                  <div className="aspect-square w-full max-self-auto max-w-[200px] mx-auto bg-white border-4 border-slate-50 rounded-2xl overflow-hidden p-2 flex items-center justify-center shadow-inner">
                     <img
-                      src={`https://chart.googleapis.com/chart?chs=200x200&cht=qr&chl=${intent.pay_address}&choe=UTF-8`}
+                      src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${intent.pay_address}`}
                       alt="QR Code"
                       className="w-full h-full"
                     />
@@ -259,12 +247,12 @@ export default function Checkout() {
                       </button>
                       {intent.rate_fiat && (
                         <span className="text-[10px] text-slate-400 font-medium">
-                          1 {intent.pay_asset} = {intent.rate_fiat.toLocaleString()} {intent.requested_currency}
+                          1 {intent.pay_asset} ≈ {intent.rate_fiat.toLocaleString()} {intent.requested_currency}
                         </span>
                       )}
                     </div>
                     <div className="space-y-1">
-                      <span className="text-xs font-medium text-slate-500">To Address ({intent.pay_network})</span>
+                      <span className="text-xs font-medium text-slate-500">Recipient Address ({intent.pay_network})</span>
                       <button
                         onClick={() => copyToClipboard(intent.pay_address || "", "Address")}
                         className="flex items-center justify-between w-full p-2 bg-white rounded-lg border border-slate-200 text-[10px] font-mono break-all hover:bg-slate-50 transition-colors group"
@@ -273,12 +261,6 @@ export default function Checkout() {
                         <Copy size={14} className="flex-shrink-0 text-slate-400 group-hover:text-primary" />
                       </button>
                     </div>
-                  </div>
-
-                  {/* Countdown Timer */}
-                  <div className="flex items-center justify-center gap-2 text-slate-500">
-                    <Clock size={16} className="text-amber-500 animate-pulse" />
-                    <span className="text-sm font-semibold text-slate-700">Expires in <span className="font-mono text-amber-600">{timer}</span></span>
                   </div>
                 </div>
 
@@ -322,6 +304,6 @@ export default function Checkout() {
           </div>
         </div>
       </div>
-    </div>
+    </div >
   );
 }
