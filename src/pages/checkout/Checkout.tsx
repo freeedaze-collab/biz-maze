@@ -54,7 +54,20 @@ export default function Checkout() {
   const [loading, setLoading] = useState(true);
   const [invoice, setInvoice] = useState<Invoice | null>(null);
   const [intent, setIntent] = useState<Intent | null>(null);
-  const [timer, setTimer] = useState<string>("");
+  const [timer, setTimer] = useState("15:00");
+
+  const getQRData = (it: Intent) => {
+    if (!it.pay_address) return "";
+    const asset = it.pay_asset?.toUpperCase();
+    const network = it.pay_network?.toLowerCase();
+
+    // Standard URI schemes
+    if (network === "bitcoin") return `bitcoin:${it.pay_address}?amount=${(it as any).amount_crypto || 0}`;
+    if (network === "ethereum" || network === "polygon") {
+      return `ethereum:${it.pay_address}?value=${(it as any).amount_crypto || 0}`;
+    }
+    return it.pay_address;
+  };
 
   // 1. Load Invoice
   useEffect(() => {
@@ -227,7 +240,7 @@ export default function Checkout() {
                 <div className="relative group">
                   <div className="aspect-square w-full max-self-auto max-w-[200px] mx-auto bg-white border-4 border-slate-50 rounded-2xl overflow-hidden p-2 flex items-center justify-center shadow-inner">
                     <img
-                      src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${intent.pay_address}`}
+                      src={`https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(getQRData(intent))}`}
                       alt="QR Code"
                       className="w-full h-full"
                     />
