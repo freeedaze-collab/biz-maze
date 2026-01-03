@@ -60,16 +60,24 @@ Deno.serve(async (req) => {
         const cgId = COINGECKO_IDS[payAsset.toUpperCase()] || "usd-coin";
         const vsCurrency = (invoice.currency || "USD").toLowerCase();
 
+        console.log(`[Intent] Fetching rate for asset: ${cgId}, vs: ${vsCurrency}`);
+
         let rate = 1;
         try {
             const resp = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${cgId}&vs_currencies=${vsCurrency}`);
             if (resp.ok) {
                 const data = await resp.json();
                 rate = data[cgId][vsCurrency] || 1;
+                console.log(`[Intent] Fetched rate: ${rate}`);
+            } else {
+                console.warn(`[Intent] Rate fetch failed with status: ${resp.status}`);
             }
         } catch (e) {
-            console.warn("Failed to fetch rate, using 1:1 fallback", e);
+            console.warn("[Intent] Failed to fetch rate, using 1:1 fallback", e);
         }
+
+        const amountCrypto = rate > 0 ? invoice.total / rate : 0;
+        console.log(`[Intent] Total: ${invoice.total}, Calculated Crypto: ${amountCrypto}`);
 
         // 4) Create Intent
         const { data: intent, error: insErr } = await supabase
@@ -95,7 +103,7 @@ Deno.serve(async (req) => {
                 ok: true,
                 intent: intent,
                 rate: rate,
-                amount_crypto: invoice.total / rate
+                amount_crypto: amountCrypto
             }),
             { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
