@@ -46,7 +46,8 @@ const WALLET_PROVIDERS = [
   }
 ];
 
-const FN_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/verify-wallet`;
+const FN_URL = import.meta.env.VITE_FUNCTION_VERIFY_WALLET;
+if (!FN_URL) console.warn("VITE_FUNCTION_VERIFY_WALLET is missing in .env");
 
 // Basic check for Solana-like addresses (base58)
 const isSolanaAddress = (address: string): boolean => {
@@ -146,29 +147,29 @@ export default function WalletSelection() {
       return postVerify({ address, signature, message, chain: chainName, walletType: 'metamask' }, token);
     });
   }
-  
+
   const handleLinkWithWalletConnect = async (address: string, chainSlug: string, chainName: string) => {
-      let provider: WCProvider | null = null;
-      await sharedLinkLogic(chainSlug, async (token) => {
-          provider = await createWCProvider();
-          await provider.connect();
-          const [current] = (await provider.request({ method: "eth_accounts" })) as string[];
-          if (current.toLowerCase() !== address.toLowerCase()) throw new Error("Selected account differs from input address.");
-          const message = await getNonce(token);
-          const signature = (await provider.request({ method: "personal_sign", params: [toHex(message), current] })) as string;
-          return postVerify({ address, signature, message, chain: chainName, walletType: 'walletconnect' }, token);
-      }).finally(async () => { await provider?.disconnect?.(); });
+    let provider: WCProvider | null = null;
+    await sharedLinkLogic(chainSlug, async (token) => {
+      provider = await createWCProvider();
+      await provider.connect();
+      const [current] = (await provider.request({ method: "eth_accounts" })) as string[];
+      if (current.toLowerCase() !== address.toLowerCase()) throw new Error("Selected account differs from input address.");
+      const message = await getNonce(token);
+      const signature = (await provider.request({ method: "personal_sign", params: [toHex(message), current] })) as string;
+      return postVerify({ address, signature, message, chain: chainName, walletType: 'walletconnect' }, token);
+    }).finally(async () => { await provider?.disconnect?.(); });
   }
 
   const handleLinkWithPhantom = async (address: string, chainSlug: string) => {
     await sharedLinkLogic(chainSlug, async (token) => {
       const phantom = (window as any).phantom?.solana;
       if (!phantom) throw new Error("Phantom extension not found.");
-      
+
       await phantom.connect();
       const publicKey = phantom.publicKey;
       if (publicKey.toString() !== address) throw new Error("Connected Phantom wallet does not match the input address.");
-      
+
       const message = await getNonce(token);
       const encodedMessage = new TextEncoder().encode(message);
       const { signature: sigBytes } = await phantom.signMessage(encodedMessage, "utf8");
