@@ -1,0 +1,249 @@
+-- Restore USD Calculation & PnL Logic (V2 Strategy)
+-- Creates new V2 views to bypass "Cannot Drop Column" errors on existing views.
+-- Implements robust 'value_usd' calculation and restores 'avg_buy_price'/'unrealized_pnl'.
+
+-- 1. Create all_transactions_v2 (Robust Logic)
+CREATE OR REPLACE VIEW public.all_transactions_v2 WITH (security_invoker = true) AS
+WITH
+rates AS (
+    SELECT DISTINCT ON (target_currency)
+        target_currency,
+        rate
+    FROM public.daily_exchange_rates
+    WHERE source_currency = 'USD' AND target_currency IN ('JPY', 'EUR', 'GBP', 'INR', 'SGD')
+    ORDER BY target_currency, date DESC
+),
+onchain_base AS (
+  SELECT
+    t.id::text as id,
+    t.user_id,
+    t.tx_hash AS reference_id,
+    t.timestamp AS date,
+    'On-chain: ' || t.direction || ' ' || COALESCE(t.asset_symbol, 'ETH') AS description,
+    (t.value_wei / 1e18) AS amount,
+    COALESCE(t.asset_symbol, 'ETH') AS asset,
+    NULL::text AS quote_asset,
+    der.rate AS price,
+    t.direction AS type,
+    'wallet' as source,
+    COALESCE(wc.chain, t.chain_id::text) AS chain,
+    t.wallet_address,
+    NULL::text AS connection_name,
+    wc.id::text AS connection_id,
+    -- Robust Value Calculation
+    COALESCE(t.fiat_value_usd, t.value_in_usd, (t.value_wei / 1e18) * der.rate, 0) AS value_usd,
+    COALESCE(t.usage, ul.usage_key) AS usage,
+    (t.raw->>'note')::text as note
+  FROM public.wallet_transactions t
+  LEFT JOIN public.wallet_connections wc ON t.wallet_address = wc.wallet_address AND t.user_id = wc.user_id
+  LEFT JOIN public.transaction_usage_labels ul ON ul.tx_id = t.id
+  LEFT JOIN public.daily_exchange_rates der 
+    ON t.timestamp::date = der.date 
+    AND COALESCE(t.asset_symbol, 'ETH') = der.source_currency 
+    AND der.target_currency = 'USD'
+),
+exchange_base AS (
+  SELECT
+    et.trade_id::text as id,
+    et.user_id,
+    et.trade_id::text AS reference_id,
+    et.ts AS date,
+    'Exchange: ' || et.side || ' ' || et.amount::text || ' ' || et.symbol || ' @ ' || et.price::text AS description,
+    et.amount AS amount, 
+    split_part(et.symbol, '/', 1) AS asset,
+    split_part(et.symbol, '/', 2) AS quote_asset,
+    et.price,
+    et.side AS type,
+    'exchange' as source,
+    et.exchange AS chain,
+    NULL::text AS wallet_address,
+    ec.connection_name,
+    ec.id::text AS connection_id,
+    -- Robust Value Calculation (3-step fallback)
+    COALESCE(
+        et.value_usd, 
+        (
+            CASE 
+                WHEN et.side ILIKE 'withdraw%' OR et.side ILIKE 'deposit%' OR et.price IS NULL OR et.price = 0 THEN et.amount
+                ELSE et.amount 
+            END
+        ) * COALESCE(
+             der.rate,                          
+             (1.0 / NULLIF(der_inv.rate, 0)),   
+             ap.current_price                   
+           ),
+        0
+    ) AS value_usd, 
+    COALESCE(et.usage, ul.usage_key) AS usage,
+    (et.raw_data->>'note')::text as note
+  FROM public.exchange_trades et
+  LEFT JOIN public.exchange_connections ec ON et.exchange_connection_id = ec.id
+  LEFT JOIN public.transaction_usage_labels ul ON ul.ctx_id = et.trade_id
+  LEFT JOIN public.daily_exchange_rates der
+    ON et.ts::date = der.date
+    AND split_part(et.symbol, '/', 1) = der.source_currency
+    AND der.target_currency = 'USD'
+  LEFT JOIN public.daily_exchange_rates der_inv
+    ON et.ts::date = der_inv.date
+    AND der_inv.source_currency = 'USD'
+    AND split_part(et.symbol, '/', 1) = der_inv.target_currency
+  LEFT JOIN public.asset_prices ap
+    ON split_part(et.symbol, '/', 1) = ap.asset
+),
+unified_base AS (
+    SELECT * FROM onchain_base
+    UNION ALL
+    SELECT * FROM exchange_base
+)
+SELECT 
+    b.*,
+    -- FIAT Values
+    (b.value_usd * COALESCE((SELECT rate FROM rates WHERE target_currency = 'JPY'), 1)) AS value_jpy,
+    (b.value_usd * COALESCE((SELECT rate FROM rates WHERE target_currency = 'EUR'), 1)) AS value_eur,
+    (b.value_usd * COALESCE((SELECT rate FROM rates WHERE target_currency = 'GBP'), 1)) AS value_gbp,
+    (b.value_usd * COALESCE((SELECT rate FROM rates WHERE target_currency = 'INR'), 1)) AS value_inr,
+    (b.value_usd * COALESCE((SELECT rate FROM rates WHERE target_currency = 'SGD'), 1)) AS value_sgd,
+    -- Entity IDs
+    CASE
+        WHEN b.source = 'wallet' THEN wc.entity_id
+        WHEN b.source = 'exchange' THEN xc.entity_id
+        ELSE NULL
+    END AS entity_id,
+    CASE
+        WHEN b.source = 'wallet' THEN ew.name
+        WHEN b.source = 'exchange' THEN ee.name
+        ELSE NULL
+    END AS entity_name
+FROM unified_base b
+LEFT JOIN public.wallet_connections wc ON b.source='wallet' AND b.connection_id = wc.id::text
+LEFT JOIN public.exchange_connections xc ON b.source='exchange' AND b.connection_id = xc.id::text
+LEFT JOIN public.entities ew ON wc.entity_id = ew.id
+LEFT JOIN public.entities ee ON xc.entity_id = ee.id;
+
+
+-- 2. Create internal_transfer_pairs_v2
+CREATE OR REPLACE VIEW public.internal_transfer_pairs_v2 WITH (security_invoker = true) AS
+SELECT
+    tx_out.user_id,
+    tx_out.id AS withdrawal_id,
+    tx_in.id AS deposit_id
+FROM
+    public.all_transactions_v2 tx_out
+JOIN
+    public.all_transactions_v2 tx_in
+    ON tx_out.user_id = tx_in.user_id
+    AND tx_out.asset = tx_in.asset
+    AND (tx_out.type ILIKE 'withdraw%' OR tx_out.type = 'send' OR tx_out.type = 'out')
+    AND (tx_in.type ILIKE 'deposit%' OR tx_in.type = 'receive' OR tx_in.type = 'in')
+    AND tx_in.amount BETWEEN (tx_out.amount * 0.99) AND (tx_out.amount * 1.01)
+    AND tx_in.date >= tx_out.date
+    AND tx_in.date <= (tx_out.date + INTERVAL '24 hours')
+    AND COALESCE(tx_out.connection_name, tx_out.wallet_address) <> COALESCE(tx_in.connection_name, tx_in.wallet_address);
+
+-- 3. Create v_all_transactions_classified_v2
+CREATE OR REPLACE VIEW public.v_all_transactions_classified_v2 WITH (security_invoker = true) AS
+WITH all_internal_ids AS (
+    SELECT withdrawal_id AS id FROM public.internal_transfer_pairs_v2
+    UNION
+    SELECT deposit_id AS id FROM public.internal_transfer_pairs_v2
+)
+SELECT
+    t.*,
+    CASE
+        WHEN ai.id IS NOT NULL THEN 'INTERNAL_TRANSFER'
+        WHEN t.usage IS NOT NULL THEN UPPER(t.usage)
+        WHEN t.type IN ('buy', 'sell') THEN UPPER(t.type)
+        WHEN t.type ILIKE 'deposit%' OR t.type ILIKE 'receive%' OR t.type = 'in' THEN 'DEPOSIT'
+        WHEN t.type ILIKE 'withdraw%' OR t.type ILIKE 'send%' OR t.type = 'out' THEN 'WITHDRAWAL'
+        ELSE 'OTHER'
+    END as transaction_type
+FROM
+    public.all_transactions_v2 t
+LEFT JOIN
+    all_internal_ids ai ON t.id = ai.id;
+
+
+-- 4. Create v_holdings_v2
+CREATE OR REPLACE VIEW public.v_holdings_v2 WITH (security_invoker = true) AS
+WITH
+latest_rates AS (
+    SELECT DISTINCT ON (target_currency)
+        target_currency,
+        rate
+    FROM public.daily_exchange_rates
+    WHERE source_currency = 'USD' AND target_currency IN ('JPY', 'EUR', 'GBP', 'INR', 'SGD')
+    ORDER BY target_currency, date DESC
+),
+acquisitions AS (
+    SELECT
+        user_id,
+        entity_id,
+        asset,
+        sum(value_usd) AS total_cost_basis,
+        sum(amount) AS total_amount_acquired
+    FROM
+        public.v_all_transactions_classified_v2
+    WHERE
+        transaction_type = 'BUY' AND transaction_type <> 'INTERNAL_TRANSFER'
+    GROUP BY
+        user_id,
+        entity_id,
+        asset
+),
+current_quantities AS (
+    SELECT
+        user_id,
+        entity_id,
+        asset,
+        sum(
+            CASE
+                WHEN transaction_type IN ('BUY', 'DEPOSIT', 'IN', 'RECEIVE') THEN amount
+                WHEN transaction_type IN ('SELL', 'WITHDRAWAL', 'OUT', 'SEND') THEN -amount
+                ELSE 0
+            END
+        ) AS current_amount
+    FROM
+        public.v_all_transactions_classified_v2
+    WHERE
+        transaction_type <> 'INTERNAL_TRANSFER'
+    GROUP BY
+        user_id,
+        entity_id,
+        asset
+)
+SELECT
+    cq.user_id,
+    cq.entity_id,
+    cq.asset,
+    cq.current_amount,
+    COALESCE(ap.current_price, 0) AS current_price,
+    (cq.current_amount * COALESCE(ap.current_price, 0)) AS current_value_usd,
+    (cq.current_amount * COALESCE(ap.current_price, 0) * COALESCE((SELECT rate FROM latest_rates WHERE target_currency = 'JPY'), 1)) AS current_value_jpy,
+    (cq.current_amount * COALESCE(ap.current_price, 0) * COALESCE((SELECT rate FROM latest_rates WHERE target_currency = 'EUR'), 1)) AS current_value_eur,
+    
+    -- Restored PnL Columns
+    COALESCE(acq.total_cost_basis / NULLIF(acq.total_amount_acquired, 0), 0) AS "avg_buy_price",
+    (cq.current_amount * COALESCE(ap.current_price, 0)) - (cq.current_amount * COALESCE(acq.total_cost_basis / NULLIF(acq.total_amount_acquired, 0), 0)) AS "unrealized_pnl",
+    
+    now() AS last_updated
+FROM
+    current_quantities cq
+LEFT JOIN
+    public.asset_prices ap ON cq.asset = ap.asset
+LEFT JOIN
+    acquisitions acq ON cq.user_id = acq.user_id AND cq.asset = acq.asset AND (cq.entity_id = acq.entity_id OR (cq.entity_id IS NULL AND acq.entity_id IS NULL))
+WHERE
+    cq.current_amount > 1e-9;
+
+-- 5. UPGRADE Reports to use V2 (Changing dependency is allowed)
+CREATE OR REPLACE VIEW public.v_profit_loss_statement AS
+    SELECT user_id, entity_id, date, 'Sales Revenue' as account, value_usd as balance, value_usd as balance_usd, value_jpy as balance_jpy, value_eur as balance_eur 
+    FROM public.all_transactions_v2 WHERE usage='sale_ias2';
+
+CREATE OR REPLACE VIEW public.v_balance_sheet AS
+    SELECT user_id, entity_id, now() as date, 'Inventory' as account, current_value_usd as balance, current_value_usd as balance_usd, current_value_jpy as balance_jpy, current_value_eur as balance_eur
+    FROM public.v_holdings_v2;
+
+CREATE OR REPLACE VIEW public.v_cash_flow_statement AS
+    SELECT user_id, entity_id, date, 'Sales' as item, value_usd as amount, value_usd as amount_usd, value_jpy as amount_jpy, value_eur as amount_eur
+    FROM public.all_transactions_v2 WHERE usage='sale_ias2';

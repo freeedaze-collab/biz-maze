@@ -1,0 +1,179 @@
+-- Restore USD Calculation (Definitive Recreate Strategy - Fixed Drop Logic)
+-- Explicitly drops ALL dependent views to avoid "relation already exists" errors.
+-- 
+-- 1. Drops dependent views manually (Safest).
+-- 2. Drops v_all_transactions_classified.
+-- 3. Re-creates them with the ROBUST CALCULATION LOGIC and PnL COLUMNS.
+
+-- 1. Explicitly DROP dependent views first
+DROP VIEW IF EXISTS public.v_cash_flow_statement CASCADE;
+DROP VIEW IF EXISTS public.v_balance_sheet CASCADE;
+DROP VIEW IF EXISTS public.v_profit_loss_statement CASCADE;
+DROP VIEW IF EXISTS public.v_holdings CASCADE;
+
+-- 2. Drop the main view
+DROP VIEW IF EXISTS public.v_all_transactions_classified CASCADE;
+
+-- 3. CREATE v_all_transactions_classified (With Calculation Fix)
+CREATE VIEW public.v_all_transactions_classified AS
+WITH all_internal_ids AS (
+    SELECT withdrawal_id AS id FROM public.internal_transfer_pairs
+    UNION
+    SELECT deposit_id AS id FROM public.internal_transfer_pairs
+),
+corrected_transactions AS (
+    SELECT
+        t.*,
+        -- LOGIC RESTORATION: Robust Calculation Formula
+        -- If value_usd is 0/Null, calculate from Amount * Rate
+        COALESCE(
+            NULLIF(t.value_usd, 0),
+            (
+                t.amount * COALESCE(
+                    der.rate,                        -- 1. Daily Rate
+                    (1.0 / NULLIF(der_inv.rate, 0)), -- 2. Inverse Daily Rate
+                    ap.current_price,                -- 3. Current Price
+                    0
+                )
+            )
+        )::numeric AS fixed_value_usd
+    FROM
+        public.all_transactions t
+    LEFT JOIN public.daily_exchange_rates der 
+        ON t.date::date = der.date 
+        AND t.asset = der.source_currency 
+        AND der.target_currency = 'USD'
+    LEFT JOIN public.daily_exchange_rates der_inv
+        ON t.date::date = der_inv.date 
+        AND der_inv.source_currency = 'USD' 
+        AND t.asset = der_inv.target_currency
+    LEFT JOIN public.asset_prices ap
+        ON t.asset = ap.asset
+)
+SELECT
+    t.id,
+    t.user_id,
+    t.reference_id,
+    t.date,
+    t.source,
+    t.chain,
+    t.description,
+    t.amount,
+    t.asset,
+    t.price,
+    t.fixed_value_usd AS value_usd, -- Used fixed value
+    
+    -- Recalculate FIAT
+    (t.fixed_value_usd * COALESCE((SELECT rate FROM public.daily_exchange_rates WHERE source_currency='USD' AND target_currency='JPY' AND date=t.date::date LIMIT 1), 1))::numeric AS value_jpy,
+    (t.fixed_value_usd * COALESCE((SELECT rate FROM public.daily_exchange_rates WHERE source_currency='USD' AND target_currency='EUR' AND date=t.date::date LIMIT 1), 1))::numeric AS value_eur,
+    
+    t.type,
+    t.usage,
+    t.note,
+    t.entity_id,
+    t.entity_name,
+    t.quote_asset,
+    t.wallet_address,
+    t.connection_name,
+    t.connection_id,
+    
+    CASE
+        WHEN ai.id IS NOT NULL THEN 'INTERNAL_TRANSFER'
+        WHEN t.usage IS NOT NULL THEN UPPER(t.usage)
+        WHEN t.type IN ('buy', 'sell') THEN UPPER(t.type)
+        WHEN t.type ILIKE 'deposit%' OR t.type ILIKE 'receive%' OR t.type = 'in' THEN 'DEPOSIT'
+        WHEN t.type ILIKE 'withdraw%' OR t.type ILIKE 'send%' OR t.type = 'out' THEN 'WITHDRAWAL'
+        ELSE 'OTHER'
+    END as transaction_type
+FROM
+    corrected_transactions t
+LEFT JOIN
+    all_internal_ids ai ON t.id = ai.id;
+
+
+-- 4. CREATE v_holdings (With PnL Columns Restored)
+CREATE VIEW public.v_holdings AS
+WITH
+latest_rates AS (
+    SELECT DISTINCT ON (target_currency)
+        target_currency,
+        rate
+    FROM public.daily_exchange_rates
+    WHERE source_currency = 'USD' AND target_currency IN ('JPY', 'EUR', 'GBP', 'INR', 'SGD')
+    ORDER BY target_currency, date DESC
+),
+acquisitions AS (
+    SELECT
+        user_id,
+        entity_id,
+        asset,
+        sum(value_usd) AS total_cost_basis,
+        sum(amount) AS total_amount_acquired
+    FROM
+        public.v_all_transactions_classified
+    WHERE
+        transaction_type = 'BUY' AND transaction_type <> 'INTERNAL_TRANSFER'
+    GROUP BY
+        user_id,
+        entity_id,
+        asset
+),
+current_quantities AS (
+    SELECT
+        user_id,
+        entity_id,
+        asset,
+        sum(
+            CASE
+                WHEN transaction_type IN ('BUY', 'DEPOSIT', 'IN', 'RECEIVE') THEN amount
+                WHEN transaction_type IN ('SELL', 'WITHDRAWAL', 'OUT', 'SEND') THEN -amount
+                ELSE 0
+            END
+        ) AS current_amount
+    FROM
+        public.v_all_transactions_classified
+    WHERE
+        transaction_type <> 'INTERNAL_TRANSFER'
+    GROUP BY
+        user_id,
+        entity_id,
+        asset
+)
+SELECT
+    cq.user_id,
+    cq.entity_id,
+    cq.asset,
+    cq.current_amount,
+    COALESCE(ap.current_price, 0) AS current_price,
+    (cq.current_amount * COALESCE(ap.current_price, 0)) AS current_value_usd,
+    (cq.current_amount * COALESCE(ap.current_price, 0) * COALESCE((SELECT rate FROM latest_rates WHERE target_currency = 'JPY'), 1)) AS current_value_jpy,
+    (cq.current_amount * COALESCE(ap.current_price, 0) * COALESCE((SELECT rate FROM latest_rates WHERE target_currency = 'EUR'), 1)) AS current_value_eur,
+    
+    now() AS last_updated,
+    
+    -- Restored PnL Columns
+    COALESCE(acq.total_cost_basis / NULLIF(acq.total_amount_acquired, 0), 0) AS "avg_buy_price",
+    (cq.current_amount * COALESCE(ap.current_price, 0)) - (cq.current_amount * COALESCE(acq.total_cost_basis / NULLIF(acq.total_amount_acquired, 0), 0)) AS "unrealized_pnl"
+FROM
+    current_quantities cq
+LEFT JOIN
+    public.asset_prices ap ON cq.asset = ap.asset
+LEFT JOIN
+    acquisitions acq ON cq.user_id = acq.user_id AND cq.asset = acq.asset AND (cq.entity_id = acq.entity_id OR (cq.entity_id IS NULL AND acq.entity_id IS NULL))
+WHERE
+    cq.current_amount > 1e-9;
+
+
+-- 5. CREATE Financial Reports (Using Corrected View)
+
+CREATE VIEW public.v_profit_loss_statement AS
+    SELECT user_id, entity_id, date, 'Sales Revenue' as account, value_usd as balance, value_usd as balance_usd, value_jpy as balance_jpy, value_eur as balance_eur 
+    FROM public.v_all_transactions_classified WHERE usage='sale_ias2'; 
+
+CREATE VIEW public.v_balance_sheet AS
+    SELECT user_id, entity_id, now() as date, 'Inventory' as account, current_value_usd as balance, current_value_usd as balance_usd, current_value_jpy as balance_jpy, current_value_eur as balance_eur
+    FROM public.v_holdings;
+
+CREATE VIEW public.v_cash_flow_statement AS
+    SELECT user_id, entity_id, date, 'Sales' as item, value_usd as amount, value_usd as amount_usd, value_jpy as amount_jpy, value_eur as amount_eur
+    FROM public.v_all_transactions_classified WHERE usage='sale_ias2';

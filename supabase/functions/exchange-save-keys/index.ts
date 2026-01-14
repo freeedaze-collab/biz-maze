@@ -34,6 +34,7 @@ type SaveBody = {
   api_key: string;
   api_secret: string;
   api_passphrase?: string;
+  entity_id?: string;
 };
 
 // --- メインのサーバー処理 ---
@@ -57,22 +58,23 @@ Deno.serve(async (req) => {
     if (!body.connection_name || !body.api_key || !body.api_secret) {
       throw new Error("Connection name, API key, and API secret are required.");
     }
-    
+
     const enc_blob = await encryptJson({
       apiKey: body.api_key,
       apiSecret: body.api_secret,
       apiPassphrase: body.api_passphrase,
     });
-    
+
     const { error } = await supabaseAdmin.from("exchange_connections").upsert({
       user_id: user.id,
       exchange: body.exchange,
       connection_name: body.connection_name,
       encrypted_blob: enc_blob,
+      entity_id: body.entity_id || null,
     }, { onConflict: "user_id,connection_name" });
 
     if (error) throw error;
-    
+
     return cors(new Response(JSON.stringify({ ok: true }), {
       headers: { 'Content-Type': 'application/json' },
       status: 200,
@@ -84,9 +86,9 @@ Deno.serve(async (req) => {
     console.error("Error Message:", e.message);
     console.error("Full Error Object:", e);
 
-    return cors(new Response(JSON.stringify({ 
+    return cors(new Response(JSON.stringify({
       error: "An internal server error occurred.",
-      details: String(e?.message ?? e) 
+      details: String(e?.message ?? e)
     }), {
       headers: { 'Content-Type': 'application/json' },
       status: 500,

@@ -17,7 +17,7 @@ import Confirm from "@/pages/auth/Confirm";
 import Dashboard from "@/pages/Dashboard";
 import TransactionHistory from "@/pages/TransactionHistory";
 import Accounting from "@/pages/Accounting";
-import Profile from "@/pages/Profile";
+import Profile from "@/pages/Profile"; // re-resolve
 import WalletSelection from "@/pages/wallet/WalletSelection";
 import EntityAndTax from "@/pages/onboarding/EntityAndTax"; // ★ 追加
 

@@ -1,7 +1,7 @@
 
 // supabase/functions/exchange-sync-save/index.ts
 
-import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
+// // // import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 const corsHeaders = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
@@ -47,20 +47,20 @@ Deno.serve(async (req) => {
     const { exchange, records } = await req.json();
     if (!exchange || !records) throw new Error("Exchange and records are required.");
     if (!Array.isArray(records) || records.length === 0) {
-        return new Response(JSON.stringify({ totalSaved: 0, message: "No records to save." }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ totalSaved: 0, message: "No records to save." }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
     console.log(`[SAVE] Received ${records.length} records for ${exchange}. Transforming and upserting...`);
 
     // 1. 変換
     const transformedRecords = records.map(r => transformRecord(r, user.id, exchange)).filter(r => r !== null);
-    
+
     // 2. 重複除去
     const uniqueRecords = Array.from(new Map(transformedRecords.map(r => [`${r!.exchange}-${r!.trade_id}`, r])).values());
-    
+
     if (uniqueRecords.length === 0) {
-        console.log("[SAVE] No valid or new records to save after transformation and deduplication.");
-        return new Response(JSON.stringify({ totalSaved: 0 }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      console.log("[SAVE] No valid or new records to save after transformation and deduplication.");
+      return new Response(JSON.stringify({ totalSaved: 0 }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
     console.log(`[SAVE] Upserting ${uniqueRecords.length} unique records into exchange_trades...`);
@@ -78,7 +78,7 @@ Deno.serve(async (req) => {
 
     const totalSavedCount = data?.length ?? 0;
     console.log(`[SAVE] VICTORY! Successfully upserted ${totalSavedCount} records.`);
-    
+
     return new Response(JSON.stringify({ totalSaved: totalSavedCount }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
   } catch (err) {

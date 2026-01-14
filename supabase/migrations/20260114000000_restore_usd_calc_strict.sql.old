@@ -1,0 +1,90 @@
+-- Restore USD Calculation (Strict Types)
+-- Fixes "numeric to double precision" error by casting currency to NUMERIC.
+-- Fixes "cannot drop columns" error by strictly casting ID/Text columns to TEXT.
+
+CREATE OR REPLACE VIEW public.v_all_transactions_classified WITH (security_invoker = true) AS
+WITH all_internal_ids AS (
+    SELECT withdrawal_id AS id FROM public.internal_transfer_pairs
+    UNION
+    SELECT deposit_id AS id FROM public.internal_transfer_pairs
+),
+corrected_transactions AS (
+    SELECT
+        t.*,
+        -- RE-CALCULATE logic for value_usd
+        -- STRICT CAST TO NUMERIC (matches existing view)
+        COALESCE(
+            NULLIF(t.value_usd, 0), -- Use existing if valid
+            (
+                t.amount * COALESCE(
+                    der.rate,                        -- 1. Daily Rate
+                    (1.0 / NULLIF(der_inv.rate, 0)), -- 2. Inverse Daily Rate
+                    ap.current_price,                -- 3. Current Price
+                    0
+                )
+            )
+        )::numeric AS fixed_value_usd
+    FROM
+        public.all_transactions t
+    LEFT JOIN public.daily_exchange_rates der 
+        ON t.date::date = der.date 
+        AND t.asset = der.source_currency 
+        AND der.target_currency = 'USD'
+    LEFT JOIN public.daily_exchange_rates der_inv
+        ON t.date::date = der_inv.date 
+        AND der_inv.source_currency = 'USD' 
+        AND t.asset = der_inv.target_currency
+    LEFT JOIN public.asset_prices ap
+        ON t.asset = ap.asset
+)
+SELECT
+    t.id,
+    t.user_id,
+    t.reference_id,
+    t.date,
+    t.source,
+    t.chain,
+    t.description,
+    t.amount,
+    t.asset,
+    t.price,
+    t.fixed_value_usd AS value_usd, -- Correct Type: NUMERIC
+    
+    -- Recalculate FIAT with Strict Casts
+    (t.fixed_value_usd * COALESCE((SELECT rate FROM public.daily_exchange_rates WHERE source_currency='USD' AND target_currency='JPY' AND date=t.date::date LIMIT 1), 1))::numeric AS value_jpy,
+    (t.fixed_value_usd * COALESCE((SELECT rate FROM public.daily_exchange_rates WHERE source_currency='USD' AND target_currency='EUR' AND date=t.date::date LIMIT 1), 1))::numeric AS value_eur,
+    
+    t.type,
+    t.usage,
+    t.note,
+    t.entity_id,
+    t.entity_name,
+    t.quote_asset,
+    t.wallet_address,
+    t.connection_name,
+    
+    -- Ensure connection_id matches typical view definition (Text)
+    t.connection_id::text AS connection_id, 
+    
+    CASE
+        WHEN ai.id IS NOT NULL THEN 'INTERNAL_TRANSFER'
+        WHEN t.usage IS NOT NULL THEN UPPER(t.usage)
+        WHEN t.type IN ('buy', 'sell') THEN UPPER(t.type)
+        WHEN t.type ILIKE 'deposit%' OR t.type ILIKE 'receive%' OR t.type = 'in' THEN 'DEPOSIT'
+        WHEN t.type ILIKE 'withdraw%' OR t.type ILIKE 'send%' OR t.type = 'out' THEN 'WITHDRAWAL'
+        ELSE 'OTHER'
+    END::text as transaction_type
+FROM
+    corrected_transactions t
+LEFT JOIN
+    all_internal_ids ai ON t.id = ai.id;
+
+
+-- Update Reports (Ensure they point to the corrected view)
+CREATE OR REPLACE VIEW public.v_profit_loss_statement AS
+    SELECT user_id, entity_id, date, 'Sales Revenue' as account, value_usd as balance, value_usd as balance_usd, value_jpy as balance_jpy, value_eur as balance_eur 
+    FROM public.v_all_transactions_classified WHERE usage='sale_ias2'; 
+
+CREATE OR REPLACE VIEW public.v_cash_flow_statement AS
+    SELECT user_id, entity_id, date, 'Sales' as item, value_usd as amount, value_usd as amount_usd, value_jpy as amount_jpy, value_eur as amount_eur
+    FROM public.v_all_transactions_classified WHERE usage='sale_ias2';

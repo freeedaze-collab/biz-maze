@@ -1,0 +1,90 @@
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+const ALLOWED_VALUES = new Set([
+  "Polygon","Ethereum","Arbitrum","Base",
+  "BTC","USDC","JPYC",
+]);
+
+const cors = (origin: string | null) => ({
+  "access-control-allow-origin": origin ?? "*",
+  "access-control-allow-headers": "authorization, content-type, apikey, x-client-info",
+  "access-control-allow-methods": "POST,OPTIONS",
+  "content-type": "application/json",
+});
+
+Deno.serve(async (req) => {
+  const origin = req.headers.get("origin");
+  if (req.method === "OPTIONS") return new Response("ok", { headers: cors(origin) });
+  if (req.method !== "POST") {
+    return new Response(JSON.stringify({ error: "method_not_allowed" }), { status: 405, headers: cors(origin) });
+  }
+
+  try {
+    const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
+    const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    if (!SUPABASE_URL || !SERVICE_ROLE) {
+      return new Response(JSON.stringify({ error: "server_misconfigured" }), { status: 500, headers: cors(origin) });
+    }
+    const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { persistSession: false } });
+
+    // Auth
+    const authz = req.headers.get("authorization") ?? req.headers.get("Authorization");
+    if (!authz?.startsWith("Bearer ")) {
+      return new Response(JSON.stringify({ error: "no_token" }), { status: 401, headers: cors(origin) });
+    }
+    const token = authz.slice("Bearer ".length);
+    const { data: u, error: uerr } = await supabase.auth.getUser(token);
+    if (uerr) return new Response(JSON.stringify({ error: "auth_error", details: uerr.message }), { status: 401, headers: cors(origin) });
+    const userId = u?.user?.id;
+    if (!userId) return new Response(JSON.stringify({ error: "bad_token" }), { status: 401, headers: cors(origin) });
+
+    // Body
+    const body = await req.json().catch(() => ({}));
+    const title = body?.title;
+    const amount = Number(body?.amount);
+    const currency = body?.currency ?? "USD";
+    const requested: string[] = Array.isArray(body?.requested_networks) ? body.requested_networks : [];
+
+    if (!title || !Number.isFinite(amount) || amount <= 0) {
+      return new Response(JSON.stringify({ error: "bad_request" }), { status: 400, headers: cors(origin) });
+    }
+
+    // Merchant
+    const { data: merchant, error: mErr } = await supabase
+      .from("payment_merchants")
+      .select("*")
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (mErr) return new Response(JSON.stringify({ error: "merchant_read_failed", details: mErr.message }), { status: 500, headers: cors(origin) });
+    if (!merchant) return new Response(JSON.stringify({ error: "merchant_not_found" }), { status: 400, headers: cors(origin) });
+
+    // Server-side allow-list
+    const configured: string[] = Array.isArray(merchant.allowed_networks) ? merchant.allowed_networks : [];
+    const effective = (requested.length ? requested : configured).filter((v) => ALLOWED_VALUES.has(v));
+    if (effective.length === 0) {
+      return new Response(JSON.stringify({ error: "no_allowed_networks" }), { status: 400, headers: cors(origin) });
+    }
+
+    // Create draft link (keep schema minimal to avoid dependency on new columns)
+    const { data: link, error: lErr } = await supabase
+      .from("payment_links")
+      .insert({
+        user_id: userId,
+        title,
+        amount,
+        currency,
+        status: "draft",
+      } as any)
+      .select()
+      .single();
+    if (lErr) return new Response(JSON.stringify({ error: "create_link_failed", details: lErr.message }), { status: 500, headers: cors(origin) });
+
+    return new Response(JSON.stringify({
+      ok: true,
+      link_id: link.id,
+      allowed_networks_effective: effective,
+    }), { status: 200, headers: cors(origin) });
+  } catch (e) {
+    return new Response(JSON.stringify({ error: "panic", details: String(e?.message ?? e) }), { status: 500, headers: cors(origin) });
+  }
+});

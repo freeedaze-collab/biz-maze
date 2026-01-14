@@ -1,4 +1,4 @@
-import 'jsr:@supabase/functions-js/edge-runtime.d.ts';
+// // import 'jsr:@supabase/functions-js/edge-runtime.d.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { decode } from 'https://deno.land/x/djwt@v3.0.2/mod.ts';
 import {
@@ -73,7 +73,7 @@ Deno.serve(async (req) => {
   } catch (e) {
     // Check for specific foreign key error string
     if (e.message && e.message.includes('violates foreign key constraint')) {
-        return new Response(JSON.stringify({ error: `Authentication error: The provided user ID does not exist. Details: ${e.message}` }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ error: `Authentication error: The provided user ID does not exist. Details: ${e.message}` }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
     return new Response(JSON.stringify({ error: `Function error: ${e.message}` }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   }

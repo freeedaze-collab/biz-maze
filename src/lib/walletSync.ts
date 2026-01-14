@@ -22,7 +22,9 @@ export async function triggerWalletSync(walletAddress: string, chain: 'polygon' 
     return { ok: false, message: 'Wallet address is not provided.' }
   }
 
-  const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/sync-wallet-transactions`
+  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
+  if (!supabaseUrl) throw new Error('VITE_SUPABASE_URL is missing.')
+  const url = `${supabaseUrl}/functions/v1/sync-wallet-transactions`
   const res = await fetch(url, {
     method: 'POST',
     headers: {

@@ -1,0 +1,156 @@
+-- Restore USD Calculation & PnL Logic (Safe Mode: No DROP/CASCADE - FIXED)
+-- 1. Updates v_all_transactions_classified to patch value_usd (retaining identical column structure).
+-- 2. Updates v_holdings to restore PnL columns (APPENDING to the end to avoid 'drop columns' error).
+
+-- =================================================================
+-- 1. Update v_all_transactions_classified
+-- =================================================================
+CREATE OR REPLACE VIEW public.v_all_transactions_classified WITH (security_invoker = true) AS
+WITH all_internal_ids AS (
+    SELECT withdrawal_id AS id FROM public.internal_transfer_pairs
+    UNION
+    SELECT deposit_id AS id FROM public.internal_transfer_pairs
+),
+corrected_transactions AS (
+    SELECT
+        t.*,
+        -- RE-CALCULATE logic for value_usd if it appears invalid (0 or missing logic)
+        COALESCE(
+            NULLIF(t.value_usd, 0), -- Use existing if valid
+            (
+                t.amount * COALESCE(
+                    der.rate,                        -- 1. Daily Rate
+                    (1.0 / NULLIF(der_inv.rate, 0)), -- 2. Inverse Daily Rate
+                    ap.current_price,                -- 3. Current Price (Prices)
+                    0
+                )
+            )
+        ) AS fixed_value_usd
+    FROM
+        public.all_transactions t
+    LEFT JOIN public.daily_exchange_rates der 
+        ON t.date::date = der.date 
+        AND t.asset = der.source_currency 
+        AND der.target_currency = 'USD'
+    LEFT JOIN public.daily_exchange_rates der_inv
+        ON t.date::date = der_inv.date 
+        AND der_inv.source_currency = 'USD' 
+        AND t.asset = der_inv.target_currency
+    LEFT JOIN public.asset_prices ap
+        ON t.asset = ap.asset
+)
+SELECT
+    t.id,
+    t.user_id,
+    t.reference_id,
+    t.date,
+    t.source,
+    t.chain,
+    t.description,
+    t.amount,
+    t.asset,
+    t.price,
+    t.fixed_value_usd AS value_usd, -- Renaming fixed column back to value_usd
+    -- Recalculate FIAT
+    (t.fixed_value_usd * COALESCE((SELECT rate FROM public.daily_exchange_rates WHERE source_currency='USD' AND target_currency='JPY' AND date=t.date::date LIMIT 1), 1)) AS value_jpy,
+    (t.fixed_value_usd * COALESCE((SELECT rate FROM public.daily_exchange_rates WHERE source_currency='USD' AND target_currency='EUR' AND date=t.date::date LIMIT 1), 1)) AS value_eur,
+    t.type,
+    t.usage,
+    t.note,
+    t.entity_id,
+    t.entity_name,
+    t.quote_asset,
+    t.wallet_address,
+    t.connection_name,
+    
+    CASE
+        WHEN ai.id IS NOT NULL THEN 'INTERNAL_TRANSFER'
+        WHEN t.usage IS NOT NULL THEN UPPER(t.usage)
+        WHEN t.type IN ('buy', 'sell') THEN UPPER(t.type)
+        WHEN t.type ILIKE 'deposit%' OR t.type ILIKE 'receive%' OR t.type = 'in' THEN 'DEPOSIT'
+        WHEN t.type ILIKE 'withdraw%' OR t.type ILIKE 'send%' OR t.type = 'out' THEN 'WITHDRAWAL'
+        ELSE 'OTHER'
+    END as transaction_type
+FROM
+    corrected_transactions t
+LEFT JOIN
+    all_internal_ids ai ON t.id = ai.id;
+
+
+-- =================================================================
+-- 2. Update v_holdings
+-- =================================================================
+-- NOTE: New columns (avg_buy_price, unrealized_pnl) MUST be at the END 
+-- to satisfy 'CREATE OR REPLACE VIEW' requirements (no column reordering/dropping).
+
+CREATE OR REPLACE VIEW public.v_holdings WITH (security_invoker = true) AS
+WITH
+latest_rates AS (
+    SELECT DISTINCT ON (target_currency)
+        target_currency,
+        rate
+    FROM public.daily_exchange_rates
+    WHERE source_currency = 'USD' AND target_currency IN ('JPY', 'EUR', 'GBP', 'INR', 'SGD')
+    ORDER BY target_currency, date DESC
+),
+acquisitions AS (
+    SELECT
+        user_id,
+        entity_id,
+        asset,
+        sum(value_usd) AS total_cost_basis,
+        sum(amount) AS total_amount_acquired
+    FROM
+        public.v_all_transactions_classified
+    WHERE
+        transaction_type = 'BUY' AND transaction_type <> 'INTERNAL_TRANSFER'
+    GROUP BY
+        user_id,
+        entity_id,
+        asset
+),
+current_quantities AS (
+    SELECT
+        user_id,
+        entity_id,
+        asset,
+        sum(
+            CASE
+                WHEN transaction_type IN ('BUY', 'DEPOSIT', 'IN', 'RECEIVE') THEN amount
+                WHEN transaction_type IN ('SELL', 'WITHDRAWAL', 'OUT', 'SEND') THEN -amount
+                ELSE 0
+            END
+        ) AS current_amount
+    FROM
+        public.v_all_transactions_classified
+    WHERE
+        transaction_type <> 'INTERNAL_TRANSFER'
+    GROUP BY
+        user_id,
+        entity_id,
+        asset
+)
+SELECT
+    cq.user_id,
+    cq.entity_id,
+    cq.asset,
+    cq.current_amount,
+    COALESCE(ap.current_price, 0) AS current_price,
+    (cq.current_amount * COALESCE(ap.current_price, 0)) AS current_value_usd,
+    (cq.current_amount * COALESCE(ap.current_price, 0) * COALESCE((SELECT rate FROM latest_rates WHERE target_currency = 'JPY'), 1)) AS current_value_jpy,
+    (cq.current_amount * COALESCE(ap.current_price, 0) * COALESCE((SELECT rate FROM latest_rates WHERE target_currency = 'EUR'), 1)) AS current_value_eur,
+    
+    now() AS last_updated, -- Keep this position here (assuming it was here before)
+    
+    -- APPENDING new columns at the end to avoid 'drop columns' error
+    COALESCE(acq.total_cost_basis / NULLIF(acq.total_amount_acquired, 0), 0) AS "avg_buy_price",
+    (cq.current_amount * COALESCE(ap.current_price, 0)) - (cq.current_amount * COALESCE(acq.total_cost_basis / NULLIF(acq.total_amount_acquired, 0), 0)) AS "unrealized_pnl"
+    
+FROM
+    current_quantities cq
+LEFT JOIN
+    public.asset_prices ap ON cq.asset = ap.asset
+LEFT JOIN
+    acquisitions acq ON cq.user_id = acq.user_id AND cq.asset = acq.asset AND (cq.entity_id = acq.entity_id OR (cq.entity_id IS NULL AND acq.entity_id IS NULL))
+WHERE
+    cq.current_amount > 1e-9;

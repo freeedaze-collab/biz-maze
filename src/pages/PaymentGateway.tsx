@@ -260,7 +260,7 @@ export default function PaymentGateway() {
             <li>Set <em>Webhook URL</em> above to your EC endpoint; validate signatures with the <em>Webhook secret</em> and reconcile orders when events arrive.</li>
           </ul>
           <pre className="whitespace-pre-wrap bg-background border rounded p-2">{`// server-side example (Node/Edge)
-const res = await fetch(process.env.SUPABASE_URL + '/functions/v1/payment-create-checkout', {
+const res = await fetch('YOUR_SUPABASE_URL' + '/functions/v1/payment-create-checkout', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + serviceRole },
   body: JSON.stringify({ title: 'EC order #123', amount: 120, currency: 'JPY' })

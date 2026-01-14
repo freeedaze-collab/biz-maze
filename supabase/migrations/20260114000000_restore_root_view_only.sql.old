@@ -1,0 +1,135 @@
+-- Restore USD Calculation (ROOT ONLY STRATEGY)
+-- Updates ONLY 'all_transactions' (Root View).
+-- Dependents (Classified, Holdings) should automatically see the new values.
+-- NO DROP. CREATE OR REPLACE ONLY.
+
+CREATE OR REPLACE VIEW public.all_transactions AS
+SELECT
+    t.id,
+    t.user_id,
+    t.reference_id,
+    t.date,
+    t.source,
+    t.chain,
+    t.description,
+    t.amount,
+    t.asset,
+    t.price,
+    
+    -- VALUE USD: Robust Calculation via Subqueries (Safe & Clean)
+    COALESCE(
+        NULLIF(t.value_usd, 0),
+        (
+            t.amount * COALESCE(
+                (SELECT rate FROM public.daily_exchange_rates WHERE source_currency = t.asset AND target_currency = 'USD' AND date = t.date::date LIMIT 1),
+                (1.0 / NULLIF((SELECT rate FROM public.daily_exchange_rates WHERE source_currency = 'USD' AND target_currency = t.asset AND date = t.date::date LIMIT 1), 0)),
+                (SELECT current_price FROM public.asset_prices WHERE asset = t.asset LIMIT 1),
+                0
+            )
+        )
+    )::numeric AS value_usd,
+    
+    -- FIAT (Recalculated based on the fixed value_usd)
+    (
+        COALESCE(
+            NULLIF(t.value_usd, 0),
+            (t.amount * COALESCE(
+                (SELECT rate FROM public.daily_exchange_rates WHERE source_currency = t.asset AND target_currency = 'USD' AND date = t.date::date LIMIT 1),
+                (1.0 / NULLIF((SELECT rate FROM public.daily_exchange_rates WHERE source_currency = 'USD' AND target_currency = t.asset AND date = t.date::date LIMIT 1), 0)),
+                (SELECT current_price FROM public.asset_prices WHERE asset = t.asset LIMIT 1),
+                0
+            ))
+        ) * COALESCE((SELECT rate FROM public.daily_exchange_rates WHERE source_currency='USD' AND target_currency='JPY' AND date=t.date::date LIMIT 1), 1)
+    )::numeric AS value_jpy,
+
+    (
+        COALESCE(
+            NULLIF(t.value_usd, 0),
+            (t.amount * COALESCE(
+                (SELECT rate FROM public.daily_exchange_rates WHERE source_currency = t.asset AND target_currency = 'USD' AND date = t.date::date LIMIT 1),
+                (1.0 / NULLIF((SELECT rate FROM public.daily_exchange_rates WHERE source_currency = 'USD' AND target_currency = t.asset AND date = t.date::date LIMIT 1), 0)),
+                (SELECT current_price FROM public.asset_prices WHERE asset = t.asset LIMIT 1),
+                0
+            ))
+        ) * COALESCE((SELECT rate FROM public.daily_exchange_rates WHERE source_currency='USD' AND target_currency='EUR' AND date=t.date::date LIMIT 1), 1)
+    )::numeric AS value_eur,
+
+    t.type,
+    t.usage,
+    t.note,
+    
+    -- Entity Logic (Preserved)
+    CASE
+        WHEN t.source = 'wallet' THEN wc.entity_id
+        WHEN t.source = 'exchange' THEN xc.entity_id
+        ELSE NULL
+    END AS entity_id,
+    
+    CASE
+        WHEN t.source = 'wallet' THEN e_w.name
+        WHEN t.source = 'exchange' THEN e_e.name
+        ELSE NULL
+    END AS entity_name,
+    
+    t.quote_asset,
+    t.wallet_address,
+    t.connection_name,
+    
+    -- Connection ID (Preserved, Strict Order)
+    CASE 
+        WHEN t.source = 'wallet' THEN wc.id::text 
+        WHEN t.source = 'exchange' THEN xc.id::text
+        ELSE NULL
+    END AS connection_id
+
+FROM (
+    -- Wallet Transactions
+    SELECT
+        wt.id::text AS reference_id,
+        ('w_' || wt.id) AS id,
+        wt.user_id,
+        wt.timestamp AS date,
+        'wallet'::text AS source,
+        wc.chain,
+        'Wallet Transaction'::text AS description,
+        wt.amount,
+        wt.asset AS asset,
+        CASE WHEN wt.amount IS NULL OR wt.amount = 0 THEN 0 ELSE wt.value_in_usd / wt.amount END AS price,
+        wt.value_in_usd AS value_usd,
+        wt.usage,
+        wt.note,
+        wt.type,
+        NULL::text AS quote_asset,
+        wt.wallet_address,
+        NULL::text AS connection_name
+    FROM wallet_transactions wt
+    JOIN wallet_connections wc ON wt.wallet_address = wc.wallet_address AND wt.user_id = wc.user_id
+
+    UNION ALL
+
+    -- Exchange Trades
+    SELECT
+        et.trade_id::text AS reference_id,
+        ('e_' || et.trade_id) AS id,
+        et.user_id,
+        et.ts AS date,
+        'exchange'::text AS source,
+        ec.exchange AS chain,
+        'Exchange Trade'::text AS description,
+        et.amount,
+        et.symbol AS asset,
+        et.price,
+        et.value_usd, 
+        et.usage,
+        et.note,
+        et.side AS type,
+        NULL::text AS quote_asset, 
+        NULL::text AS wallet_address,
+        ec.connection_name
+    FROM exchange_trades et
+    JOIN exchange_connections ec ON et.exchange_connection_id = ec.id
+) t
+LEFT JOIN wallet_connections wc ON t.source = 'wallet' AND t.wallet_address = wc.wallet_address AND t.user_id = wc.user_id
+LEFT JOIN exchange_connections xc ON t.source = 'exchange' AND t.connection_name = xc.connection_name
+LEFT JOIN entities e_w ON wc.entity_id = e_w.id
+LEFT JOIN entities e_e ON xc.entity_id = e_e.id;

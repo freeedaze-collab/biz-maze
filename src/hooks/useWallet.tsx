@@ -27,7 +27,13 @@ export function useWallet(opts: Options = {}) {
       throw new Error('No Supabase session. Please login first.')
     }
 
-    const resp = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/verify-2`, {
+    const fnUrl = import.meta.env.VITE_FUNCTION_VERIFY_WALLET
+    if (!fnUrl) {
+      console.error("VITE_FUNCTION_VERIFY_WALLET is missing.")
+      throw new Error("Configuration error: Missing verify function URL.")
+    }
+
+    const resp = await fetch(fnUrl, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,

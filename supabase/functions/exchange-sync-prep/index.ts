@@ -1,6 +1,6 @@
 
 // supabase/functions/exchange-sync-prep/index.ts
-import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
+// // // import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import ccxt from "https://esm.sh/ccxt@4.3.46"
 import { decode } from "https://deno.land/std@0.177.0/encoding/base64.ts";
@@ -51,7 +51,7 @@ Deno.serve(async (req) => {
     const { data: conn, error: connError } = await supabaseAdmin.from('exchange_connections').select('encrypted_blob').eq('user_id', user.id).eq('exchange', exchange).single();
     if (connError || !conn) throw new Error(`Connection not found for ${exchange}`);
     if (!conn.encrypted_blob) throw new Error(`Encrypted blob not found for ${exchange}`);
-    
+
     const credentials = await decryptBlob(conn.encrypted_blob);
 
     // @ts-ignore
@@ -66,13 +66,13 @@ Deno.serve(async (req) => {
 
     // ★★★ 最後の修正：JPY市場もれっきとした調査対象に加える ★★★
     const marketsToFetch = ex.symbols.filter(s => s.endsWith('/USDT') || s.endsWith('/USD') || s.endsWith('/JPY'));
-    
+
     // ★★★ 原点回帰：取得期間を「過去90日間」に固定 ★★★
     const since = Date.now() - 89 * 24 * 60 * 60 * 1000; // 安全マージンをとって89日
 
     const [deposits, withdrawals] = await Promise.all([
-        ex.fetchDeposits(undefined, since, undefined),
-        ex.fetchWithdrawals(undefined, since, undefined)
+      ex.fetchDeposits(undefined, since, undefined),
+      ex.fetchWithdrawals(undefined, since, undefined)
     ]);
 
     console.log(`[${exchange} PREP] Found: ${marketsToFetch.length} markets, ${deposits.length} deposits, ${withdrawals.length} withdrawals.`)

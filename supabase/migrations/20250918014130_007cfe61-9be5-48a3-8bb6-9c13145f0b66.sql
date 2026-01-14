@@ -1,5 +1,5 @@
 -- Create profiles table for user data
-CREATE TABLE public.profiles (
+CREATE TABLE IF NOT EXISTS public.profiles (
   id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
   user_id UUID NOT NULL UNIQUE REFERENCES auth.users(id) ON DELETE CASCADE,
   display_name TEXT,
@@ -10,7 +10,7 @@ CREATE TABLE public.profiles (
 );
 
 -- Create wallet_connections table for connecting crypto wallets to user accounts
-CREATE TABLE public.wallet_connections (
+CREATE TABLE IF NOT EXISTS public.wallet_connections (
   id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
   user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
   wallet_address TEXT NOT NULL,
@@ -25,7 +25,7 @@ CREATE TABLE public.wallet_connections (
 );
 
 -- Create transactions table for storing transaction history
-CREATE TABLE public.transactions (
+CREATE TABLE IF NOT EXISTS public.transactions (
   id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
   user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
   wallet_address TEXT NOT NULL,
@@ -47,7 +47,7 @@ CREATE TABLE public.transactions (
 );
 
 -- Create crypto_payments table for payment requests
-CREATE TABLE public.crypto_payments (
+CREATE TABLE IF NOT EXISTS public.crypto_payments (
   id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
   user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
   invoice_id TEXT,
@@ -70,82 +70,63 @@ ALTER TABLE public.wallet_connections ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.transactions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.crypto_payments ENABLE ROW LEVEL SECURITY;
 
--- Create RLS policies for profiles table
-CREATE POLICY "Users can view their own profile"
-ON public.profiles
-FOR SELECT
-USING (auth.uid() = user_id);
+DO $$
+BEGIN
+    -- Create RLS policies for profiles table
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'Users can view their own profile') THEN
+        CREATE POLICY "Users can view their own profile" ON public.profiles FOR SELECT USING (auth.uid() = user_id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'Users can create their own profile') THEN
+        CREATE POLICY "Users can create their own profile" ON public.profiles FOR INSERT WITH CHECK (auth.uid() = user_id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'Users can update their own profile') THEN
+        CREATE POLICY "Users can update their own profile" ON public.profiles FOR UPDATE USING (auth.uid() = user_id);
+    END IF;
 
-CREATE POLICY "Users can create their own profile"
-ON public.profiles
-FOR INSERT
-WITH CHECK (auth.uid() = user_id);
+    -- Create RLS policies for wallet_connections table
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'Users can view their own wallet connections') THEN
+        CREATE POLICY "Users can view their own wallet connections" ON public.wallet_connections FOR SELECT USING (auth.uid() = user_id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'Users can create their own wallet connections') THEN
+        CREATE POLICY "Users can create their own wallet connections" ON public.wallet_connections FOR INSERT WITH CHECK (auth.uid() = user_id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'Users can update their own wallet connections') THEN
+        CREATE POLICY "Users can update their own wallet connections" ON public.wallet_connections FOR UPDATE USING (auth.uid() = user_id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'Users can delete their own wallet connections') THEN
+        CREATE POLICY "Users can delete their own wallet connections" ON public.wallet_connections FOR DELETE USING (auth.uid() = user_id);
+    END IF;
 
-CREATE POLICY "Users can update their own profile"
-ON public.profiles
-FOR UPDATE
-USING (auth.uid() = user_id);
+    -- Create RLS policies for transactions table
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'Users can view their own transactions') THEN
+        CREATE POLICY "Users can view their own transactions" ON public.transactions FOR SELECT USING (auth.uid() = user_id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'Users can create their own transactions') THEN
+        CREATE POLICY "Users can create their own transactions" ON public.transactions FOR INSERT WITH CHECK (auth.uid() = user_id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'Users can update their own transactions') THEN
+        CREATE POLICY "Users can update their own transactions" ON public.transactions FOR UPDATE USING (auth.uid() = user_id);
+    END IF;
 
--- Create RLS policies for wallet_connections table
-CREATE POLICY "Users can view their own wallet connections"
-ON public.wallet_connections
-FOR SELECT
-USING (auth.uid() = user_id);
-
-CREATE POLICY "Users can create their own wallet connections"
-ON public.wallet_connections
-FOR INSERT
-WITH CHECK (auth.uid() = user_id);
-
-CREATE POLICY "Users can update their own wallet connections"
-ON public.wallet_connections
-FOR UPDATE
-USING (auth.uid() = user_id);
-
-CREATE POLICY "Users can delete their own wallet connections"
-ON public.wallet_connections
-FOR DELETE
-USING (auth.uid() = user_id);
-
--- Create RLS policies for transactions table
-CREATE POLICY "Users can view their own transactions"
-ON public.transactions
-FOR SELECT
-USING (auth.uid() = user_id);
-
-CREATE POLICY "Users can create their own transactions"
-ON public.transactions
-FOR INSERT
-WITH CHECK (auth.uid() = user_id);
-
-CREATE POLICY "Users can update their own transactions"
-ON public.transactions
-FOR UPDATE
-USING (auth.uid() = user_id);
-
--- Create RLS policies for crypto_payments table
-CREATE POLICY "Users can view their own crypto payments"
-ON public.crypto_payments
-FOR SELECT
-USING (auth.uid() = user_id);
-
-CREATE POLICY "Users can create their own crypto payments"
-ON public.crypto_payments
-FOR INSERT
-WITH CHECK (auth.uid() = user_id);
-
-CREATE POLICY "Users can update their own crypto payments"
-ON public.crypto_payments
-FOR UPDATE
-USING (auth.uid() = user_id);
+    -- Create RLS policies for crypto_payments table
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'Users can view their own crypto payments') THEN
+        CREATE POLICY "Users can view their own crypto payments" ON public.crypto_payments FOR SELECT USING (auth.uid() = user_id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'Users can create their own crypto payments') THEN
+        CREATE POLICY "Users can create their own crypto payments" ON public.crypto_payments FOR INSERT WITH CHECK (auth.uid() = user_id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'Users can update their own crypto payments') THEN
+        CREATE POLICY "Users can update their own crypto payments" ON public.crypto_payments FOR UPDATE USING (auth.uid() = user_id);
+    END IF;
+END $$;
 
 -- Create indexes for better performance
-CREATE INDEX idx_wallet_connections_user_id ON public.wallet_connections(user_id);
-CREATE INDEX idx_wallet_connections_address ON public.wallet_connections(wallet_address);
-CREATE INDEX idx_transactions_user_id ON public.transactions(user_id);
-CREATE INDEX idx_transactions_wallet_address ON public.transactions(wallet_address);
-CREATE INDEX idx_transactions_hash ON public.transactions(transaction_hash);
-CREATE INDEX idx_crypto_payments_user_id ON public.crypto_payments(user_id);
+CREATE INDEX IF NOT EXISTS idx_wallet_connections_user_id ON public.wallet_connections(user_id);
+CREATE INDEX IF NOT EXISTS idx_wallet_connections_address ON public.wallet_connections(wallet_address);
+CREATE INDEX IF NOT EXISTS idx_transactions_user_id ON public.transactions(user_id);
+CREATE INDEX IF NOT EXISTS idx_transactions_wallet_address ON public.transactions(wallet_address);
+CREATE INDEX IF NOT EXISTS idx_transactions_hash ON public.transactions(transaction_hash);
+CREATE INDEX IF NOT EXISTS idx_crypto_payments_user_id ON public.crypto_payments(user_id);
 
 -- Create function to update timestamps
 CREATE OR REPLACE FUNCTION public.update_updated_at_column()
@@ -157,22 +138,18 @@ END;
 $$ LANGUAGE plpgsql SET search_path = public;
 
 -- Create triggers for automatic timestamp updates
-CREATE TRIGGER update_profiles_updated_at
-  BEFORE UPDATE ON public.profiles
-  FOR EACH ROW
-  EXECUTE FUNCTION public.update_updated_at_column();
-
-CREATE TRIGGER update_wallet_connections_updated_at
-  BEFORE UPDATE ON public.wallet_connections
-  FOR EACH ROW
-  EXECUTE FUNCTION public.update_updated_at_column();
-
-CREATE TRIGGER update_transactions_updated_at
-  BEFORE UPDATE ON public.transactions
-  FOR EACH ROW
-  EXECUTE FUNCTION public.update_updated_at_column();
-
-CREATE TRIGGER update_crypto_payments_updated_at
-  BEFORE UPDATE ON public.crypto_payments
-  FOR EACH ROW
-  EXECUTE FUNCTION public.update_updated_at_column();
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'update_profiles_updated_at') THEN
+        CREATE TRIGGER update_profiles_updated_at BEFORE UPDATE ON public.profiles FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'update_wallet_connections_updated_at') THEN
+        CREATE TRIGGER update_wallet_connections_updated_at BEFORE UPDATE ON public.wallet_connections FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'update_transactions_updated_at') THEN
+        CREATE TRIGGER update_transactions_updated_at BEFORE UPDATE ON public.transactions FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'update_crypto_payments_updated_at') THEN
+        CREATE TRIGGER update_crypto_payments_updated_at BEFORE UPDATE ON public.crypto_payments FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+    END IF;
+END $$;

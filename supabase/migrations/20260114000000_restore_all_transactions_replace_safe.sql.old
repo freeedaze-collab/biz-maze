@@ -1,0 +1,229 @@
+-- Restore USD Calculation (SAFE REPLACE STRATEGY)
+-- Updates 'all_transactions' and dependents using CREATE OR REPLACE.
+-- NO DROP / NO CASCADE.
+-- Uses Subqueries for Rates to minimize structural changes/conflicts.
+
+-- 1. Update Root View 'all_transactions'
+CREATE OR REPLACE VIEW public.all_transactions AS
+SELECT
+    t.id,
+    t.user_id,
+    t.reference_id,
+    t.date,
+    t.source,
+    t.chain,
+    t.description,
+    t.amount,
+    t.asset,
+    t.price,
+    
+    -- VALUE USD: Robust Calculation via Subqueries (Safe & Clean)
+    COALESCE(
+        NULLIF(t.value_usd, 0),
+        (
+            t.amount * COALESCE(
+                (SELECT rate FROM public.daily_exchange_rates WHERE source_currency = t.asset AND target_currency = 'USD' AND date = t.date::date LIMIT 1),
+                (1.0 / NULLIF((SELECT rate FROM public.daily_exchange_rates WHERE source_currency = 'USD' AND target_currency = t.asset AND date = t.date::date LIMIT 1), 0)),
+                (SELECT current_price FROM public.asset_prices WHERE asset = t.asset LIMIT 1),
+                0
+            )
+        )
+    )::numeric AS value_usd,
+    
+    -- FIAT (Recalculated based on the fixed value_usd)
+    (
+        COALESCE(
+            NULLIF(t.value_usd, 0),
+            (t.amount * COALESCE(
+                (SELECT rate FROM public.daily_exchange_rates WHERE source_currency = t.asset AND target_currency = 'USD' AND date = t.date::date LIMIT 1),
+                (1.0 / NULLIF((SELECT rate FROM public.daily_exchange_rates WHERE source_currency = 'USD' AND target_currency = t.asset AND date = t.date::date LIMIT 1), 0)),
+                (SELECT current_price FROM public.asset_prices WHERE asset = t.asset LIMIT 1),
+                0
+            ))
+        ) * COALESCE((SELECT rate FROM public.daily_exchange_rates WHERE source_currency='USD' AND target_currency='JPY' AND date=t.date::date LIMIT 1), 1)
+    )::numeric AS value_jpy,
+
+    (
+        COALESCE(
+            NULLIF(t.value_usd, 0),
+            (t.amount * COALESCE(
+                (SELECT rate FROM public.daily_exchange_rates WHERE source_currency = t.asset AND target_currency = 'USD' AND date = t.date::date LIMIT 1),
+                (1.0 / NULLIF((SELECT rate FROM public.daily_exchange_rates WHERE source_currency = 'USD' AND target_currency = t.asset AND date = t.date::date LIMIT 1), 0)),
+                (SELECT current_price FROM public.asset_prices WHERE asset = t.asset LIMIT 1),
+                0
+            ))
+        ) * COALESCE((SELECT rate FROM public.daily_exchange_rates WHERE source_currency='USD' AND target_currency='EUR' AND date=t.date::date LIMIT 1), 1)
+    )::numeric AS value_eur,
+
+    t.type,
+    t.usage,
+    t.note,
+    
+    -- Entity Logic (Preserved)
+    CASE
+        WHEN t.source = 'wallet' THEN wc.entity_id
+        WHEN t.source = 'exchange' THEN xc.entity_id
+        ELSE NULL
+    END AS entity_id,
+    
+    CASE
+        WHEN t.source = 'wallet' THEN e_w.name
+        WHEN t.source = 'exchange' THEN e_e.name
+        ELSE NULL
+    END AS entity_name,
+    
+    t.quote_asset,
+    t.wallet_address,
+    t.connection_name,
+    
+    -- Connection ID (Preserved, Strict Order)
+    CASE 
+        WHEN t.source = 'wallet' THEN wc.id::text 
+        WHEN t.source = 'exchange' THEN xc.id::text
+        ELSE NULL
+    END AS connection_id
+
+FROM (
+    -- Wallet Transactions
+    SELECT
+        wt.id::text AS reference_id,
+        ('w_' || wt.id) AS id,
+        wt.user_id,
+        wt.timestamp AS date,
+        'wallet'::text AS source,
+        wc.chain,
+        'Wallet Transaction'::text AS description,
+        wt.amount,
+        wt.asset AS asset,
+        CASE WHEN wt.amount IS NULL OR wt.amount = 0 THEN 0 ELSE wt.value_in_usd / wt.amount END AS price,
+        wt.value_in_usd AS value_usd,
+        wt.usage,
+        wt.note,
+        wt.type,
+        NULL::text AS quote_asset,
+        wt.wallet_address,
+        NULL::text AS connection_name
+    FROM wallet_transactions wt
+    JOIN wallet_connections wc ON wt.wallet_address = wc.wallet_address AND wt.user_id = wc.user_id
+
+    UNION ALL
+
+    -- Exchange Trades
+    SELECT
+        et.trade_id::text AS reference_id,
+        ('e_' || et.trade_id) AS id,
+        et.user_id,
+        et.ts AS date,
+        'exchange'::text AS source,
+        ec.exchange AS chain,
+        'Exchange Trade'::text AS description,
+        et.amount,
+        et.symbol AS asset,
+        et.price,
+        et.value_usd, 
+        et.usage,
+        et.note,
+        et.side AS type,
+        NULL::text AS quote_asset, 
+        NULL::text AS wallet_address,
+        ec.connection_name
+    FROM exchange_trades et
+    JOIN exchange_connections ec ON et.exchange_connection_id = ec.id
+) t
+LEFT JOIN wallet_connections wc ON t.source = 'wallet' AND t.wallet_address = wc.wallet_address AND t.user_id = wc.user_id
+LEFT JOIN exchange_connections xc ON t.source = 'exchange' AND t.connection_name = xc.connection_name
+LEFT JOIN entities e_w ON wc.entity_id = e_w.id
+LEFT JOIN entities e_e ON xc.entity_id = e_e.id;
+
+-- 2. Update Classified View (Pass-through of corrected values)
+CREATE OR REPLACE VIEW public.v_all_transactions_classified AS
+WITH all_internal_ids AS (
+    SELECT withdrawal_id AS id FROM public.internal_transfer_pairs
+    UNION
+    SELECT deposit_id AS id FROM public.internal_transfer_pairs
+)
+SELECT
+    t.*,
+    CASE
+        WHEN ai.id IS NOT NULL THEN 'INTERNAL_TRANSFER'
+        WHEN t.type IN ('buy', 'sell') THEN UPPER(t.type)
+        WHEN t.type ILIKE 'deposit%' OR t.type ILIKE 'receive%' THEN 'DEPOSIT'
+        WHEN t.type ILIKE 'withdraw%' OR t.type ILIKE 'send%' THEN 'WITHDRAWAL'
+        ELSE 'OTHER'
+    END as transaction_type
+FROM
+    public.all_transactions t
+LEFT JOIN
+    all_internal_ids ai ON t.id = ai.id;
+
+
+-- 3. Update Holdings (Fixing PnL Logic via Replace)
+-- Note: 'acquisitions' CTE uses v_all_transactions_classified which now has correct value_usd
+CREATE OR REPLACE VIEW public.v_holdings AS
+WITH latest_rates AS (
+    SELECT DISTINCT ON (target_currency)
+        target_currency,
+        rate
+    FROM public.daily_exchange_rates
+    WHERE source_currency = 'USD' AND target_currency IN ('JPY', 'EUR', 'GBP', 'INR', 'SGD')
+    ORDER BY target_currency, date DESC
+),
+acquisitions AS (
+    SELECT
+        user_id,
+        entity_id,
+        asset,
+        sum(value_usd) AS total_cost_basis,
+        sum(amount) AS total_amount_acquired
+    FROM
+        public.v_all_transactions_classified
+    WHERE
+        transaction_type = 'BUY' AND transaction_type <> 'INTERNAL_TRANSFER'
+    GROUP BY
+        user_id,
+        entity_id,
+        asset
+),
+current_quantities AS (
+    SELECT
+        user_id,
+        entity_id,
+        asset,
+        sum(
+            CASE
+                WHEN transaction_type IN ('BUY', 'DEPOSIT', 'IN', 'RECEIVE') THEN amount
+                WHEN transaction_type IN ('SELL', 'WITHDRAWAL', 'OUT', 'SEND') THEN -amount
+                ELSE 0
+            END
+        ) AS current_amount
+    FROM
+        public.v_all_transactions_classified
+    WHERE
+        transaction_type <> 'INTERNAL_TRANSFER'
+    GROUP BY
+        user_id,
+        entity_id,
+        asset
+)
+SELECT
+    cq.user_id,
+    cq.entity_id,
+    cq.asset,
+    cq.current_amount,
+    COALESCE(ap.current_price, 0) AS current_price,
+    (cq.current_amount * COALESCE(ap.current_price, 0)) AS current_value_usd,
+    (cq.current_amount * COALESCE(ap.current_price, 0) * COALESCE((SELECT rate FROM latest_rates WHERE target_currency = 'JPY'), 1)) AS current_value_jpy,
+    (cq.current_amount * COALESCE(ap.current_price, 0) * COALESCE((SELECT rate FROM latest_rates WHERE target_currency = 'EUR'), 1)) AS current_value_eur,
+    
+    now() AS last_updated,
+    
+    COALESCE(acq.total_cost_basis / NULLIF(acq.total_amount_acquired, 0), 0) AS "avg_buy_price",
+    (cq.current_amount * COALESCE(ap.current_price, 0)) - (cq.current_amount * COALESCE(acq.total_cost_basis / NULLIF(acq.total_amount_acquired, 0), 0)) AS "unrealized_pnl"
+FROM
+    current_quantities cq
+LEFT JOIN
+    public.asset_prices ap ON cq.asset = ap.asset
+LEFT JOIN
+    acquisitions acq ON cq.user_id = acq.user_id AND cq.asset = acq.asset AND (cq.entity_id = acq.entity_id OR (cq.entity_id IS NULL AND acq.entity_id IS NULL))
+WHERE
+    cq.current_amount > 1e-9;

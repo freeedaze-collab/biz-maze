@@ -1,0 +1,126 @@
+-- BACKUP OF CURRENT VIEW DEFINITIONS (Before Restore)
+-- Use this file to REVERT changes if the new calculation logic is problematic.
+-- Derived from '20260111140000_force_recreate_views.sql'.
+
+-- 1. Recreate v_all_transactions_classified (Old Logic, No Numeric Casts)
+CREATE OR REPLACE VIEW public.v_all_transactions_classified AS
+WITH all_internal_ids AS (
+    SELECT withdrawal_id AS id FROM public.internal_transfer_pairs
+    UNION
+    SELECT deposit_id AS id FROM public.internal_transfer_pairs
+)
+SELECT
+    t.*,
+    CASE
+        WHEN ai.id IS NOT NULL THEN 'INTERNAL_TRANSFER'
+        WHEN t.type IN ('buy', 'sell') THEN UPPER(t.type)
+        WHEN t.type ILIKE 'deposit%' OR t.type ILIKE 'receive%' THEN 'DEPOSIT'
+        WHEN t.type ILIKE 'withdraw%' OR t.type ILIKE 'send%' THEN 'WITHDRAWAL'
+        ELSE 'OTHER'
+    END as transaction_type
+FROM
+    public.all_transactions t
+LEFT JOIN
+    all_internal_ids ai ON t.id = ai.id;
+
+-- 2. Recreate v_holdings (Old Logic, Missing PnL Columns)
+CREATE OR REPLACE VIEW public.v_holdings AS
+WITH latest_rates AS (
+    SELECT DISTINCT ON (target_currency)
+        target_currency,
+        rate
+    FROM public.daily_exchange_rates
+    WHERE source_currency = 'USD' AND target_currency IN ('JPY', 'EUR', 'GBP', 'INR', 'SGD')
+    ORDER BY target_currency, date DESC
+),
+current_quantities AS (
+    SELECT
+        user_id,
+        entity_id,
+        asset,
+        sum(
+            CASE
+                WHEN UPPER(type) IN ('IN', 'DEPOSIT', 'BUY', 'RECEIVE') THEN amount
+                WHEN UPPER(type) IN ('OUT', 'WITHDRAWAL', 'SELL', 'SEND') THEN -amount
+                ELSE 0
+            END
+        ) AS current_amount
+    FROM
+        public.v_all_transactions_classified
+    WHERE
+        transaction_type <> 'INTERNAL_TRANSFER'
+    GROUP BY
+        user_id,
+        entity_id,
+        asset
+)
+SELECT 
+    cq.user_id,
+    cq.entity_id,
+    cq.asset,
+    cq.current_amount,
+    ap.current_price AS current_price,
+    (cq.current_amount * ap.current_price) AS current_value_usd,
+    (cq.current_amount * ap.current_price * COALESCE((SELECT rate FROM latest_rates WHERE target_currency = 'JPY'), 1)) AS current_value_jpy,
+    (cq.current_amount * ap.current_price * COALESCE((SELECT rate FROM latest_rates WHERE target_currency = 'EUR'), 1)) AS current_value_eur,
+    now() AS last_updated
+FROM current_quantities cq
+LEFT JOIN public.asset_prices ap ON TRIM(UPPER(cq.asset)) = TRIM(UPPER(ap.asset))
+WHERE cq.current_amount > 1e-9;
+
+-- 3. Recreate Reports (Old Logic)
+CREATE OR REPLACE VIEW public.v_profit_loss_statement AS
+SELECT
+    user_id,
+    entity_id,
+    date,
+    CASE
+        WHEN usage = 'sales_revenue' THEN 'Sales Revenue (IAS 2)'
+        WHEN usage = 'other_revenue' THEN 'Consideration Revenue (IFRS 15)'
+        WHEN usage = 'cost_of_sales' THEN 'Cost of Goods Sold (IAS 2)'
+        WHEN usage = 'staking' THEN 'Staking & Mining Rewards'
+        WHEN usage = 'mining' THEN 'Staking & Mining Rewards'
+        WHEN usage = 'gas_fee' THEN 'Gas & Network Fees'
+        WHEN usage = 'lost' THEN 'Loss of Crypto (Unrecoverable)'
+        ELSE usage
+    END AS account,
+    value_usd AS amount_usd,
+    value_jpy AS amount_jpy,
+    value_eur AS amount_eur,
+    
+    value_usd AS balance, 
+    value_usd AS balance_usd,
+    value_jpy AS balance_jpy,
+    value_eur AS balance_eur
+FROM all_transactions
+WHERE usage IS NOT NULL AND type != 'transfer';
+
+CREATE OR REPLACE VIEW public.v_balance_sheet AS
+SELECT
+    user_id,
+    entity_id,
+    timezone('utc', now()) AS date,
+    'Inventory (Trading Crypto)' AS account,
+    current_value_usd AS balance,
+    current_value_usd AS balance_usd,
+    current_value_jpy AS balance_jpy,
+    current_value_eur AS balance_eur
+FROM v_holdings;
+
+CREATE OR REPLACE VIEW public.v_cash_flow_statement AS
+SELECT
+    user_id,
+    entity_id,
+    date,
+    CASE
+        WHEN usage = 'sales_revenue' THEN 'Inflow from Sales (IAS 2 & IFRS 15)'
+        WHEN usage = 'cost_of_sales' THEN 'Outflow for Inventory (IAS 2)'
+        WHEN usage = 'gas_fee' THEN 'Outflow for Gas Fees'
+        ELSE usage
+    END AS item,
+    value_usd AS amount,
+    value_usd AS amount_usd,
+    value_jpy AS amount_jpy,
+    value_eur AS amount_eur
+FROM all_transactions
+WHERE usage IS NOT NULL;

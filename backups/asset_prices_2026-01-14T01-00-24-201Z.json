@@ -1,0 +1,37 @@
+[
+  {
+    "asset": "AVAX",
+    "current_price": 48,
+    "last_updated": "2026-01-10T14:21:08.04587+00:00"
+  },
+  {
+    "asset": "BNB",
+    "current_price": 660,
+    "last_updated": "2026-01-10T14:21:08.04587+00:00"
+  },
+  {
+    "asset": "BTC",
+    "current_price": 98000,
+    "last_updated": "2026-01-10T14:21:08.04587+00:00"
+  },
+  {
+    "asset": "ETH",
+    "current_price": 3600,
+    "last_updated": "2026-01-10T14:21:08.04587+00:00"
+  },
+  {
+    "asset": "MATIC",
+    "current_price": 1.25,
+    "last_updated": "2026-01-10T14:21:08.04587+00:00"
+  },
+  {
+    "asset": "USDC",
+    "current_price": 1,
+    "last_updated": "2026-01-10T14:21:08.04587+00:00"
+  },
+  {
+    "asset": "USDT",
+    "current_price": 1,
+    "last_updated": "2026-01-10T14:21:08.04587+00:00"
+  }
+]

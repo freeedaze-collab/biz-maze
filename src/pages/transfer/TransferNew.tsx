@@ -21,7 +21,9 @@ function ethToHexWei(eth: string) {
 }
 
 // Edge Function フルURL
-const PREFLIGHT_URL = `${(import.meta.env.VITE_SUPABASE_URL || "").replace(/\/+$/, "")}/functions/v1/preflight_transfer`;
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+if (!supabaseUrl) console.error("VITE_SUPABASE_URL is missing.");
+const PREFLIGHT_URL = `${(supabaseUrl || "").replace(/\/+$/, "")}/functions/v1/preflight_transfer`;
 
 export default function TransferNew() {
   const { address: connected, isConnected } = useAccount();

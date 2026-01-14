@@ -1,5 +1,22 @@
 // src/main.tsx
 import React from "react";
+
+// HOTFIX: Patch postMessage to avoid "Invalid target origin 'null'" error
+// This likely comes from a dev tool or library (e.g. lovable-tagger or similar) passing null origin.
+try {
+  const originalPostMessage = window.postMessage;
+  window.postMessage = function (message: any, targetOrigin: string, transfer?: Transferable[]) {
+    if (targetOrigin === "null" || targetOrigin === null) {
+      // console.warn("Intercepted postMessage with invalid origin 'null', replacing with '*'", message);
+      // Replace invalid origin with wildcard to prevent crash
+      targetOrigin = "*";
+    }
+    return originalPostMessage.call(window, message, targetOrigin, transfer as any);
+  };
+} catch (e) {
+  console.error("Failed to patch postMessage", e);
+}
+
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import "./index.css";
