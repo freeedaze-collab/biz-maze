@@ -270,6 +270,20 @@ export default function WalletSelection() {
     });
   }
 
+  const handleLinkWithWalletConnect = async (address: string, chainSlug: string, chainName: string) => {
+    let provider: WCProvider | null = null;
+    await sharedLinkLogic(chainSlug, async (token) => {
+      provider = await createWCProvider();
+      await provider.connect();
+      const [current] = (await provider.request({ method: "eth_accounts" })) as string[];
+      if (current.toLowerCase() !== address.toLowerCase()) throw new Error("Selected account differs from input address.");
+      const message = await getNonce(token);
+      const signature = (await provider.request({ method: "personal_sign", params: [toHex(message), current] })) as string;
+      return postVerify({ address, signature, message, chain: chainName, walletType: 'walletconnect' }, token);
+    }).finally(async () => { await provider?.disconnect?.(); });
+  }
+
+
   const handleLinkWithPhantomBitcoin = async (address: string, chainSlug: string) => {
     await sharedLinkLogic(chainSlug, async (token) => {
       const provider = (window as any).phantom?.bitcoin;
