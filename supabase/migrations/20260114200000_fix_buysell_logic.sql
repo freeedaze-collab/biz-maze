@@ -81,9 +81,9 @@ base_transactions AS (
             ec.exchange AS chain,
             'Exchange Trade'::text AS description,
             
-            -- FIXED: SELL uses fee_currency (crypto sold amount)
+            -- FIXED: SELL uses fee (not fee_currency which is text)
             CASE 
-                WHEN et.side = 'sell' THEN et.fee_currency
+                WHEN et.side = 'sell' THEN et.fee
                 ELSE et.amount
             END AS amount,
             
@@ -101,7 +101,7 @@ base_transactions AS (
                         CASE WHEN et.symbol LIKE '%/JPY' THEN et.amount * (SELECT rate FROM jpy_to_usd) ELSE NULL END)
                 WHEN et.side = 'buy' THEN 
                     COALESCE(et.value_usd,
-                        CASE WHEN et.symbol LIKE '%/JPY' THEN et.fee_currency * (SELECT rate FROM jpy_to_usd) ELSE NULL END)
+                        CASE WHEN et.symbol LIKE '%/JPY' THEN et.fee * (SELECT rate FROM jpy_to_usd) ELSE NULL END)
                 WHEN et.side ILIKE 'withdraw%' THEN
                     et.amount * COALESCE(
                         (SELECT current_price FROM public.asset_prices ap 
