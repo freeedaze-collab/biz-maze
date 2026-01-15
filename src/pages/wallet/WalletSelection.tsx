@@ -441,6 +441,7 @@ export default function WalletSelection() {
                         onChange={(e) => handleUpdateWalletEntity(wallet.id, e.target.value)}
                       >
                         <option value="">Not assigned</option>
+                        {companyName && <option value="owner">{companyName} (Owner)</option>}
                         {entities.map(ent => (
                           <option key={ent.id} value={ent.id}>{ent.name}</option>
                         ))}

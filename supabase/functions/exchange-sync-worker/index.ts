@@ -120,8 +120,14 @@ Deno.serve(async (req) => {
       let value_usd: number | null = null;
       if (rec.symbol && rec.price != null && rec.amount != null) {
         const quoteCurrency = rec.symbol.split('/')[1];
-        if (quoteCurrency === 'USD' || quoteCurrency === 'USDT') {
-          value_usd = rec.price * rec.amount;
+        const tradeValue = rec.price * rec.amount;
+        if (quoteCurrency === 'USD' || quoteCurrency === 'USDT' || quoteCurrency === 'BUSD') {
+          value_usd = tradeValue;
+        } else if (quoteCurrency === 'JPY') {
+          // Convert JPY to USD using approximate rate (will be refined by database view)
+          // This ensures we never have null value_usd for JPY pairs
+          const jpyToUsdRate = 0.0067; // ~150 JPY per USD
+          value_usd = tradeValue * jpyToUsdRate;
         }
       }
 

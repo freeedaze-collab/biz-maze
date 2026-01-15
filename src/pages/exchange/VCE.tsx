@@ -168,7 +168,7 @@ function ExistingConnections({ onConnectionUpdate }: { onConnectionUpdate: numbe
     setLoading(prev => ({ ...prev, [connectionId]: true }));
     toast({ title: `Sync started for ${name}...` });
     try {
-      const { data, error } = await supabase.functions.invoke('exchange-sync', { body: { connection_id: connectionId } });
+      const { data, error } = await supabase.functions.invoke('exchange-sync-all', { body: { connection_id: connectionId } });
       if (error) throw new Error(error.message);
       toast({ title: `Sync Complete for ${name}`, description: `Saved ${data.count} trades.` });
     } catch (e: any) {
