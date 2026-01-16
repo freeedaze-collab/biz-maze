@@ -65,7 +65,7 @@ export default function Index() {
       <header className="border-b border-border bg-card/80 backdrop-blur-sm sticky top-0 z-50">
         <div className="container mx-auto px-6 py-4 flex items-center justify-between">
           <div className="text-xl font-semibold text-foreground tracking-tight">
-            Digital Asset Finance
+            Dollar-biz
           </div>
           <nav className="hidden md:flex items-center gap-8">
             <a href="#capabilities" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
@@ -90,8 +90,11 @@ export default function Index() {
         <div className="container mx-auto px-6 py-24 md:py-32 relative">
           <div className="max-w-4xl mx-auto text-center">
             <h1 className="text-4xl md:text-5xl lg:text-6xl font-bold text-foreground tracking-tight leading-tight mb-6">
-              Digital Asset Finance Infrastructure
+              Dollar-biz
             </h1>
+            <p className="text-lg md:text-xl text-muted-foreground max-w-2xl mx-auto mb-4">
+              Digital Asset Finance Infrastructure
+            </p>
             <p className="text-lg md:text-xl text-muted-foreground max-w-2xl mx-auto mb-10 leading-relaxed">
               Automated workflows for accounting, treasury, and digital asset operations.
             </p>
@@ -114,9 +117,9 @@ export default function Index() {
           {/* Hero Visual */}
           <div className="mt-16 max-w-5xl mx-auto">
             <div className="relative rounded-xl border border-border bg-gradient-to-b from-secondary/50 to-muted/30 p-1 shadow-lg">
-              <img 
-                src={dashboardScreenshot} 
-                alt="Dashboard - Digital Asset Finance Platform" 
+              <img
+                src={dashboardScreenshot}
+                alt="Dashboard - Digital Asset Finance Platform"
                 className="rounded-lg w-full h-auto"
               />
             </div>
@@ -163,9 +166,9 @@ export default function Index() {
               </p>
             </div>
             <div className="rounded-xl border border-border bg-gradient-to-b from-secondary/30 to-muted/20 p-1.5 shadow-md">
-              <img 
-                src={financialStatementsScreenshot} 
-                alt="Financial Statements - IFRS-aligned reporting" 
+              <img
+                src={financialStatementsScreenshot}
+                alt="Financial Statements - IFRS-aligned reporting"
                 className="rounded-lg w-full h-auto"
               />
             </div>
@@ -257,7 +260,7 @@ export default function Index() {
         <div className="container mx-auto px-6">
           <div className="flex flex-col md:flex-row items-center justify-between gap-6">
             <div className="text-sm text-muted-foreground">
-              © {new Date().getFullYear()} Digital Asset Finance Infrastructure
+              © {new Date().getFullYear()} Dollar-biz
             </div>
             <div className="flex items-center gap-6 text-sm">
               <a href="#" className="text-muted-foreground hover:text-foreground transition-colors">
