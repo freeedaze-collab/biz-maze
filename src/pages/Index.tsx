@@ -1,6 +1,7 @@
 // src/pages/Index.tsx
 import { Button } from "@/components/ui/button";
 import { Link } from "react-router-dom";
+import { useEffect, useState } from "react";
 import {
   Wallet,
   FileSpreadsheet,
@@ -10,6 +11,14 @@ import {
   Settings,
   CheckCircle2,
   ArrowRight,
+  TrendingUp,
+  Globe,
+  ShieldCheck,
+  Zap,
+  UserPlus,
+  Link2,
+  RefreshCw,
+  BookOpen,
 } from "lucide-react";
 import dashboardScreenshot from "@/assets/dashboard-screenshot.png";
 import financialStatementsScreenshot from "@/assets/financial-statements-screenshot.png";
@@ -59,6 +68,18 @@ const valueProps = [
 ];
 
 export default function Index() {
+  const [showStickyButton, setShowStickyButton] = useState(false);
+
+  useEffect(() => {
+    const handleScroll = () => {
+      // Show sticky button when scrolled down 400px
+      setShowStickyButton(window.scrollY > 400);
+    };
+
+    window.addEventListener('scroll', handleScroll);
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, []);
+
   return (
     <div className="min-h-screen bg-card">
       {/* Header */}
@@ -78,7 +99,7 @@ export default function Index() {
               <Link to="/auth/login">Sign In</Link>
             </Button>
             <Button asChild size="sm">
-              <Link to="/signup">Request Access</Link>
+              <Link to="/signup">Sign Up</Link>
             </Button>
           </nav>
         </div>
@@ -86,91 +107,124 @@ export default function Index() {
 
       {/* Hero Section */}
       <section className="relative overflow-hidden">
-        <div className="absolute inset-0 bg-gradient-to-br from-primary/5 via-transparent to-accent/5" />
-        <div className="container mx-auto px-6 py-24 md:py-32 relative">
-          <div className="max-w-4xl mx-auto text-center">
-            <h1 className="text-4xl md:text-5xl lg:text-6xl font-bold text-foreground tracking-tight leading-tight mb-6">
-              Dollar-biz
-            </h1>
-            <p className="text-lg md:text-xl text-muted-foreground max-w-2xl mx-auto mb-4">
-              Digital Asset Finance Infrastructure
-            </p>
-            <p className="text-lg md:text-xl text-muted-foreground max-w-2xl mx-auto mb-10 leading-relaxed">
-              Automated workflows for accounting, treasury, and digital asset operations.
-            </p>
-            <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-6">
-              <Button asChild size="lg" className="min-w-[200px]">
+        {/* Crypto-themed background */}
+        <div className="absolute inset-0 bg-gradient-to-br from-blue-500/10 via-purple-500/5 to-cyan-500/10" />
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-blue-400/20 via-transparent to-transparent" />
+        <div className="absolute inset-0 bg-grid-pattern opacity-5" />
+
+        <div className="container mx-auto px-6 py-12 md:py-16 relative">
+          <div className="max-w-6xl mx-auto">
+            {/* Title */}
+            <div className="text-center mb-8">
+              <h1 className="text-4xl md:text-5xl lg:text-6xl font-bold text-foreground tracking-tight leading-tight mb-6">
+                Dollar-biz
+              </h1>
+              <p className="text-lg md:text-xl text-muted-foreground max-w-2xl mx-auto">
+                Digital Asset Finance Infrastructure
+              </p>
+            </div>
+
+            {/* Key Features - Side by Side */}
+            <div className="grid md:grid-cols-2 gap-6 max-w-4xl mx-auto mb-8">
+              <div className="group relative overflow-hidden rounded-2xl bg-gradient-to-br from-primary/20 to-primary/5 border-2 border-primary/30 p-6 hover:shadow-xl hover:shadow-primary/20 transition-all duration-300">
+                <div className="absolute top-0 right-0 w-32 h-32 bg-primary/10 rounded-full blur-3xl" />
+                <div className="relative">
+                  <div className="w-14 h-14 rounded-xl bg-primary/20 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                    <TrendingUp className="h-7 w-7 text-primary" />
+                  </div>
+                  <h3 className="text-2xl font-bold text-foreground mb-4">
+                    📊 Auto Crypto Accounting
+                  </h3>
+                  <p className="text-lg font-semibold text-foreground/90 mb-2">
+                    Real-time, Auditable Financial Statements
+                  </p>
+                  <p className="text-muted-foreground">
+                    Instantly generate financial statements with real-time updates, full audit trails, and easy analysis capabilities
+                  </p>
+                </div>
+              </div>
+
+              <div className="group relative overflow-hidden rounded-2xl bg-gradient-to-br from-accent/20 to-accent/5 border-2 border-accent/30 p-6 hover:shadow-xl hover:shadow-accent/20 transition-all duration-300">
+                <div className="absolute top-0 right-0 w-32 h-32 bg-accent/10 rounded-full blur-3xl" />
+                <div className="relative">
+                  <div className="w-14 h-14 rounded-xl bg-accent/20 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                    <Globe className="h-7 w-7 text-accent" />
+                  </div>
+                  <h3 className="text-2xl font-bold text-foreground mb-4">
+                    🌐 Coverage
+                  </h3>
+                  <p className="text-lg font-semibold text-foreground/90 mb-2">
+                    Multi-Chain & Multi-Exchange Support
+                  </p>
+                  <p className="text-muted-foreground">
+                    Support for numerous cryptocurrencies, wallets, and exchanges — with continuous expansion
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* CTA Buttons */}
+            <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
+              <Button asChild size="lg" className="min-w-[200px] text-lg h-12">
                 <Link to="/signup">
-                  Request Early Access
-                  <ArrowRight className="ml-2 h-4 w-4" />
+                  Sign Up
+                  <ArrowRight className="ml-2 h-5 w-5" />
                 </Link>
               </Button>
-              <Button asChild variant="outline" size="lg" className="min-w-[200px]">
+              <Button asChild variant="outline" size="lg" className="min-w-[200px] text-lg h-12">
                 <Link to="/auth/login">Sign In</Link>
               </Button>
             </div>
-            <p className="text-sm text-muted-foreground">
-              Complimentary evaluation access available
-            </p>
-          </div>
-
-          {/* Hero Visual */}
-          <div className="mt-16 max-w-5xl mx-auto">
-            <div className="relative rounded-xl border border-border bg-gradient-to-b from-secondary/50 to-muted/30 p-1 shadow-lg">
-              <img
-                src={dashboardScreenshot}
-                alt="Dashboard - Digital Asset Finance Platform"
-                className="rounded-lg w-full h-auto"
-              />
-            </div>
           </div>
         </div>
       </section>
 
-      {/* Value Proposition Section */}
-      <section className="border-t border-border bg-background py-20 md:py-28">
+      {/* Early Access Benefits Section */}
+      <section className="border-t border-border bg-gradient-to-b from-card to-background py-8 md:py-12">
         <div className="container mx-auto px-6">
-          <div className="max-w-3xl mx-auto text-center mb-16">
-            <h2 className="text-3xl md:text-4xl font-bold text-foreground tracking-tight mb-4">
-              Why finance teams rely on our infrastructure
-            </h2>
-          </div>
-          <div className="max-w-3xl mx-auto">
-            <div className="grid sm:grid-cols-2 gap-6">
-              {valueProps.map((prop, index) => (
-                <div
-                  key={index}
-                  className="flex items-start gap-4 p-5 rounded-xl bg-card border border-border hover:border-primary/30 transition-colors"
-                >
-                  <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
-                    <CheckCircle2 className="h-5 w-5 text-primary" />
-                  </div>
-                  <p className="text-foreground font-medium pt-2">{prop}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Product Visual Section */}
-      <section id="platform" className="border-t border-border bg-card py-20 md:py-28">
-        <div className="container mx-auto px-6">
-          <div className="max-w-5xl mx-auto">
+          <div className="max-w-4xl mx-auto">
             <div className="text-center mb-12">
               <h2 className="text-3xl md:text-4xl font-bold text-foreground tracking-tight mb-4">
-                A unified platform for digital asset operations
+                Early Access Benefits
               </h2>
-              <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
-                Connect wallets, automate entries, and streamline digital asset workflows.
+              <p className="text-lg text-muted-foreground">
+                Join now and unlock exclusive advantages
               </p>
             </div>
-            <div className="rounded-xl border border-border bg-gradient-to-b from-secondary/30 to-muted/20 p-1.5 shadow-md">
-              <img
-                src={financialStatementsScreenshot}
-                alt="Financial Statements - IFRS-aligned reporting"
-                className="rounded-lg w-full h-auto"
-              />
+            <div className="grid md:grid-cols-3 gap-6">
+              <div className="p-6 rounded-xl bg-card border border-border hover:border-primary/50 transition-all">
+                <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center mb-4">
+                  <Zap className="h-6 w-6 text-primary" />
+                </div>
+                <h3 className="font-semibold text-foreground mb-3 text-lg">
+                  Rapid Feature Development
+                </h3>
+                <p className="text-muted-foreground">
+                  Your feature requests will be implemented or refined within just a few days
+                </p>
+              </div>
+              <div className="p-6 rounded-xl bg-card border border-border hover:border-primary/50 transition-all">
+                <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center mb-4">
+                  <Calculator className="h-6 w-6 text-primary" />
+                </div>
+                <h3 className="font-semibold text-foreground mb-3 text-lg">
+                  Pricing Flexibility
+                </h3>
+                <p className="text-muted-foreground">
+                  Participate in pricing discussions for the paid version before launch
+                </p>
+              </div>
+              <div className="p-6 rounded-xl bg-card border border-border hover:border-primary/50 transition-all">
+                <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center mb-4">
+                  <Shield className="h-6 w-6 text-primary" />
+                </div>
+                <h3 className="font-semibold text-foreground mb-3 text-lg">
+                  Unlimited Support
+                </h3>
+                <p className="text-muted-foreground">
+                  Free unlimited support and consultations — for as long as you use the platform
+                </p>
+              </div>
             </div>
           </div>
         </div>
@@ -215,6 +269,105 @@ export default function Index() {
         </div>
       </section>
 
+
+
+      {/* Auditable IFRS Crypto Accounting Section */}
+      <section className="border-t border-border bg-card py-20 md:py-28">
+        <div className="container mx-auto px-6">
+          <div className="max-w-3xl mx-auto text-center mb-16">
+            <h2 className="text-3xl md:text-4xl font-bold text-foreground tracking-tight mb-4">
+              Auditable IFRS Crypto Accounting
+            </h2>
+          </div>
+          <div className="max-w-4xl mx-auto">
+            <div className="grid md:grid-cols-3 gap-6">
+              <div className="p-6 rounded-xl bg-background border border-border hover:border-primary/30 transition-all">
+                <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center mb-4">
+                  <Zap className="h-6 w-6 text-primary" />
+                </div>
+                <h3 className="font-semibold text-foreground mb-2">Sync Blockchain Transactions</h3>
+                <p className="text-sm text-muted-foreground">
+                  Automatically sync all transactions from wallets, exchanges, and custodians
+                </p>
+              </div>
+              <div className="p-6 rounded-xl bg-background border border-border hover:border-primary/30 transition-all">
+                <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center mb-4">
+                  <TrendingUp className="h-6 w-6 text-primary" />
+                </div>
+                <h3 className="font-semibold text-foreground mb-2">Track Gains & Losses</h3>
+                <p className="text-sm text-muted-foreground">
+                  Automatically track realised and unrealised gains and losses with cost basis details, live market rates
+                </p>
+              </div>
+              <div className="p-6 rounded-xl bg-background border border-border hover:border-primary/30 transition-all">
+                <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center mb-4">
+                  <Globe className="h-6 w-6 text-primary" />
+                </div>
+                <h3 className="font-semibold text-foreground mb-2">Consolidated Accounting</h3>
+                <p className="text-sm text-muted-foreground">
+                  Covering Consolidated and non-consolidated Accounting
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* How-To Section */}
+      <section className="border-t border-border bg-background py-20 md:py-28">
+        <div className="container mx-auto px-6">
+          <div className="max-w-3xl mx-auto text-center mb-16">
+            <h2 className="text-3xl md:text-4xl font-bold text-foreground tracking-tight mb-4">
+              How to financial document with Dollar-biz
+            </h2>
+          </div>
+          <div className="max-w-4xl mx-auto">
+            <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-6">
+              <div className="text-center p-6 rounded-xl bg-card border border-border hover:border-primary/30 transition-all">
+                <div className="w-14 h-14 rounded-xl bg-primary/10 flex items-center justify-center mx-auto mb-4">
+                  <UserPlus className="h-7 w-7 text-primary" />
+                </div>
+                <div className="text-2xl font-bold text-primary mb-2">1</div>
+                <h3 className="font-semibold text-foreground mb-2">Register and Set Profile</h3>
+                <p className="text-sm text-muted-foreground">
+                  Create your account and configure your company profile
+                </p>
+              </div>
+              <div className="text-center p-6 rounded-xl bg-card border border-border hover:border-primary/30 transition-all">
+                <div className="w-14 h-14 rounded-xl bg-primary/10 flex items-center justify-center mx-auto mb-4">
+                  <Link2 className="h-7 w-7 text-primary" />
+                </div>
+                <div className="text-2xl font-bold text-primary mb-2">2</div>
+                <h3 className="font-semibold text-foreground mb-2">Connect Wallet and VCE</h3>
+                <p className="text-sm text-muted-foreground">
+                  Link your crypto wallets and virtual currency exchanges
+                </p>
+              </div>
+              <div className="text-center p-6 rounded-xl bg-card border border-border hover:border-primary/30 transition-all">
+                <div className="w-14 h-14 rounded-xl bg-primary/10 flex items-center justify-center mx-auto mb-4">
+                  <RefreshCw className="h-7 w-7 text-primary" />
+                </div>
+                <div className="text-2xl font-bold text-primary mb-2">3</div>
+                <h3 className="font-semibold text-foreground mb-2">Sync History</h3>
+                <p className="text-sm text-muted-foreground">
+                  Automatically import all transaction history
+                </p>
+              </div>
+              <div className="text-center p-6 rounded-xl bg-card border border-border hover:border-primary/30 transition-all">
+                <div className="w-14 h-14 rounded-xl bg-primary/10 flex items-center justify-center mx-auto mb-4">
+                  <BookOpen className="h-7 w-7 text-primary" />
+                </div>
+                <div className="text-2xl font-bold text-primary mb-2">4</div>
+                <h3 className="font-semibold text-foreground mb-2">Journalize Every History</h3>
+                <p className="text-sm text-muted-foreground">
+                  Generate accounting entries for all transactions
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
       {/* Custom Development Section */}
       <section className="border-t border-border bg-card py-20 md:py-28">
         <div className="container mx-auto px-6">
@@ -237,20 +390,34 @@ export default function Index() {
         <div className="container mx-auto px-6">
           <div className="max-w-2xl mx-auto text-center">
             <h2 className="text-3xl md:text-4xl font-bold text-foreground tracking-tight mb-6">
-              Start with Early Access
+              Sign Up Now
             </h2>
             <p className="text-muted-foreground mb-8">
-              Get started with complimentary evaluation access to explore the platform.
+              Get started with early access to explore the platform and shape its future.
             </p>
-            <Button asChild size="lg" className="min-w-[220px]">
+            <Button asChild size="lg" className="min-w-[220px] mb-6">
               <Link to="/signup">
-                Request Early Access
+                Sign Up
                 <ArrowRight className="ml-2 h-4 w-4" />
               </Link>
             </Button>
-            <p className="text-sm text-muted-foreground mt-4">
-              Complimentary evaluation access available now
-            </p>
+            <div className="max-w-xl mx-auto text-sm text-muted-foreground space-y-2">
+              <p className="font-medium">If you access now you can get:</p>
+              <ul className="space-y-1 text-left">
+                <li className="flex items-start gap-2">
+                  <CheckCircle2 className="h-4 w-4 text-primary mt-0.5 flex-shrink-0" />
+                  <span>Features can be added or refined based on your requests in a few days</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <CheckCircle2 className="h-4 w-4 text-primary mt-0.5 flex-shrink-0" />
+                  <span>Pricing discussions for the paid version</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <CheckCircle2 className="h-4 w-4 text-primary mt-0.5 flex-shrink-0" />
+                  <span>Any additional questions or requests can be discussed freely, without cost — and this support will remain available for as long as you continue using the platform</span>
+                </li>
+              </ul>
+            </div>
           </div>
         </div>
       </section>
@@ -276,6 +443,18 @@ export default function Index() {
           </div>
         </div>
       </footer>
+
+      {/* Sticky Sign Up Button */}
+      {showStickyButton && (
+        <div className="fixed bottom-6 right-6 z-50 animate-in slide-in-from-bottom-5 fade-in duration-300">
+          <Button asChild size="lg" className="min-w-[200px] text-lg h-12 shadow-lg hover:shadow-xl transition-shadow">
+            <Link to="/signup">
+              Sign Up
+              <ArrowRight className="ml-2 h-5 w-5" />
+            </Link>
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
