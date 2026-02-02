@@ -61,10 +61,10 @@ const capabilities = [
 ];
 
 const valueProps = [
-  "Reliable on-chain → ledger automation",
-  "GAAP-aligned accounting workflows",
-  "Treasury controls & auditability",
-  "Configurable for your internal processes",
+  "Import to CSV",
+  "Multi-Chain & Multi-Exchange Support",
+  "Auditable",
+  "IFRS accounting, following realtime rule changes",
 ];
 
 export default function Index() {
@@ -92,13 +92,10 @@ export default function Index() {
             <a href="#capabilities" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
               Capabilities
             </a>
-            <a href="#platform" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
-              Platform
-            </a>
-            <Button asChild variant="ghost" size="sm">
+            <Button asChild variant="ghost" size="lg" className="h-12 px-8 text-base">
               <Link to="/auth/login">Sign In</Link>
             </Button>
-            <Button asChild size="sm">
+            <Button asChild size="lg" className="h-12 px-8 text-base">
               <Link to="/signup">Sign Up</Link>
             </Button>
           </nav>
@@ -112,68 +109,91 @@ export default function Index() {
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-blue-400/20 via-transparent to-transparent" />
         <div className="absolute inset-0 bg-grid-pattern opacity-5" />
 
-        <div className="container mx-auto px-6 py-12 md:py-16 relative">
-          <div className="max-w-6xl mx-auto">
-            {/* Title */}
-            <div className="text-center mb-8">
-              <h1 className="text-4xl md:text-5xl lg:text-6xl font-bold text-foreground tracking-tight leading-tight mb-6">
-                Dollar-biz
-              </h1>
-              <p className="text-lg md:text-xl text-muted-foreground max-w-2xl mx-auto">
-                Digital Asset Finance Infrastructure
-              </p>
-            </div>
+        <div className="container mx-auto px-6 py-16 md:py-20 relative">
+          <div className="max-w-7xl mx-auto">
+            <div className="grid lg:grid-cols-2 gap-12 items-center">
+              {/* Left Side - Content */}
+              <div className="space-y-8">
+                {/* Main Headline */}
+                <div>
+                  <h1 className="text-4xl md:text-5xl lg:text-6xl font-bold text-foreground tracking-tight leading-tight mb-6">
+                    Crypto accounting software, complete P/L, B/S and C/S for 20 minutes
+                  </h1>
+                  <p className="text-lg md:text-xl text-muted-foreground">
+                    Dollar-biz is crypto accounting tool for busy accountant. Make financial statements easily. Simple & Reliable.
+                  </p>
+                </div>
 
-            {/* Key Features - Side by Side */}
-            <div className="grid md:grid-cols-2 gap-6 max-w-4xl mx-auto mb-8">
-              <div className="group relative overflow-hidden rounded-2xl bg-gradient-to-br from-primary/20 to-primary/5 border-2 border-primary/30 p-6 hover:shadow-xl hover:shadow-primary/20 transition-all duration-300">
-                <div className="absolute top-0 right-0 w-32 h-32 bg-primary/10 rounded-full blur-3xl" />
-                <div className="relative">
-                  <div className="w-14 h-14 rounded-xl bg-primary/20 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
-                    <TrendingUp className="h-7 w-7 text-primary" />
-                  </div>
-                  <h3 className="text-2xl font-bold text-foreground mb-4">
-                    📊 Auto Crypto Accounting
-                  </h3>
-                  <p className="text-lg font-semibold text-foreground/90 mb-2">
-                    Real-time, Auditable Financial Statements
-                  </p>
-                  <p className="text-muted-foreground">
-                    Instantly generate financial statements with real-time updates, full audit trails, and easy analysis capabilities
-                  </p>
+                {/* Feature Checklist */}
+                <ul className="space-y-4">
+                  {valueProps.map((prop, idx) => (
+                    <li key={idx} className="flex items-start gap-3">
+                      <CheckCircle2 className="h-6 w-6 text-primary mt-0.5 flex-shrink-0" />
+                      <span className="text-lg text-foreground">{prop}</span>
+                    </li>
+                  ))}
+                </ul>
+
+                {/* CTA Buttons */}
+                <div className="flex flex-col sm:flex-row items-start gap-4 pt-4">
+                  <Button asChild size="lg" className="min-w-[300px] h-16 text-xl font-semibold">
+                    <Link to="/signup">
+                      Sign Up
+                      <ArrowRight className="ml-2 h-6 w-6" />
+                    </Link>
+                  </Button>
+                  <Button asChild variant="outline" size="lg" className="min-w-[300px] h-16 text-xl font-semibold">
+                    <Link to="/auth/login">Sign In</Link>
+                  </Button>
                 </div>
               </div>
 
-              <div className="group relative overflow-hidden rounded-2xl bg-gradient-to-br from-accent/20 to-accent/5 border-2 border-accent/30 p-6 hover:shadow-xl hover:shadow-accent/20 transition-all duration-300">
-                <div className="absolute top-0 right-0 w-32 h-32 bg-accent/10 rounded-full blur-3xl" />
-                <div className="relative">
-                  <div className="w-14 h-14 rounded-xl bg-accent/20 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
-                    <Globe className="h-7 w-7 text-accent" />
+              {/* Right Side - Crypto Logos Frame */}
+              <div className="relative hidden lg:flex items-center justify-center">
+                {/* Glassmorphism Frame */}
+                <div className="relative w-full max-w-md aspect-square">
+                  {/* Background gradients */}
+                  <div className="absolute inset-0 bg-gradient-to-br from-blue-500/30 via-purple-500/20 to-cyan-500/30 rounded-3xl blur-3xl" />
+
+                  {/* Glass frame */}
+                  <div className="relative w-full h-full rounded-3xl bg-gradient-to-br from-blue-400/10 to-purple-400/10 backdrop-blur-xl border border-white/20 shadow-2xl p-8 flex items-center justify-center">
+                    {/* Inner glass effect */}
+                    <div className="w-full h-full rounded-2xl bg-gradient-to-br from-white/5 to-transparent border border-white/10 p-12 relative overflow-hidden">
+                      {/* Crypto logos - floating effect */}
+                      <div className="absolute top-1/4 left-1/4 transform -translate-x-1/2 -translate-y-1/2 w-20 h-20 rounded-full bg-gradient-to-br from-orange-400 to-orange-600 flex items-center justify-center shadow-xl animate-float" style={{ animationDelay: '0s' }}>
+                        <span className="text-white font-bold text-2xl">₿</span>
+                      </div>
+
+                      <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-24 h-24 rounded-full bg-gradient-to-br from-blue-400 to-purple-600 flex items-center justify-center shadow-xl animate-float" style={{ animationDelay: '0.5s' }}>
+                        <span className="text-white font-bold text-3xl">Ξ</span>
+                      </div>
+
+                      <div className="absolute bottom-1/4 right-1/4 transform translate-x-1/2 translate-y-1/2 w-20 h-20 rounded-full bg-gradient-to-br from-purple-400 to-purple-600 flex items-center justify-center shadow-xl animate-float" style={{ animationDelay: '1s' }}>
+                        <span className="text-white font-bold text-2xl">◎</span>
+                      </div>
+
+                      <div className="absolute top-1/3 right-1/4 w-16 h-16 rounded-full bg-gradient-to-br from-teal-400 to-teal-600 flex items-center justify-center shadow-xl animate-float" style={{ animationDelay: '1.5s' }}>
+                        <span className="text-white font-bold text-xl">T</span>
+                      </div>
+
+                      <div className="absolute bottom-1/3 left-1/3 w-16 h-16 rounded-full bg-gradient-to-br from-green-400 to-green-600 flex items-center justify-center shadow-xl animate-float" style={{ animationDelay: '2s' }}>
+                        <span className="text-white font-bold text-xl">$</span>
+                      </div>
+
+                      <div className="absolute top-2/3 right-1/3 w-18 h-18 rounded-full bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center shadow-xl animate-float" style={{ animationDelay: '2.5s' }}>
+                        <span className="text-white font-bold text-xl">₳</span>
+                      </div>
+
+                      <div className="absolute bottom-1/4 left-1/2 transform -translate-x-1/2 w-16 h-16 rounded-full bg-gradient-to-br from-purple-500 to-pink-600 flex items-center justify-center shadow-xl animate-float" style={{ animationDelay: '3s' }}>
+                        <span className="text-white font-bold text-xl">⬣</span>
+                      </div>
+
+                      {/* Glow effect */}
+                      <div className="absolute inset-0 bg-gradient-to-br from-blue-500/20 via-transparent to-purple-500/20 rounded-2xl" />
+                    </div>
                   </div>
-                  <h3 className="text-2xl font-bold text-foreground mb-4">
-                    🌐 Coverage
-                  </h3>
-                  <p className="text-lg font-semibold text-foreground/90 mb-2">
-                    Multi-Chain & Multi-Exchange Support
-                  </p>
-                  <p className="text-muted-foreground">
-                    Support for numerous cryptocurrencies, wallets, and exchanges — with continuous expansion
-                  </p>
                 </div>
               </div>
-            </div>
-
-            {/* CTA Buttons */}
-            <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-              <Button asChild size="lg" className="min-w-[200px] text-lg h-12">
-                <Link to="/signup">
-                  Sign Up
-                  <ArrowRight className="ml-2 h-5 w-5" />
-                </Link>
-              </Button>
-              <Button asChild variant="outline" size="lg" className="min-w-[200px] text-lg h-12">
-                <Link to="/auth/login">Sign In</Link>
-              </Button>
             </div>
           </div>
         </div>
@@ -390,14 +410,14 @@ export default function Index() {
         <div className="container mx-auto px-6">
           <div className="max-w-2xl mx-auto text-center">
             <h2 className="text-3xl md:text-4xl font-bold text-foreground tracking-tight mb-6">
-              Sign Up Now
+              Get Demo Now
             </h2>
             <p className="text-muted-foreground mb-8">
               Get started with early access to explore the platform and shape its future.
             </p>
             <Button asChild size="lg" className="min-w-[220px] mb-6">
               <Link to="/signup">
-                Sign Up
+                Get Demo
                 <ArrowRight className="ml-2 h-4 w-4" />
               </Link>
             </Button>
@@ -449,7 +469,7 @@ export default function Index() {
         <div className="fixed bottom-6 right-6 z-50 animate-in slide-in-from-bottom-5 fade-in duration-300">
           <Button asChild size="lg" className="min-w-[200px] text-lg h-12 shadow-lg hover:shadow-xl transition-shadow">
             <Link to="/signup">
-              Sign Up
+              Get Demo
               <ArrowRight className="ml-2 h-5 w-5" />
             </Link>
           </Button>

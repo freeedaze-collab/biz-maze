@@ -103,11 +103,11 @@
     --border: 220 25% 25%;
     --input: 220 25% 25%;
     --ring: 262 83% 58%;
-    
+
     --gradient-primary: linear-gradient(135deg, hsl(262 83% 58%), hsl(280 85% 60%));
     --gradient-hero: linear-gradient(to bottom right, hsl(262 83% 58% / 0.15), hsl(280 85% 60% / 0.1));
     --gradient-card: linear-gradient(to bottom, hsl(220 30% 15%), hsl(220 30% 13%));
-    
+
     --shadow-glow: 0 0 50px hsl(262 83% 58% / 0.4);
     --shadow-elegant: 0 10px 40px -10px hsl(262 83% 58% / 0.35);
     --sidebar-background: 240 5.9% 10%;
@@ -129,7 +129,7 @@
   body {
     @apply bg-background text-foreground;
   }
-  
+
   .bg-grid-pattern {
     background-image: linear-gradient(to right, hsl(var(--foreground) / 0.03) 1px, transparent 1px),
       linear-gradient(to bottom, hsl(var(--foreground) / 0.03) 1px, transparent 1px);
@@ -137,3 +137,19 @@
   }
 }
 
+/* Floating animation for crypto logos */
+@keyframes float {
+
+  0%,
+  100% {
+    transform: translateY(0px);
+  }
+
+  50% {
+    transform: translateY(-20px);
+  }
+}
+
+.animate-float {
+  animation: float 3s ease-in-out infinite;
+}
