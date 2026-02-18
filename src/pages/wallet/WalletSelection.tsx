@@ -13,29 +13,16 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/components/ui/use-toast";
 import { encode, decode } from "@/lib/bs58";
 import { useEIP6963 } from "@/hooks/useEIP6963";
-import { Wallet, Smartphone, Globe, AlertCircle } from "lucide-react";
+import { Wallet, Smartphone, Globe, AlertCircle, RefreshCw } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { detectChainByAddress, WALLET_PROVIDERS } from '@/config/providers';
+import { AdapterRegistry } from '@/lib/adapters';
 
 const FN_URL = import.meta.env.VITE_FUNCTION_VERIFY_WALLET;
 if (!FN_URL) console.warn("VITE_FUNCTION_VERIFY_WALLET is missing in .env");
 
 type WalletRow = { id: number; user_id: string; wallet_address: string; verified_at?: string | null; entity_id?: string | null; chain?: string | null; };
 
-// Chain Detection Logic
-const detectChain = (address: string) => {
-  if (isEVMAddress(address)) return { type: 'evm', name: 'EVM Chain', icon: '🌐' };
-
-  // Improved Regex for Bitcoin (bc1 bech32, 1 P2PKH, 3 P2SH)
-  if (/^(bc1|[13])[a-zA-HJ-NP-Z0-9]{25,90}$/.test(address)) return { type: 'bitcoin', name: 'Bitcoin', icon: '₿' };
-
-  // Basic Check for Solana (Base58 & Length)
-  try {
-    const decoded = decode(address);
-    if (decoded.length === 32) return { type: 'solana', name: 'Solana', icon: '◎' };
-  } catch { }
-
-  return { type: 'unknown', name: 'Unknown', icon: '❓' };
-};
 
 export default function WalletSelection() {
   const { user } = useAuth();
@@ -86,7 +73,12 @@ export default function WalletSelection() {
 
   useEffect(() => {
     if (manualAddress) {
-      setDetectedChain(detectChain(manualAddress));
+      const chain = detectChainByAddress(manualAddress);
+      if (chain) {
+        setDetectedChain({ type: chain.type, name: chain.name, icon: chain.icon });
+      } else {
+        setDetectedChain({ type: 'unknown', name: 'Unknown', icon: '❓' });
+      }
     } else {
       setDetectedChain(null);
     }
@@ -148,67 +140,142 @@ export default function WalletSelection() {
 
   const linkEIP6963 = async (providerDetail: any) => {
     await sharedLinkLogic(async (token) => {
-      const provider = providerDetail.provider;
-      const [current] = await provider.request({ method: "eth_requestAccounts" });
-      if (!current) throw new Error("No account selected.");
+      // Use EVMWalletAdapter
+      const adapter = AdapterRegistry.getWalletAdapter('metamask', providerDetail.provider);
+      const connection = await adapter.connect();
 
       const message = await getNonce(token);
-      const signature = await provider.request({ method: "personal_sign", params: [toHex(message), current] });
-      return postVerify({ address: current, signature, message, chain: 'ethereum', walletType: 'metamask' }, token);
+      const signature = await adapter.signMessage(message);
+
+      return postVerify({
+        address: connection.address,
+        signature,
+        message,
+        chain: connection.chainType,
+        walletType: 'metamask'
+      }, token);
     });
   };
 
   const linkWalletConnect = async () => {
-    let provider: WCProvider | null = null;
+    let adapter: any = null;
     await sharedLinkLogic(async (token) => {
       if (!detectedChain || detectedChain.type !== 'evm') throw new Error("WalletConnect currently supports EVM chains.");
       if (!manualAddress) throw new Error("Enter an address first.");
 
-      provider = await createWCProvider();
-      await provider.connect();
-      const [current] = (await provider.request({ method: "eth_accounts" })) as string[];
-      if (!current || current.toLowerCase() !== manualAddress.toLowerCase()) {
-        throw new Error(`Address mismatch. Expected: ${manualAddress}, Got: ${current}`);
+      // Use WalletConnectAdapter
+      adapter = AdapterRegistry.getWalletAdapter('walletconnect');
+      const connection = await adapter.connect();
+
+      if (connection.address.toLowerCase() !== manualAddress.toLowerCase()) {
+        throw new Error(`Address mismatch. Expected: ${manualAddress}, Got: ${connection.address}`);
       }
 
       const message = await getNonce(token);
-      const signature = (await provider.request({ method: "personal_sign", params: [toHex(message), current] })) as string;
-      return postVerify({ address: manualAddress, signature, message, chain: 'ethereum', walletType: 'walletconnect' }, token);
-    }).finally(async () => { await provider?.disconnect?.(); });
+      const signature = await adapter.signMessage(message);
+
+      return postVerify({
+        address: connection.address,
+        signature,
+        message,
+        chain: connection.chainType,
+        walletType: 'walletconnect'
+      }, token);
+    }).finally(async () => { await adapter?.disconnect?.(); });
   };
 
   const linkSolanaPhantom = async () => {
     await sharedLinkLogic(async (token) => {
-      const phantom = (window as any).phantom?.solana;
-      if (!phantom) throw new Error("Phantom not found.");
-      await phantom.connect();
-      const publicKey = phantom.publicKey.toString();
-      if (manualAddress && publicKey !== manualAddress) throw new Error(`Address mismatch. Connected: ${publicKey}`);
+      // Use PhantomAdapter for Solana
+      const adapter = AdapterRegistry.getWalletAdapter('phantom');
+      const connection = await adapter.connect();
+
+      if (manualAddress && connection.address !== manualAddress) {
+        throw new Error(`Address mismatch. Connected: ${connection.address}`);
+      }
 
       const message = await getNonce(token);
-      const encodedMessage = new TextEncoder().encode(message);
-      const { signature: sigBytes } = await phantom.signMessage(encodedMessage, "utf8");
-      const signature = encode(sigBytes);
-      return postVerify({ address: publicKey, signature, message, chain: 'solana', walletType: 'phantom' }, token);
+      const signature = await adapter.signMessage(message);
+
+      return postVerify({
+        address: connection.address,
+        signature,
+        message,
+        chain: 'solana',
+        walletType: 'phantom'
+      }, token);
     });
   };
 
   const linkBitcoinPhantom = async () => {
     await sharedLinkLogic(async (token) => {
-      const provider = (window as any).phantom?.bitcoin;
-      if (!provider?.isPhantom) throw new Error("Phantom Bitcoin not found.");
-      const accounts = await provider.requestAccounts();
-      const account = manualAddress ? accounts.find((a: any) => a.address === manualAddress) : accounts[0];
-      if (!account) throw new Error("Account not found.");
+      // Use PhantomAdapter for Bitcoin
+      const adapter = AdapterRegistry.getWalletAdapter('phantom-bitcoin');
+      const connection = await adapter.connect();
+
+      if (manualAddress && connection.address !== manualAddress) {
+        throw new Error(`Address mismatch. Connected: ${connection.address}`);
+      }
 
       const message = await getNonce(token);
-      const messageBytes = new TextEncoder().encode(message);
-      const signatureResult = await provider.signMessage(account.address, messageBytes);
-      const signatureBytes = signatureResult.signature || signatureResult;
-      const signatureBase64 = btoa(String.fromCharCode(...signatureBytes));
+      const signature = await adapter.signMessage(message);
 
-      return postVerify({ address: account.address, signature: signatureBase64, message, chain: 'bitcoin', walletType: 'bitcoin' }, token);
+      return postVerify({
+        address: connection.address,
+        signature,
+        message,
+        chain: 'bitcoin',
+        walletType: 'bitcoin'
+      }, token);
     });
+  };
+
+  // Development Bypass (No Signature)
+  const linkWalletBypassDev = async () => {
+    if (!manualAddress) {
+      toast({ variant: "destructive", title: "Error", description: "Please enter a wallet address" });
+      return;
+    }
+
+    if (!selectedEntityId) {
+      toast({ variant: "destructive", title: "Error", description: "Please select an entity" });
+      return;
+    }
+
+    setLinking(true);
+    try {
+      const { data: { session }, error: sessErr } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      if (sessErr || !token) throw new Error(sessErr?.message ?? "Session error");
+
+      const chain = detectChainByAddress(manualAddress);
+      if (!chain) throw new Error("Unable to detect chain from address");
+
+      // Bypass signature verification
+      const response = await postVerify({
+        address: manualAddress,
+        signature: 'DEV_BYPASS',
+        message: 'DEV_BYPASS',
+        chain: chain.type,
+        walletType: 'manual',
+        entityId: selectedEntityId,
+        devBypass: true
+      }, token);
+
+      if (response.success) {
+        toast({ title: "✅ Success", description: "Wallet connected (dev bypass)" });
+        setManualAddress("");
+        setDetectedChain(null);
+        await load();
+      } else {
+        throw new Error(response.error || "Verification failed");
+      }
+    } catch (e: any) {
+      console.error(e);
+      toast({ variant: "destructive", title: "Error", description: e?.message });
+    } finally {
+      setLinking(false);
+    }
   };
 
   // Manual Signature Handlers
@@ -314,27 +381,115 @@ export default function WalletSelection() {
                     </Button>
                   ))}
 
-                  {/* Phantom (Non-EVM) Explicit Detection */}
-                  {(window as any).phantom?.solana && (
-                    <Button variant="outline" className="h-14 justify-start px-4" onClick={() => linkSolanaPhantom()} disabled={linking}>
-                      <div className="w-6 h-6 mr-3 flex items-center justify-center bg-purple-100 rounded-full">◎</div>
+                  {/* 設定駆動型: 全ウォレットを自動検出・表示 */}
+                  {Object.values(WALLET_PROVIDERS)
+                    .filter(wallet => wallet.enabled && wallet.detection())
+                    .filter(wallet => {
+                      // EIP-6963ですでに検出済みのウォレットはスキップ（重複回避）
+                      if (wallet.type === 'browser_extension') {
+                        const isDetectedByEIP6963 = eip6963Providers.some(p =>
+                          p.info.name.toLowerCase().includes(wallet.key.toLowerCase()) ||
+                          wallet.name.toLowerCase().includes(p.info.name.toLowerCase())
+                        );
+                        if (isDetectedByEIP6963) return false;
+                      }
+                      return true;
+                    })
+                    .map(wallet => {
+                      // Phantomの特別処理（Solana/Bitcoin別表示）
+                      if (wallet.key === 'phantom') {
+                        const buttons = [];
+                        if ((window as any).phantom?.solana) {
+                          buttons.push(
+                            <Button key="phantom-solana" variant="outline" className="h-14 justify-start px-4" onClick={() => linkSolanaPhantom()} disabled={linking}>
+                              <div className="w-6 h-6 mr-3 flex items-center justify-center bg-purple-100 rounded-full">◎</div>
+                              <div className="flex flex-col items-start">
+                                <span className="font-semibold">Phantom (Solana)</span>
+                                <span className="text-xs text-muted-foreground">Solana Wallet</span>
+                              </div>
+                            </Button>
+                          );
+                        }
+                        if ((window as any).phantom?.bitcoin) {
+                          buttons.push(
+                            <Button key="phantom-bitcoin" variant="outline" className="h-14 justify-start px-4" onClick={() => linkBitcoinPhantom()} disabled={linking}>
+                              <div className="w-6 h-6 mr-3 flex items-center justify-center bg-orange-100 rounded-full">₿</div>
+                              <div className="flex flex-col items-start">
+                                <span className="font-semibold">Phantom (Bitcoin)</span>
+                                <span className="text-xs text-muted-foreground">Bitcoin Wallet</span>
+                              </div>
+                            </Button>
+                          );
+                        }
+                        return buttons;
+                      }
+
+                      // Bitcoin固有のウォレット (UniSat, Xverse)
+                      if (wallet.key === 'unisat') {
+                        return (
+                          <Button key={wallet.key} variant="outline" className="h-14 justify-start px-4" onClick={() => linkBitcoinUnisat()} disabled={linking}>
+                            <div className="w-6 h-6 mr-3 flex items-center justify-center bg-orange-50 rounded-full">
+                              <img src={wallet.icon} alt={wallet.name} className="w-5 h-5" />
+                            </div>
+                            <div className="flex flex-col items-start">
+                              <span className="font-semibold">{wallet.name}</span>
+                              <span className="text-xs text-muted-foreground">Bitcoin Wallet</span>
+                            </div>
+                          </Button>
+                        );
+                      }
+
+                      // Xverse (Manual for now, can be expanded later)
+                      if (wallet.key === 'xverse') {
+                        return (
+                          <Button key={wallet.key} variant="outline" className="h-14 justify-start px-4" onClick={() => handleManualSignatureVerify('bitcoin')} disabled={linking}>
+                            <div className="w-6 h-6 mr-3 flex items-center justify-center bg-orange-50 rounded-full">
+                              <img src={wallet.icon} alt={wallet.name} className="w-5 h-5" />
+                            </div>
+                            <div className="flex flex-col items-start">
+                              <span className="font-semibold">{wallet.name}</span>
+                              <span className="text-xs text-muted-foreground">Bitcoin Wallet (Manual)</span>
+                            </div>
+                          </Button>
+                        );
+                      }
+
+                      // その他のブラウザ拡張（EIP-6963非対応のレガシー含む）
+                      if (wallet.type === 'browser_extension') {
+                        // window[wallet.key] または window.ethereum を試行
+                        const provider = (window as any)[wallet.key] || (window as any).ethereum;
+                        if (provider) {
+                          return (
+                            <Button key={wallet.key} variant="outline" className="h-14 justify-start px-4" onClick={() => linkEIP6963({ provider, info: { name: wallet.name } })} disabled={linking}>
+                              <div className="w-6 h-6 mr-3 flex items-center justify-center bg-muted rounded-full">
+                                {wallet.icon ? <img src={wallet.icon} alt={wallet.name} className="w-5 h-5" /> : <Wallet className="w-4 h-4" />}
+                              </div>
+                              <div className="flex flex-col items-start">
+                                <span className="font-semibold">{wallet.name}</span>
+                                <span className="text-xs text-muted-foreground">Browser Wallet</span>
+                              </div>
+                            </Button>
+                          );
+                        }
+                      }
+
+                      return null;
+                    })
+                    .flat()
+                    .filter(Boolean)}
+
+                  {/* WalletConnect (Generic QR) */}
+                  {!eip6963Providers.length && (
+                    <Button variant="outline" className="h-14 justify-start px-4" onClick={linkWalletConnect} disabled={linking}>
+                      <Smartphone className="w-6 h-6 mr-3 text-blue-500" />
                       <div className="flex flex-col items-start">
-                        <span className="font-semibold">Phantom (Solana)</span>
-                        <span className="text-xs text-muted-foreground">Solana Wallet</span>
-                      </div>
-                    </Button>
-                  )}
-                  {(window as any).phantom?.bitcoin && (
-                    <Button variant="outline" className="h-14 justify-start px-4" onClick={() => linkBitcoinPhantom()} disabled={linking}>
-                      <div className="w-6 h-6 mr-3 flex items-center justify-center bg-orange-100 rounded-full">₿</div>
-                      <div className="flex flex-col items-start">
-                        <span className="font-semibold">Phantom (Bitcoin)</span>
-                        <span className="text-xs text-muted-foreground">Bitcoin Wallet</span>
+                        <span className="font-semibold">WalletConnect</span>
+                        <span className="text-xs text-muted-foreground">Scan QR with mobile app</span>
                       </div>
                     </Button>
                   )}
 
-                  {eip6963Providers.length === 0 && !(window as any).phantom?.solana && (
+                  {eip6963Providers.length === 0 && !Object.values(WALLET_PROVIDERS).some(w => w.enabled && w.detection()) && (
                     <Alert>
                       <AlertCircle className="h-4 w-4" />
                       <AlertTitle>No wallets detected</AlertTitle>
@@ -365,26 +520,45 @@ export default function WalletSelection() {
                   </div>
                 </div>
 
+                {/* Development Bypass Button */}
+                <Alert className="bg-orange-50 border-orange-200">
+                  <AlertCircle className="h-4 w-4 text-orange-600" />
+                  <AlertTitle className="text-orange-800">🚧 Development Mode</AlertTitle>
+                  <AlertDescription className="text-orange-700">
+                    Bypass signature verification for testing
+                  </AlertDescription>
+                </Alert>
+
+                <Button
+                  onClick={linkWalletBypassDev}
+                  disabled={!manualAddress || !detectedChain || linking}
+                  className="w-full bg-orange-600 hover:bg-orange-700"
+                >
+                  {linking ? "Connecting..." : "🔧 Connect Without Signature (DEV)"}
+                </Button>
+
+                <div className="relative">
+                  <div className="absolute inset-0 flex items-center">
+                    <span className="w-full border-t" />
+                  </div>
+                  <div className="relative flex justify-center text-xs uppercase">
+                    <span className="bg-background px-2 text-muted-foreground">OR use normal flow</span>
+                  </div>
+                </div>
+
                 {detectedChain?.type === 'evm' && (
-                  <div className="pt-2 space-y-3">
-                    <p className="text-xs text-muted-foreground">Choose signing method:</p>
+                  <div className="pt-2">
+                    <p className="text-xs text-muted-foreground mb-3">Sign with your browser extension or a mobile app to verify ownership.</p>
                     <div className="grid grid-cols-1 gap-2">
-                      {(window as any).ethereum && (
-                        <Button className="w-full" onClick={() => linkEIP6963({ provider: (window as any).ethereum, info: { name: 'Browser Extension' } })} disabled={linking || !manualAddress}>
-                          <Wallet className="w-4 h-4 mr-2" />
-                          {eip6963Providers.length > 0 ? `Sign with ${eip6963Providers[0].info.name}` : 'Sign with Browser Wallet'}
-                        </Button>
-                      )}
-                      <Button variant={(window as any).ethereum ? "outline" : "default"} className="w-full" onClick={linkWalletConnect} disabled={linking || !manualAddress}>
+                      <Button className="w-full" onClick={() => linkEIP6963({ provider: (window as any).ethereum, info: { name: 'Detected Extension' } })} disabled={linking || !manualAddress}>
+                        <Wallet className="w-4 h-4 mr-2" />
+                        Sign with Detected Wallet
+                      </Button>
+                      <Button variant="outline" className="w-full" onClick={linkWalletConnect} disabled={linking || !manualAddress}>
                         <Smartphone className="w-4 h-4 mr-2" />
-                        Sign with Any Wallet (QR Code)
+                        Sign with Any Other Wallet (WalletConnect)
                       </Button>
                     </div>
-                    <p className="text-xs text-muted-foreground text-center">
-                      {(window as any).ethereum
-                        ? 'Use QR Code for mobile wallets, hardware wallets, or any other wallet app.'
-                        : 'Scan QR code with any mobile wallet app (MetaMask, Trust Wallet, Coinbase Wallet, etc.)'}
-                    </p>
                   </div>
                 )}
 
@@ -504,7 +678,10 @@ export default function WalletSelection() {
 
         {/* Linked Wallets List (Existing) */}
         <div className="border rounded-xl p-6 bg-card">
-          <h3 className="font-semibold mb-4 text-lg">Linked Wallets</h3>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-semibold text-lg">Linked Wallets</h3>
+            {rows.length > 0 && <SyncAllWalletsButton />}
+          </div>
           {loading ? (
             <div className="space-y-3">
               {[1, 2].map(i => <div key={i} className="h-16 bg-muted animate-pulse rounded-lg" />)}
@@ -562,7 +739,76 @@ export default function WalletSelection() {
             </div>
           )}
         </div>
-      </div>
-    </AppPageLayout>
+      </div >
+    </AppPageLayout >
+  );
+}
+
+function SyncAllWalletsButton() {
+  const { toast } = useToast();
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncProgress, setSyncProgress] = useState<string>('');
+
+  const handleSyncAll = async () => {
+    setIsSyncing(true);
+    setSyncProgress('Starting sync...');
+
+    try {
+      const { syncAllWalletsIncremental } = await import('@/lib/incrementalWalletSync');
+
+      const result = await syncAllWalletsIncremental((progress) => {
+        if (progress.currentChain) {
+          setSyncProgress(
+            `Wallet ${progress.currentWalletIndex}/${progress.totalWallets} | ` +
+            `Chain ${progress.chainIndex}/${progress.totalChains} (${progress.currentChain}) | ` +
+            `${progress.transactionsSynced} txs synced`
+          );
+        } else {
+          setSyncProgress(
+            `Syncing wallet ${progress.currentWalletIndex}/${progress.totalWallets}: ${progress.walletAddress.slice(0, 10)}... (${progress.transactionsSynced} total txs)`
+          );
+        }
+      });
+
+      if (result.success) {
+        toast({
+          title: 'Wallet Sync Complete',
+          description: `✅ Successfully synced ${result.totalSynced} transactions across all wallets!`,
+        });
+      } else {
+        toast({
+          variant: 'destructive',
+          title: 'Sync Completed with Errors',
+          description: `${result.totalSynced} transactions synced, but ${result.errors.length} wallet(s) failed.`,
+        });
+      }
+    } catch (error) {
+      console.error('Sync all error:', error);
+      toast({
+        variant: 'destructive',
+        title: 'Sync Error',
+        description: error instanceof Error ? error.message : 'Unknown error occurred',
+      });
+    } finally {
+      setIsSyncing(false);
+      setSyncProgress('');
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-2">
+      <Button
+        onClick={handleSyncAll}
+        disabled={isSyncing}
+        size="sm"
+        variant="outline"
+      >
+        <RefreshCw className={`h-4 w-4 mr-2 ${isSyncing ? 'animate-spin' : ''}`} />
+        {isSyncing ? 'Syncing...' : 'Sync All'}
+      </Button>
+      {syncProgress && (
+        <p className="text-xs text-muted-foreground">{syncProgress}</p>
+      )}
+    </div>
   );
 }

@@ -7,8 +7,11 @@ export type SyncResult = {
   message?: string
 }
 
-// [修正] 第一引数に walletAddress を追加
-export async function triggerWalletSync(walletAddress: string, chain: 'polygon' | 'amoy' | 'mainnet' = 'polygon'): Promise<SyncResult> {
+// [修正] 第一引数に walletAddress を追加、bitcoin と solana を追加
+export async function triggerWalletSync(
+  walletAddress: string,
+  chain: 'polygon' | 'amoy' | 'mainnet' | 'bitcoin' | 'solana' = 'polygon'
+): Promise<SyncResult> {
   const {
     data: { session },
     error,
@@ -24,22 +27,32 @@ export async function triggerWalletSync(walletAddress: string, chain: 'polygon' 
 
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
   if (!supabaseUrl) throw new Error('VITE_SUPABASE_URL is missing.')
-  const url = `${supabaseUrl}/functions/v1/sync-wallet-transactions`
+
+  // Use unified sync function - it auto-detects address type (Bitcoin/Solana/EVM)
+  // and handles all chains accordingly
+  const functionName = 'sync-wallet-transactions'
+  const body = {
+    walletAddress,
+    // Optional: pass chain hint for EVM networks, but function will auto-detect if omitted
+    ...(chain !== 'bitcoin' && chain !== 'solana' ? { chain } : {})
+  }
+
+  const url = `${supabaseUrl}/functions/v1/${functionName}`
   const res = await fetch(url, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
     },
-    // [修正] リクエストボディに walletAddress を含める
-    body: JSON.stringify({ walletAddress, chain }),
+    body: JSON.stringify(body),
   })
   if (!res.ok) {
     const errorText = await res.text()
-    console.error("Wallet sync failed:", errorText)
+    console.error(`${chain} wallet sync failed:`, errorText)
     return { ok: false, message: errorText }
   }
   const json = await res.json().catch(() => ({}))
   return { ok: true, imported: json?.imported ?? 0 }
 }
+
 

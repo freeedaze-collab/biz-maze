@@ -7,13 +7,15 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Trash2, Plus, Building2 } from "lucide-react"
+import { Trash2, Plus, Building2, Shield, TrendingUp } from "lucide-react"
+import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/components/ui/use-toast"
 
 type Entity = {
   id: string
   name: string
   is_head_office: boolean
+  company_type: 'ordinary' | 'crypto'
 }
 
 export default function Profile() {
@@ -30,6 +32,7 @@ export default function Profile() {
   // Entities Data
   const [entities, setEntities] = useState<Entity[]>([])
   const [newEntityName, setNewEntityName] = useState('')
+  const [newEntityCompanyType, setNewEntityCompanyType] = useState<'ordinary' | 'crypto'>('ordinary')
 
   const showUsCorpExtras = useMemo(() => country === 'usa', [country])
 
@@ -100,12 +103,12 @@ export default function Profile() {
         const { error: entErr } = await supabase.from('entities').insert({
           user_id: user.id,
           name: companyName,
-          type: 'personal',
-          is_head_office: true
+          is_head_office: true,
+          company_type: 'ordinary'
         });
         console.log("[Profile] Entity insert result:", entErr);
         if (!entErr) {
-          await fetchEntities(); // Refresh local list
+          await fetchEntities();
         }
       }
 
@@ -122,13 +125,29 @@ export default function Profile() {
   // Entity Handlers
   const handleAddEntity = async () => {
     if (!newEntityName.trim() || !user?.id) return
-    const { error } = await supabase.from('entities').insert({ user_id: user.id, name: newEntityName.trim(), is_head_office: false, type: 'subsidiary' })
+    const { error } = await supabase.from('entities').insert({
+      user_id: user.id,
+      name: newEntityName.trim(),
+      is_head_office: false,
+      company_type: newEntityCompanyType
+    })
     if (error) {
       toast({ variant: "destructive", title: "Error adding subsidiary", description: error.message })
     } else {
       setNewEntityName('')
+      setNewEntityCompanyType('ordinary')
       fetchEntities()
       toast({ title: "Subsidiary added" })
+    }
+  }
+
+  const handleUpdateCompanyType = async (id: string, type: 'ordinary' | 'crypto') => {
+    const { error } = await supabase.from('entities').update({ company_type: type }).eq('id', id)
+    if (error) {
+      toast({ variant: "destructive", title: "Update failed", description: error.message })
+    } else {
+      fetchEntities()
+      toast({ title: `Enterprise type updated to ${type === 'crypto' ? 'Crypto (IAS 2)' : 'Ordinary (IAS 38)'}` })
     }
   }
 
@@ -244,7 +263,26 @@ export default function Profile() {
                       }}
                       className="h-10 font-medium"
                     />
-                    {ent.is_head_office && <span className="text-xs text-muted-foreground ml-1">Head Office</span>}
+                    <div className="flex items-center gap-2 ml-1">
+                      {ent.is_head_office && <span className="text-xs text-muted-foreground">Head Office</span>}
+                      <select
+                        className="text-xs rounded border border-input bg-transparent px-2 py-0.5 cursor-pointer"
+                        value={ent.company_type || 'ordinary'}
+                        onChange={(e) => handleUpdateCompanyType(ent.id, e.target.value as 'ordinary' | 'crypto')}
+                      >
+                        <option value="ordinary">Ordinary Enterprise (IAS 38)</option>
+                        <option value="crypto">Crypto Enterprise (IAS 2)</option>
+                      </select>
+                      {ent.company_type === 'crypto' ? (
+                        <Badge variant="outline" className="text-xs bg-emerald-50 text-emerald-700 border-emerald-200">
+                          <TrendingUp className="h-3 w-3 mr-1" />IAS 2
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="text-xs bg-blue-50 text-blue-700 border-blue-200">
+                          <Shield className="h-3 w-3 mr-1" />IAS 38
+                        </Badge>
+                      )}
+                    </div>
                   </div>
                   {!ent.is_head_office && (
                     <Button variant="ghost" size="icon" onClick={() => handleDeleteEntity(ent.id)}>
@@ -255,16 +293,26 @@ export default function Profile() {
               ))}
             </div>
 
-            <div className="flex items-center gap-2 pt-2 border-t">
-              <Input
-                placeholder="New Subsidiary Name (e.g. Acme Trading LLC)"
-                value={newEntityName}
-                onChange={(e) => setNewEntityName(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') handleAddEntity() }}
-              />
-              <Button onClick={handleAddEntity} disabled={!newEntityName}>
-                <Plus className="mr-2 h-4 w-4" /> Add
-              </Button>
+            <div className="space-y-2 pt-2 border-t">
+              <div className="flex items-center gap-2">
+                <Input
+                  placeholder="New Subsidiary Name (e.g. Acme Trading LLC)"
+                  value={newEntityName}
+                  onChange={(e) => setNewEntityName(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleAddEntity() }}
+                />
+                <select
+                  className="flex h-9 rounded-md border border-input bg-transparent px-2 py-1 text-sm cursor-pointer min-w-[200px]"
+                  value={newEntityCompanyType}
+                  onChange={(e) => setNewEntityCompanyType(e.target.value as 'ordinary' | 'crypto')}
+                >
+                  <option value="ordinary">Ordinary (IAS 38)</option>
+                  <option value="crypto">Crypto (IAS 2)</option>
+                </select>
+                <Button onClick={handleAddEntity} disabled={!newEntityName}>
+                  <Plus className="mr-2 h-4 w-4" /> Add
+                </Button>
+              </div>
             </div>
           </CardContent>
         </Card>

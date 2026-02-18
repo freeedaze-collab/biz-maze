@@ -1,0 +1,766 @@
+// supabase/functions/sync-wallet-transactions/index.ts
+// Unified Multi-Chain Wallet Transaction Sync
+// Supports: EVM (Moralis), Bitcoin (Blockstream/Mempool), Solana (Web3.js)
+
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { Connection, PublicKey } from 'https://esm.sh/@solana/web3.js@1.87.6';
+
+const corsHeaders = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+    'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
+};
+
+// Etherscan family supported EVM chains (limit=10,000 per request)
+const ETHERSCAN_CHAINS = [
+    { id: '0x1', name: 'eth', symbol: 'ETH', label: 'Ethereum', apiUrl: 'https://api.etherscan.io/api' },
+    { id: '0x38', name: 'bsc', symbol: 'BNB', label: 'BNB Chain', apiUrl: 'https://api.bscscan.com/api' },
+    { id: '0x89', name: 'polygon', symbol: 'MATIC', label: 'Polygon', apiUrl: 'https://api.polygonscan.com/api' },
+    { id: '0xa4b1', name: 'arbitrum', symbol: 'ETH', label: 'Arbitrum', apiUrl: 'https://api.arbiscan.io/api' },
+    { id: '0xa', name: 'optimism', symbol: 'ETH', label: 'Optimism', apiUrl: 'https://api-optimistic.etherscan.io/api' },
+    { id: '0xa86a', name: 'avalanche', symbol: 'AVAX', label: 'Avalanche', apiUrl: 'https://api.snowtrace.io/api' },
+    { id: '0x2105', name: 'base', symbol: 'ETH', label: 'Base', apiUrl: 'https://api.basescan.org/api' },
+    { id: '0xfa', name: 'fantom', symbol: 'FTM', label: 'Fantom', apiUrl: 'https://api.ftmscan.com/api' },
+];
+
+// Address type detection
+type AddressType = 'evm' | 'bitcoin' | 'solana' | 'unknown';
+
+function detectAddressType(address: string): AddressType {
+    const trimmed = address.trim();
+
+    if (/^0x[a-fA-F0-9]{40}$/.test(trimmed)) {
+        return 'evm';
+    }
+
+    if (/^(bc1|1|3|tb1|m|n|2)[a-zA-HJ-NP-Z0-9]{25,}$/.test(trimmed)) {
+        return 'bitcoin';
+    }
+
+    if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(trimmed)) {
+        return 'solana';
+    }
+
+    return 'unknown';
+}
+
+// Fetch Bitcoin transactions (Blockstream + Mempool.space fallback)
+async function fetchBitcoinTransactions(address: string): Promise<any[]> {
+    const isTestnet = /^(tb1|m|n|2)/.test(address);
+
+    // Try Blockstream first
+    try {
+        const blockstreamUrl = isTestnet
+            ? `https://blockstream.info/testnet/api/address/${address}/txs`
+            : `https://blockstream.info/api/address/${address}/txs`;
+
+        console.log(`[Bitcoin] Fetching from Blockstream (${isTestnet ? 'testnet' : 'mainnet'})`);
+        const response = await fetch(blockstreamUrl);
+
+        if (response.ok) {
+            const transactions = await response.json();
+            console.log(`[Bitcoin] Found ${transactions.length} transactions from Blockstream`);
+            return transactions.map(tx => ({
+                ...tx,
+                _source: 'blockstream',
+                _isTestnet: isTestnet
+            }));
+        }
+    } catch (err) {
+        console.warn('[Bitcoin] Blockstream failed, trying Mempool.space');
+    }
+
+    // Fallback to Mempool.space
+    try {
+        const mempoolUrl = isTestnet
+            ? `https://mempool.space/testnet/api/address/${address}/txs`
+            : `https://mempool.space/api/address/${address}/txs`;
+
+        const response = await fetch(mempoolUrl);
+
+        if (response.ok) {
+            const transactions = await response.json();
+            console.log(`[Bitcoin] Found ${transactions.length} transactions from Mempool.space`);
+            return transactions.map(tx => ({
+                ...tx,
+                _source: 'mempool',
+                _isTestnet: isTestnet
+            }));
+        }
+    } catch (err) {
+        console.error('[Bitcoin] Mempool.space also failed:', err);
+    }
+
+    return [];
+}
+
+
+// Fetch Solana transactions with pagination (using Solana Web3.js)
+async function fetchSolanaTransactions(address: string, limit: number = 1000): Promise<any[]> {
+    const rpcUrl = Deno.env.get('SOLANA_RPC_URL') || 'https://api.mainnet-beta.solana.com';
+
+    try {
+        const connection = new Connection(rpcUrl, 'confirmed');
+        const publicKey = new PublicKey(address);
+
+        console.log(`[Solana] Fetching transactions for ${address}`);
+
+        const allTransactions: any[] = [];
+        let before: string | undefined = undefined;
+        let pageCount = 0;
+        const maxPages = 100; // Safety limit: 100 pages * 1000 = 100,000 transactions max
+
+        // Fetch signatures with pagination
+        do {
+            const signatures = await connection.getSignaturesForAddress(publicKey, {
+                limit,
+                before
+            });
+
+            if (signatures.length === 0) break;
+
+            console.log(`[Solana] Page ${pageCount + 1}: Found ${signatures.length} signatures`);
+
+            // Fetch transaction details (in batches to avoid rate limits)
+            const batchSize = 10;
+            for (let i = 0; i < signatures.length; i += batchSize) {
+                const batch = signatures.slice(i, i + batchSize);
+                const txPromises = batch.map(sig =>
+                    connection.getParsedTransaction(sig.signature, {
+                        maxSupportedTransactionVersion: 0
+                    })
+                );
+
+                const txResults = await Promise.all(txPromises);
+
+                for (let j = 0; j < txResults.length; j++) {
+                    const tx = txResults[j];
+                    const sig = batch[j];
+
+                    if (tx) {
+                        allTransactions.push({
+                            signature: sig.signature,
+                            blockTime: sig.blockTime,
+                            slot: sig.slot,
+                            err: sig.err,
+                            transaction: tx,
+                            _source: 'solana_rpc'
+                        });
+                    }
+                }
+            }
+
+            // Set before parameter to last signature for next page
+            before = signatures[signatures.length - 1].signature;
+            pageCount++;
+
+            // Small delay to avoid rate limits
+            await new Promise(resolve => setTimeout(resolve, 200));
+
+        } while (pageCount < maxPages);
+
+        console.log(`[Solana] Completed: ${pageCount} pages, ${allTransactions.length} total transactions`);
+        return allTransactions;
+
+    } catch (err) {
+        console.error('[Solana] Error fetching transactions:', err);
+        return [];
+    }
+}
+
+
+
+
+// Fetch EVM transactions from Etherscan family APIs with pagination support
+// Processes ONE chain per call to avoid CPU limits
+async function fetchEtherscanTransactions(
+    address: string,
+    apiKey: string,
+    supabase: any,
+    userId: string,
+    options: {
+        chainId?: string,      // Specific chain to process (e.g., "0x1")
+        nativePage?: number,   // Page number for native transactions
+        erc20Page?: number,    // Page number for ERC20 token transfers
+        limit?: number         // Transactions per page (default: 250)
+    } = {}
+): Promise<{
+    chainId: string,
+    chainLabel: string,
+    nativeTxs: { inserted: number, hasMore: boolean, nextPage: number },
+    erc20Txs: { inserted: number, hasMore: boolean, nextPage: number },
+    totalInserted: number
+}> {
+    const { chainId, nativePage = 1, erc20Page = 1, limit = 250 } = options;
+
+    // Find target chain (default to Ethereum if not specified)
+    const targetChain = chainId
+        ? ETHERSCAN_CHAINS.find(c => c.id === chainId)
+        : ETHERSCAN_CHAINS[0];
+
+    if (!targetChain) {
+        throw new Error(`Invalid chainId: ${chainId}`);
+    }
+
+    console.log(`[Etherscan] Syncing ${targetChain.label} - Native page ${nativePage}, ERC20 page ${erc20Page}`);
+
+    let nativeInserted = 0;
+    let erc20Inserted = 0;
+    let nativeHasMore = false;
+    let erc20HasMore = false;
+
+    try {
+        // ===== FETCH NATIVE TRANSACTIONS =====
+        const nativeUrl = `${targetChain.apiUrl}?module=account&action=txlist&address=${address}&startblock=0&endblock=99999999&page=${nativePage}&offset=${limit}&sort=desc&apikey=${apiKey}`;
+        console.log(`[Etherscan] Fetching native txs: page ${nativePage}`);
+
+        const nativeRes = await fetch(nativeUrl);
+
+        if (nativeRes.ok) {
+            const nativeData = await nativeRes.json();
+
+            if (nativeData.status === '1' && nativeData.result && nativeData.result.length > 0) {
+                console.log(`[Etherscan] Found ${nativeData.result.length} native txs`);
+
+                // Transform and insert in batches
+                const recordsToUpsert: any[] = [];
+                for (const tx of nativeData.result) {
+                    const txWithMeta = {
+                        ...tx,
+                        _chain: targetChain.name,
+                        _chainLabel: targetChain.label,
+                        _nativeSymbol: targetChain.symbol,
+                        _type: 'native',
+                        _source: 'etherscan'
+                    };
+                    const record = transformMoralisEvmTx(txWithMeta, address, userId);
+                    if (record && record.tx_hash) {
+                        recordsToUpsert.push(record);
+                    }
+                }
+
+                // Insert in batches
+                const batchSize = 500;
+                for (let i = 0; i < recordsToUpsert.length; i += batchSize) {
+                    const batch = recordsToUpsert.slice(i, i + batchSize);
+                    const { error } = await supabase
+                        .from('wallet_transactions')
+                        .upsert(batch, {
+                            onConflict: 'user_id,tx_hash',
+                            ignoreDuplicates: false
+                        });
+
+                    if (error) {
+                        console.error(`[DB Error] Failed to insert native batch:`, error);
+                    } else {
+                        nativeInserted += batch.length;
+                        console.log(`[DB] Inserted ${batch.length} native records`);
+                    }
+                }
+
+                // Check if there are more pages
+                nativeHasMore = nativeData.result.length >= limit;
+            } else {
+                console.log(`[Etherscan] No more native transactions`);
+            }
+        } else {
+            console.error(`[Etherscan Error] HTTP ${nativeRes.status}`);
+        }
+
+        // Rate limit
+        await new Promise(resolve => setTimeout(resolve, 350));
+
+        // ===== FETCH ERC20 TRANSACTIONS =====
+        const erc20Url = `${targetChain.apiUrl}?module=account&action=tokentx&address=${address}&startblock=0&endblock=99999999&page=${erc20Page}&offset=${limit}&sort=desc&apikey=${apiKey}`;
+        console.log(`[Etherscan] Fetching ERC20 txs: page ${erc20Page}`);
+
+        const erc20Res = await fetch(erc20Url);
+
+        if (erc20Res.ok) {
+            const erc20Data = await erc20Res.json();
+
+            if (erc20Data.status === '1' && erc20Data.result && erc20Data.result.length > 0) {
+                console.log(`[Etherscan] Found ${erc20Data.result.length} ERC20 txs`);
+
+                // Transform and insert in batches
+                const recordsToUpsert: any[] = [];
+                for (const tx of erc20Data.result) {
+                    const txWithMeta = {
+                        ...tx,
+                        _chain: targetChain.name,
+                        _chainLabel: targetChain.label,
+                        _nativeSymbol: targetChain.symbol,
+                        _type: 'erc20',
+                        _source: 'etherscan'
+                    };
+                    const record = transformMoralisEvmTx(txWithMeta, address, userId);
+                    if (record && record.tx_hash) {
+                        recordsToUpsert.push(record);
+                    }
+                }
+
+                // Insert in batches
+                const batchSize = 500;
+                for (let i = 0; i < recordsToUpsert.length; i += batchSize) {
+                    const batch = recordsToUpsert.slice(i, i + batchSize);
+                    const { error } = await supabase
+                        .from('wallet_transactions')
+                        .upsert(batch, {
+                            onConflict: 'user_id,tx_hash',
+                            ignoreDuplicates: false
+                        });
+
+                    if (error) {
+                        console.error(`[DB Error] Failed to insert ERC20 batch:`, error);
+                    } else {
+                        erc20Inserted += batch.length;
+                        console.log(`[DB] Inserted ${batch.length} ERC20 records`);
+                    }
+                }
+
+                // Check if there are more pages
+                erc20HasMore = erc20Data.result.length >= limit;
+            } else {
+                console.log(`[Etherscan] No more ERC20 transactions`);
+            }
+        } else {
+            console.error(`[Etherscan Error] HTTP ${erc20Res.status}`);
+        }
+
+    } catch (err) {
+        console.warn(`[Etherscan] Error fetching ${targetChain.label}:`, err);
+    }
+
+    const totalInserted = nativeInserted + erc20Inserted;
+    console.log(`[Etherscan] ${targetChain.label} complete: ${totalInserted} inserted (Native: ${nativeInserted}, ERC20: ${erc20Inserted})`);
+
+    return {
+        chainId: targetChain.id,
+        chainLabel: targetChain.label,
+        nativeTxs: {
+            inserted: nativeInserted,
+            hasMore: nativeHasMore,
+            nextPage: nativePage + 1
+        },
+        erc20Txs: {
+            inserted: erc20Inserted,
+            hasMore: erc20HasMore,
+            nextPage: erc20Page + 1
+        },
+        totalInserted
+    };
+}
+
+const nativeRes = await fetch(nativeUrl);
+
+if (nativeRes.ok) {
+    const nativeData = await nativeRes.json();
+
+    if (nativeData.status === '1' && nativeData.result && nativeData.result.length > 0) {
+        console.log(`[Etherscan] Page ${nativePage}: Found ${nativeData.result.length} native txs on ${chain.label}`);
+
+        // Transform and insert in smaller batches to avoid memory issues
+        const recordsToUpsert: any[] = [];
+        for (const tx of nativeData.result) {
+            const txWithMeta = {
+                ...tx,
+                _chain: chain.name,
+                _chainLabel: chain.label,
+                _nativeSymbol: chain.symbol,
+                _type: 'native',
+                _source: 'etherscan'
+            };
+            const record = transformMoralisEvmTx(txWithMeta, address, userId);
+            if (record && record.tx_hash) {
+                recordsToUpsert.push(record);
+            }
+        }
+
+        // Insert in batches of 500 to avoid memory limits
+        const batchSize = 500;
+        for (let i = 0; i < recordsToUpsert.length; i += batchSize) {
+            const batch = recordsToUpsert.slice(i, i + batchSize);
+            const { error } = await supabase
+                .from('wallet_transactions')
+                .upsert(batch, {
+                    onConflict: 'user_id,tx_hash',
+                    ignoreDuplicates: false
+                });
+
+            if (error) {
+                console.error(`[DB Error] Failed to insert batch at offset ${i}:`, error);
+            } else {
+                totalInserted += batch.length;
+                console.log(`[DB] Inserted ${batch.length} records (batch ${Math.floor(i / batchSize) + 1})`);
+            }
+        }
+        totalFetched += nativeData.result.length;
+
+        // If we got less than limit, we've reached the end
+        if (nativeData.result.length < limit) {
+            break;
+        }
+
+        nativePage++;
+    } else {
+        // No more results or error
+        if (nativeData.message && nativeData.message !== 'No transactions found') {
+            console.log(`[Etherscan] ${chain.label}: ${nativeData.message}`);
+        }
+        break;
+    }
+} else {
+    const errorText = await nativeRes.text();
+    console.error(`[Etherscan Error] HTTP ${nativeRes.status}: ${errorText}`);
+    break;
+}
+
+// Rate limit: Etherscan free tier allows 5 req/sec (3 calls/sec in practice)
+await new Promise(resolve => setTimeout(resolve, 350));
+        }
+
+console.log(`[Etherscan] Completed native tx fetch for ${chain.label}: ${nativePage} pages`);
+
+// Fetch ERC20 token transactions with pagination + incremental insert
+// Limited to 2 pages max (2000 tx) per call to avoid CPU/memory limits
+let erc20Page = 1;
+
+while (erc20Page <= maxPages) {
+    const erc20Url = `${chain.apiUrl}?module=account&action=tokentx&address=${address}&startblock=0&endblock=99999999&page=${erc20Page}&offset=${limit}&sort=desc&apikey=${apiKey}`;
+    console.log(`[Etherscan] ${chain.label} ERC20 page ${erc20Page}`);
+
+    const erc20Res = await fetch(erc20Url);
+
+    if (erc20Res.ok) {
+        const erc20Data = await erc20Res.json();
+
+        if (erc20Data.status === '1' && erc20Data.result && erc20Data.result.length > 0) {
+            console.log(`[Etherscan] Page ${erc20Page}: Found ${erc20Data.result.length} ERC20 txs on ${chain.label}`);
+
+            // Transform and insert in smaller batches to avoid memory issues
+            const recordsToUpsert: any[] = [];
+            for (const tx of erc20Data.result) {
+                const txWithMeta = {
+                    ...tx,
+                    _chain: chain.name,
+                    _chainLabel: chain.label,
+                    _nativeSymbol: chain.symbol,
+                    _type: 'erc20',
+                    _source: 'etherscan'
+                };
+                const record = transformMoralisEvmTx(txWithMeta, address, userId);
+                if (record && record.tx_hash) {
+                    recordsToUpsert.push(record);
+                }
+            }
+
+            // Insert in batches of 500 to avoid memory limits
+            const batchSize = 500;
+            for (let i = 0; i < recordsToUpsert.length; i += batchSize) {
+                const batch = recordsToUpsert.slice(i, i + batchSize);
+                const { error } = await supabase
+                    .from('wallet_transactions')
+                    .upsert(batch, {
+                        onConflict: 'user_id,tx_hash',
+                        ignoreDuplicates: false
+                    });
+
+                if (error) {
+                    console.error(`[DB Error] Failed to insert ERC20 batch at offset ${i}:`, error);
+                } else {
+                    totalInserted += batch.length;
+                    console.log(`[DB] Inserted ${batch.length} ERC20 records (batch ${Math.floor(i / batchSize) + 1})`);
+                }
+            }
+            totalFetched += erc20Data.result.length;
+
+            // If we got less than limit, we've reached the end
+            if (erc20Data.result.length < limit) {
+                break;
+            }
+
+            erc20Page++;
+        } else {
+            // No more results or error
+            if (erc20Data.message && erc20Data.message !== 'No transactions found') {
+                console.log(`[Etherscan] ${chain.label}: ${erc20Data.message}`);
+            }
+            break;
+        }
+    } else {
+        const errorText = await erc20Res.text();
+        console.error(`[Etherscan Error] HTTP ${erc20Res.status}: ${errorText}`);
+        break;
+    }
+
+    // Rate limit
+    await new Promise(resolve => setTimeout(resolve, 350));
+}
+
+console.log(`[Etherscan] Completed ERC20 tx fetch for ${chain.label}: ${erc20Page} pages`);
+
+    } catch (err) {
+    console.warn(`[Etherscan] Error fetching ${chain.label}:`, err);
+}
+}
+
+console.log(`[Etherscan] Total: fetched=${totalFetched}, inserted=${totalInserted}`);
+return { total: totalFetched, inserted: totalInserted };
+}
+
+
+
+// Transform Bitcoin transaction
+function transformBitcoinTx(tx: any, address: string, userId: string): any {
+    const txHash = tx.txid || tx.hash;
+    const txDate = new Date(tx.status?.block_time ? tx.status.block_time * 1000 : Date.now());
+
+    let inValue = 0, outValue = 0;
+
+    if (tx.vin) {
+        for (const input of tx.vin) {
+            if (input.prevout?.scriptpubkey_address === address) {
+                inValue += input.prevout.value || 0;
+            }
+        }
+    }
+
+    if (tx.vout) {
+        for (const output of tx.vout) {
+            if (output.scriptpubkey_address === address) {
+                outValue += output.value || 0;
+            }
+        }
+    }
+
+    const netSatoshis = outValue - inValue;
+    const amount = Math.abs(netSatoshis) / 100000000;
+    const txType = netSatoshis >= 0 ? 'DEPOSIT' : 'WITHDRAWAL';
+
+    return {
+        user_id: userId,
+        wallet_address: address,
+        tx_hash: txHash,
+        chain: 'bitcoin',
+        timestamp: txDate,
+        amount: amount,
+        asset: tx._isTestnet ? 'tBTC' : 'BTC',
+        value_in_usd: null,
+        type: txType,
+        description: `Bitcoin transaction`,
+        source: 'wallet',
+        metadata: { raw_response: tx, provider: tx._source }
+    };
+}
+
+// Transform Solana transaction
+function transformSolanaTx(tx: any, address: string, userId: string): any {
+    const publicKey = new PublicKey(address);
+
+    // Calculate balance change from pre/post balances
+    let balanceChange = 0;
+    if (tx.transaction?.meta) {
+        const accountKeys = tx.transaction.transaction.message.accountKeys;
+        const accountIndex = accountKeys.findIndex((key: any) =>
+            key.pubkey?.toString() === address
+        );
+
+        if (accountIndex >= 0) {
+            const preBalance = tx.transaction.meta.preBalances[accountIndex] || 0;
+            const postBalance = tx.transaction.meta.postBalances[accountIndex] || 0;
+            balanceChange = (postBalance - preBalance) / 1e9; // Convert lamports to SOL
+        }
+    }
+
+    const amount = Math.abs(balanceChange);
+    const txType = balanceChange >= 0 ? 'DEPOSIT' : 'WITHDRAWAL';
+    const txDate = new Date(tx.blockTime ? tx.blockTime * 1000 : Date.now());
+
+    return {
+        user_id: userId,
+        wallet_address: address,
+        tx_hash: tx.signature,
+        chain: 'solana',
+        timestamp: txDate,
+        amount: amount,
+        asset: 'SOL',
+        value_in_usd: null,
+        type: txType,
+        description: `Solana transaction`,
+        source: 'wallet',
+        metadata: { raw_response: tx, provider: 'solana_rpc' }
+    };
+}
+
+// Transform EVM transaction (unchanged)
+function transformMoralisEvmTx(tx: any, address: string, userId: string): any {
+    const isOutgoing = tx.from_address?.toLowerCase() === address.toLowerCase();
+
+    let amount: number;
+    let asset: string;
+
+    if (tx._type === 'erc20') {
+        const decimals = parseInt(tx.token_decimals || '18');
+        amount = parseFloat(tx.value) / Math.pow(10, decimals);
+        asset = tx.token_symbol || 'UNKNOWN';
+
+        if (tx.value_decimal) {
+            amount = parseFloat(tx.value_decimal);
+        }
+    } else {
+        amount = parseFloat(tx.value) / 1e18;
+        asset = tx._nativeSymbol;
+    }
+
+    return {
+        user_id: userId,
+        wallet_address: address,
+        tx_hash: tx.hash || tx.transaction_hash,
+        chain: tx._chain,
+        timestamp: new Date(tx.block_timestamp),
+        amount: Math.abs(amount),
+        asset: asset,
+        value_in_usd: null,
+        type: isOutgoing ? 'WITHDRAWAL' : 'DEPOSIT',
+        description: `${asset} ${isOutgoing ? 'sent' : 'received'} on ${tx._chainLabel}`,
+        source: 'wallet',
+        metadata: { raw_response: tx, provider: 'moralis', chain_label: tx._chainLabel, tx_type: tx._type }
+    };
+}
+
+Deno.serve(async (req) => {
+    if (req.method === 'OPTIONS') {
+        return new Response('ok', { headers: corsHeaders });
+    }
+
+    try {
+        const authHeader = req.headers.get('Authorization');
+        if (!authHeader) {
+            return new Response(JSON.stringify({ error: 'Missing authorization header' }),
+                { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+        }
+
+        const supabaseClient = createClient(
+            Deno.env.get('SUPABASE_URL')!,
+            Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+        );
+
+        const jwt = authHeader.replace('Bearer ', '');
+        const { data: { user }, error: userError } = await supabaseClient.auth.getUser(jwt);
+        if (userError || !user) {
+            return new Response(JSON.stringify({ error: userError?.message || 'User not authenticated' }),
+                { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+        }
+
+        const { walletAddress } = await req.json();
+        if (!walletAddress) {
+            return new Response(JSON.stringify({ error: 'walletAddress is required' }),
+                { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+        }
+
+        const address = walletAddress.trim();
+        console.log(`[SYNC] Starting multi-chain sync for: ${address}`);
+
+        const addressType = detectAddressType(address);
+        console.log(`[SYNC] Detected address type: ${addressType}`);
+
+        if (addressType === 'unknown') {
+            return new Response(JSON.stringify({
+                error: 'Unable to detect blockchain type from address format',
+                address: address
+            }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+        }
+
+        let rawTransactions: any[] = [];
+        let chainsScanned: string[] = [];
+        let totalInserted = 0;
+
+        if (addressType === 'evm') {
+            const ETHERSCAN_API_KEY = Deno.env.get('ETHERSCAN_API_KEY');
+            if (!ETHERSCAN_API_KEY) {
+                return new Response(JSON.stringify({ error: 'ETHERSCAN_API_KEY not configured' }),
+                    { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+            }
+            console.log('[SYNC] Fetching EVM transactions from Etherscan...');
+            const result = await fetchEtherscanTransactions(address, ETHERSCAN_API_KEY, supabaseClient, user.id);
+            chainsScanned = ETHERSCAN_CHAINS.map(c => c.label);
+            totalInserted = result.inserted;
+
+            // For EVM, data is already inserted, skip the transform loop below
+            console.log(`[SYNC] EVM sync complete: ${result.total} fetched, ${result.inserted} inserted`);
+
+            return new Response(JSON.stringify({
+                success: true,
+                transactions_synced: result.inserted,
+                total_fetched: result.total,
+                chains_scanned: chainsScanned,
+                message: `Successfully synced ${result.inserted} transactions`
+            }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+
+        } else if (addressType === 'bitcoin') {
+            console.log('[SYNC] Fetching Bitcoin transactions (Blockstream/Mempool)...');
+            rawTransactions = await fetchBitcoinTransactions(address);
+            chainsScanned = ['Bitcoin'];
+        } else if (addressType === 'solana') {
+            console.log('[SYNC] Fetching Solana transactions (Web3.js RPC)...');
+            rawTransactions = await fetchSolanaTransactions(address);
+            chainsScanned = ['Solana'];
+        }
+
+        console.log(`[SYNC] Total transactions fetched: ${rawTransactions.length}`);
+
+        let recordsToUpsert: any[] = [];
+
+        for (const tx of rawTransactions) {
+            let record: any;
+
+            if (addressType === 'evm') {
+                record = transformMoralisEvmTx(tx, address, user.id);
+            } else if (addressType === 'bitcoin') {
+                record = transformBitcoinTx(tx, address, user.id);
+            } else if (addressType === 'solana') {
+                record = transformSolanaTx(tx, address, user.id);
+            }
+
+            if (record && record.tx_hash) {
+                recordsToUpsert.push(record);
+            }
+        }
+
+        if (recordsToUpsert.length === 0) {
+            return new Response(JSON.stringify({
+                message: 'No transactions found',
+                chainsScanned: chainsScanned,
+                transactionCount: 0
+            }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+        }
+
+        console.log(`[SYNC] Upserting ${recordsToUpsert.length} records...`);
+
+        const { error: upsertError } = await supabaseClient
+            .from('wallet_transactions')
+            .upsert(recordsToUpsert, { onConflict: 'tx_hash,user_id,chain' });
+
+        if (upsertError) {
+            console.error('[SYNC] Upsert error:', upsertError);
+            throw new Error(`Database error: ${upsertError.message}`);
+        }
+
+        const chainCounts: Record<string, number> = {};
+        for (const r of recordsToUpsert) {
+            chainCounts[r.chain] = (chainCounts[r.chain] || 0) + 1;
+        }
+
+        return new Response(JSON.stringify({
+            message: `Sync successful`,
+            chainsScanned: chainsScanned,
+            transactionCount: recordsToUpsert.length,
+            breakdown: chainCounts
+        }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+
+    } catch (err) {
+        console.error('[SYNC] CRITICAL ERROR:', err);
+        return new Response(JSON.stringify({ error: err.message }),
+            { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
+});

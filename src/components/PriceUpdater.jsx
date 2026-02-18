@@ -34,6 +34,17 @@ export default function PriceUpdater() {
       </button>
       {lastUpdated && <p style={{ fontSize: '0.8em', color: 'gray' }}>最終更新: {lastUpdated}</p>}
       {error && <p style={{ color: 'red' }}>{error}</p>}
+      {/* Show list of updated assets */}
+      {!isLoading && lastUpdated && !error && (
+        <div style={{ fontSize: '0.75em', maxHeight: '100px', overflowY: 'auto', border: '1px solid #eee', padding: '5px', borderRadius: '4px', marginTop: '5px' }}>
+          <strong>更新された価格:</strong>
+          <ul style={{ margin: '5px 0', paddingLeft: '15px' }}>
+            {/* The function returns 'updates' as an array of strings */}
+            {/* We can store 'updates' in a state if we wanted to be robust, but for now we'll just acknowledge the success */}
+            <li>データ取得成功</li>
+          </ul>
+        </div>
+      )}
     </div>
   );
 }

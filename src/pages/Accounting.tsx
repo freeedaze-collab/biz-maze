@@ -1,106 +1,96 @@
 
 // src/pages/Accounting.tsx
-// FINAL VERSION: Includes Date Pickers for filtering, data transformation, and Excel/CSV export.
+// FINAL VERSION: Dynamic financial statements based on entity company_type (IAS 2 vs IAS 38).
+// Includes Date Pickers for filtering, data transformation, and Excel/CSV export.
 import React, { useState, useEffect, useCallback } from 'react';
 import { supabase } from "../integrations/supabase/client";
-import { useAuth } from '../hooks/useAuth';
-import AppPageLayout from "@/components/layout/AppPageLayout";
-import { Link } from 'react-router-dom';
+import { useAuth } from "../hooks/useAuth";
+import AppPageLayout from '@/components/layout/AppPageLayout';
 import { format } from "date-fns";
-import { Calendar as CalendarIcon, Download, FileSpreadsheet } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { CalendarIcon, Download, Shield, TrendingUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-
-// --- Data Transformation Helper ---
-const transformData = (data: any[], accountMapping: Record<string, string>) => {
-    if (!data || data.length === 0) return null;
-    const transformed = Object.values(accountMapping).reduce((acc, key) => {
-        acc[key] = 0;
-        return acc;
-    }, {} as Record<string, number>);
-
-    data.forEach(item => {
-        const key = Object.keys(accountMapping).find(k => k === item.account || k === item.item);
-        if (key) {
-            transformed[accountMapping[key]] = item.balance ?? item.amount ?? 0;
-        }
-    });
-    return transformed;
-};
+import { Badge } from "@/components/ui/badge";
 
 // --- Helper Functions & Components ---
-const formatCurrency = (value: number | null | undefined, currency: string = 'USD') => {
-    const numericValue = value ?? 0;
-    const locale = currency === 'JPY' ? 'ja-JP' : currency === 'EUR' ? 'de-DE' : currency === 'GBP' ? 'en-GB' : currency === 'INR' ? 'en-IN' : currency === 'SGD' ? 'en-SG' : 'en-US';
-    return numericValue.toLocaleString(locale, { style: 'currency', currency: currency });
-};
+function formatCurrency(value: number | null | undefined, currency: string = 'USD') {
+    if (value === null || value === undefined) return '-';
+    const formatter = new Intl.NumberFormat('en-US', { style: 'currency', currency: currency, minimumFractionDigits: 2 });
+    return formatter.format(value);
+}
 
 interface FinancialCardProps {
     title: string;
-    items: { label: string; value: number | null | undefined }[];
+    items: { label: string; value: number }[];
     totalLabel: string;
     totalValue: number;
     isLoading: boolean;
     currency: string;
 }
 
-const FinancialCard: React.FC<FinancialCardProps> = ({ title, items, totalLabel, totalValue, isLoading, currency }) => (
-    <div className="surface-card p-6 w-full">
-        <h3 className="text-xl font-bold mb-4 text-slate-900">{title}</h3>
-        {isLoading ? <p className="text-muted-foreground">Loading...</p> : (
-            <div className="font-mono">
-                {items.map((item, index) => (
-                    <div key={index} className="flex justify-between py-2 border-b border-border/60">
-                        <span className="text-slate-600">{item.label}</span>
-                        <span className="text-slate-800">{formatCurrency(item.value, currency)}</span>
+function FinancialCard({ title, items, totalLabel, totalValue, isLoading, currency }: FinancialCardProps) {
+    return (
+        <div className="surface-card p-6 w-full h-fit">
+            <h3 className="text-xl font-bold mb-4 text-slate-900">{title}</h3>
+            {isLoading ? (
+                <p className="text-muted-foreground">Loading...</p>
+            ) : (
+                <div className="font-mono">
+                    {items.filter(i => i.value !== 0).map((item, index) => (
+                        <div key={index} className="flex justify-between py-1 border-b border-border/60">
+                            <span className="text-slate-600 text-sm">{item.label}</span>
+                            <span className={cn("text-slate-800", item.value < 0 && "text-red-600")}>{formatCurrency(item.value, currency)}</span>
+                        </div>
+                    ))}
+                    <div className="flex justify-between items-center py-3 mt-2 border-t-2 border-slate-200 font-bold text-lg text-slate-900">
+                        <span>{totalLabel}</span>
+                        <span className={cn(totalValue < 0 && "text-red-600")}>{formatCurrency(totalValue, currency)}</span>
                     </div>
-                ))}
-                <div className="flex justify-between py-3 mt-2 font-bold">
-                    <span className="text-slate-800">{totalLabel}</span>
-                    <span className="text-slate-900">{formatCurrency(totalValue, currency)}</span>
                 </div>
-            </div>
-        )}
-    </div>
-);
+            )}
+        </div>
+    );
+}
 
-const NoDataComponent = () => (
-    <div className="surface-card p-6 w-full lg:col-span-3 text-center">
-        <h3 className="text-xl font-bold mb-4 text-slate-900">No Accounting Data Found for the Selected Period</h3>
-        <p className="text-muted-foreground mb-4">
-            Financial statements are generated based on the 'usage' labels assigned to your transactions.
-        </p>
-        <p className="text-muted-foreground">
-            Please go to the <Link to="/transactions" className="text-primary hover:underline">Transaction History</Link> page to classify your recent activity.
-        </p>
-    </div>
-);
-
+function NoDataComponent() {
+    return (
+        <div className="surface-card p-12 text-center space-y-3">
+            <h3 className="text-lg font-medium text-slate-700">No Data Available</h3>
+            <p className="text-sm text-muted-foreground">
+                Sync your wallets and exchanges to generate financial statements.
+            </p>
+        </div>
+    );
+}
 
 // --- Main Accounting Page Component ---
 export default function Accounting() {
     const { user } = useAuth();
-    const [entities, setEntities] = useState<{ id: string; name: string }[]>([]);
+    const [entities, setEntities] = useState<{ id: string; name: string; company_type: string }[]>([]);
     const [selectedEntityId, setSelectedEntityId] = useState<string>('all');
 
     // Financial Data State
-    const [plData, setPlData] = useState<any>(null);
-    const [bsData, setBsData] = useState<any>(null);
-    const [cfData, setCfData] = useState<any>(null);
+    const [plItems, setPlItems] = useState<{ label: string; value: number }[]>([]);
+    const [bsItems, setBsItems] = useState<{ label: string; value: number }[]>([]);
+    const [cfItems, setCfItems] = useState<{ label: string; value: number }[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [startDate, setStartDate] = useState<Date | undefined>();
     const [endDate, setEndDate] = useState<Date | undefined>();
     const [selectedCurrency, setSelectedCurrency] = useState('USD');
 
+    // Determine the company_type of the selected entity
+    const selectedEntity = entities.find(e => e.id === selectedEntityId);
+    const companyType = selectedEntityId === 'all' ? 'mixed' : (selectedEntity?.company_type || 'ordinary');
+
     useEffect(() => {
         const loadEntities = async () => {
             const { data: { user } } = await supabase.auth.getUser();
             if (!user) return;
-            const { data } = await supabase.from('entities').select('id, name').eq('user_id', user.id).order('is_head_office', { ascending: false });
+            const { data } = await supabase.from('entities').select('id, name, company_type').eq('user_id', user.id).order('is_head_office', { ascending: false });
             if (data) setEntities(data);
         };
         loadEntities();
@@ -144,34 +134,21 @@ export default function Accounting() {
             if (bsRes.error) throw new Error(`Balance Sheet Error: ${bsRes.error.message}`);
             if (cfRes.error) throw new Error(`Cash Flow Error: ${cfRes.error.message}`);
 
-            // Mapping from DB account values to internal keys
-            const plMapping = {
-                'Other Revenue / Sales': 'staking_revenue',
-                'Realized Gain (Non-operating)': 'realized_gain',
-                'Realized Loss (Non-operating)': 'realized_loss',
-                'Fair Value Gain (Non-operating)': 'fair_value_gain',
-                'Fair Value Loss (Non-operating)': 'fair_value_loss',
-                'Impairment Loss (Extraordinary)': 'impairment_loss',
-                'Realized Gain (Deemed)': 'deemed_gain'
-            };
-            const bsMapping = {
-                'Cryptocurrency Assets': 'crypto_assets'
-            };
-            const cfMapping = {
-                'Adj: Fair Value Gain': 'adj_fv_gain',
-                'Adj: Fair Value Loss': 'adj_fv_loss',
-                'Adj: Impairment Loss': 'adj_impairment',
-                'Adj: Sale Profit': 'adj_sale_profit',
-                'Adj: Sale Loss': 'adj_sale_loss',
-                'Adj: Non-cash Rewards': 'adj_rewards',
-                'Adj: Deemed Sale Gain': 'adj_deemed_gain',
-                'Acquisition of Crypto Assets': 'investing_acquisition',
-                'Proceeds from Sale of Crypto Assets': 'investing_proceeds'
+            // Dynamically aggregate by account name — the view already returns
+            // the correct labels based on company_type
+            const aggregateByKey = (data: any[], keyField: string, valueField: string) => {
+                const map = new Map<string, number>();
+                for (const row of data || []) {
+                    const key = row[keyField];
+                    if (!key) continue;
+                    map.set(key, (map.get(key) || 0) + (row[valueField] || 0));
+                }
+                return Array.from(map.entries()).map(([label, value]) => ({ label, value }));
             };
 
-            setPlData(transformData(plRes.data, plMapping));
-            setBsData(transformData(bsRes.data, bsMapping));
-            setCfData(transformData(cfRes.data, cfMapping));
+            setPlItems(aggregateByKey(plRes.data, 'account', 'balance'));
+            setBsItems(aggregateByKey(bsRes.data, 'account', 'balance'));
+            setCfItems(aggregateByKey(cfRes.data, 'item', 'amount'));
 
         } catch (err: any) {
             console.error("Failed to fetch accounting data:", err);
@@ -185,80 +162,54 @@ export default function Accounting() {
         fetchData();
     }, [fetchData]);
 
-    const hasData = plData || bsData || cfData;
+    const hasData = plItems.length > 0 || bsItems.length > 0 || cfItems.length > 0;
 
-    const profitLossItems = [
-        { label: "Other Revenue / Sales", value: plData?.staking_revenue },
-        { label: "Realized Gain (Non-operating)", value: plData?.realized_gain },
-        { label: "Realized Loss (Non-operating)", value: plData?.realized_loss },
-        { label: "Fair Value Gain (Non-operating)", value: plData?.fair_value_gain },
-        { label: "Fair Value Loss (Non-operating)", value: plData?.fair_value_loss },
-        { label: "Impairment Loss (Extraordinary)", value: plData?.impairment_loss },
-        { label: "Realized Gain (Deemed)", value: plData?.deemed_gain },
-    ];
-    const netIncome = profitLossItems.reduce((acc, item) => acc + (item.value ?? 0), 0);
+    const netIncome = plItems.reduce((acc, item) => acc + item.value, 0);
+    const totalAssets = bsItems.reduce((acc, item) => acc + item.value, 0);
+    const liabilityEquityItems = [{ label: "Net Income (Retained Earnings)", value: netIncome }];
+    const totalLiabilitiesAndEquity = netIncome;
 
-    const assetItems = [
-        { label: "Cryptocurrency Assets", value: bsData?.crypto_assets },
-    ];
-    const totalAssets = assetItems.reduce((acc, item) => acc + (item.value ?? 0), 0);
+    // Separate CF items into operating and investing
+    const operatingCfItems = cfItems.filter(i => i.label.startsWith('Operating:'));
+    const investingCfItems = cfItems.filter(i => i.label.startsWith('Investing:'));
+    const otherCfItems = cfItems.filter(i => !i.label.startsWith('Operating:') && !i.label.startsWith('Investing:'));
 
-    const liabilityEquityItems = [
-        { label: "Net Income (Retained Earnings)", value: netIncome },
-    ];
-    const totalLiabilitiesAndEquity = netIncome; // Simple BS for now
+    // Strip prefix for display
+    const stripPrefix = (items: { label: string; value: number }[]) =>
+        items.map(i => ({ ...i, label: i.label.replace(/^(Operating|Investing): /, '') }));
 
-    const operatingCfItems = [
-        { label: "Net Income (Reconciliation Start)", value: netIncome },
-        { label: "Adj: Fair Value Gain", value: cfData?.adj_fv_gain },
-        { label: "Adj: Fair Value Loss", value: cfData?.adj_fv_loss },
-        { label: "Adj: Impairment Loss", value: cfData?.adj_impairment },
-        { label: "Adj: Sale Profit", value: cfData?.adj_sale_profit },
-        { label: "Adj: Sale Loss", value: cfData?.adj_sale_loss },
-        { label: "Adj: Non-cash Rewards", value: cfData?.adj_rewards },
-        { label: "Adj: Deemed Sale Gain", value: cfData?.adj_deemed_gain },
-    ];
-    const investingCfItems = [
-        { label: "Acquisition of Crypto Assets", value: cfData?.investing_acquisition },
-        { label: "Proceeds from Sale of Crypto Assets", value: cfData?.investing_proceeds },
-    ];
-    const financingCfItems: { label: string; value: number | null | undefined }[] = [];
-
-    const totalOperatingCF = operatingCfItems.reduce((acc, item) => acc + (item.value ?? 0), 0);
-    const totalInvestingCF = investingCfItems.reduce((acc, item) => acc + (item.value ?? 0), 0);
-    const totalFinancingCF = 0;
-    const netCashFlow = totalOperatingCF + totalInvestingCF + totalFinancingCF;
+    const totalOperatingCF = operatingCfItems.reduce((acc, item) => acc + item.value, 0);
+    const totalInvestingCF = investingCfItems.reduce((acc, item) => acc + item.value, 0);
+    const totalOtherCF = otherCfItems.reduce((acc, item) => acc + item.value, 0);
+    const netCashFlow = totalOperatingCF + totalInvestingCF + totalOtherCF;
 
     // --- Export Functions ---
     const exportToCSV = () => {
         const rows: string[][] = [];
 
-        // Profit & Loss Sheet
         rows.push(['=== Profit & Loss Statement ===', '', selectedCurrency]);
         rows.push(['Account', 'Amount']);
-        profitLossItems.forEach(item => rows.push([item.label, String(item.value ?? 0)]));
+        plItems.forEach(item => rows.push([item.label, String(item.value)]));
         rows.push(['Net Income', String(netIncome)]);
         rows.push(['', '']);
 
-        // Balance Sheet
         rows.push(['=== Balance Sheet ===', '', selectedCurrency]);
         rows.push(['Assets', '']);
-        assetItems.forEach(item => rows.push([item.label, String(item.value ?? 0)]));
+        bsItems.forEach(item => rows.push([item.label, String(item.value)]));
         rows.push(['Total Assets', String(totalAssets)]);
         rows.push(['', '']);
         rows.push(['Liabilities & Equity', '']);
-        liabilityEquityItems.forEach(item => rows.push([item.label, String(item.value ?? 0)]));
+        liabilityEquityItems.forEach(item => rows.push([item.label, String(item.value)]));
         rows.push(['Total Liabilities & Equity', String(totalLiabilitiesAndEquity)]);
         rows.push(['', '']);
 
-        // Cash Flow Statement
         rows.push(['=== Cash Flow Statement ===', '', selectedCurrency]);
         rows.push(['Operating Activities', '']);
-        operatingCfItems.forEach(item => rows.push([item.label, String(item.value ?? 0)]));
+        stripPrefix(operatingCfItems).forEach(item => rows.push([item.label, String(item.value)]));
         rows.push(['Net Operating CF', String(totalOperatingCF)]);
         rows.push(['', '']);
         rows.push(['Investing Activities', '']);
-        investingCfItems.forEach(item => rows.push([item.label, String(item.value ?? 0)]));
+        stripPrefix(investingCfItems).forEach(item => rows.push([item.label, String(item.value)]));
         rows.push(['Net Investing CF', String(totalInvestingCF)]);
         rows.push(['Net Cash Flow', String(netCashFlow)]);
 
@@ -271,7 +222,6 @@ export default function Accounting() {
         link.click();
         URL.revokeObjectURL(url);
     };
-
 
     return (
         <AppPageLayout
@@ -292,15 +242,41 @@ export default function Accounting() {
                     <div className="flex items-center gap-2">
                         <span className="text-sm font-medium text-slate-600">Entity:</span>
                         <Select value={selectedEntityId} onValueChange={setSelectedEntityId}>
-                            <SelectTrigger className="w-[180px]">
+                            <SelectTrigger className="w-[220px]">
                                 <SelectValue placeholder="All Companies" />
                             </SelectTrigger>
                             <SelectContent>
                                 <SelectItem value="all">All (Consolidated)</SelectItem>
-                                {entities.map(e => <SelectItem key={e.id} value={e.id}>{e.name}</SelectItem>)}
+                                {entities.map(e => (
+                                    <SelectItem key={e.id} value={e.id}>
+                                        <span className="flex items-center gap-2">
+                                            {e.name}
+                                            {e.company_type === 'crypto' && (
+                                                <Badge variant="secondary" className="text-xs ml-1">IAS 2</Badge>
+                                            )}
+                                        </span>
+                                    </SelectItem>
+                                ))}
                             </SelectContent>
                         </Select>
                     </div>
+
+                    {/* Company Type Badge */}
+                    {selectedEntityId !== 'all' && (
+                        <div className="flex items-center gap-1.5">
+                            {companyType === 'crypto' ? (
+                                <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200">
+                                    <TrendingUp className="h-3 w-3 mr-1" />
+                                    Crypto Enterprise (IAS 2)
+                                </Badge>
+                            ) : (
+                                <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">
+                                    <Shield className="h-3 w-3 mr-1" />
+                                    Ordinary Enterprise (IAS 38)
+                                </Badge>
+                            )}
+                        </div>
+                    )}
 
                     {/* Currency Selector */}
                     <div className="flex items-center gap-2">
@@ -371,8 +347,8 @@ export default function Accounting() {
                         {/* Column 1: P&L */}
                         <div className="space-y-8">
                             <FinancialCard
-                                title="Profit & Loss Statement"
-                                items={profitLossItems}
+                                title={companyType === 'crypto' ? "Profit & Loss (IAS 2 — Trading)" : "Profit & Loss Statement"}
+                                items={plItems}
                                 totalLabel="Net Income"
                                 totalValue={netIncome}
                                 isLoading={isLoading}
@@ -383,8 +359,8 @@ export default function Accounting() {
                         {/* Column 2: Balance Sheet */}
                         <div className="space-y-8">
                             <FinancialCard
-                                title="Balance Sheet: Assets"
-                                items={assetItems}
+                                title={companyType === 'crypto' ? "Balance Sheet (Inventory Model)" : "Balance Sheet: Assets"}
+                                items={bsItems}
                                 totalLabel="Total Assets"
                                 totalValue={totalAssets}
                                 isLoading={isLoading}
@@ -403,38 +379,57 @@ export default function Accounting() {
                         {/* Column 3: Cash Flow */}
                         <div className="space-y-8">
                             <div className="surface-card p-6 w-full h-fit">
-                                <h3 className="text-xl font-bold mb-4 text-slate-900">Cash Flow Statement</h3>
+                                <h3 className="text-xl font-bold mb-4 text-slate-900">
+                                    {companyType === 'crypto' ? "Cash Flow (Operating — Trading)" : "Cash Flow Statement"}
+                                </h3>
                                 {isLoading ? (
                                     <p className="text-muted-foreground">Loading...</p>
                                 ) : (
                                     <div className="font-mono space-y-4">
-                                        <div>
-                                            <h4 className="font-semibold text-slate-700 mb-2">Operating Activities</h4>
-                                            {operatingCfItems.map((item, index) => (
-                                                <div key={index} className="flex justify-between py-1 ml-4 border-b border-border/60">
-                                                    <span className="text-slate-600 text-sm">{item.label}</span>
-                                                    <span className="text-slate-800">{formatCurrency(item.value, selectedCurrency)}</span>
+                                        {operatingCfItems.length > 0 && (
+                                            <div>
+                                                <h4 className="font-semibold text-slate-700 mb-2">Operating Activities</h4>
+                                                {stripPrefix(operatingCfItems).map((item, index) => (
+                                                    <div key={index} className="flex justify-between py-1 ml-4 border-b border-border/60">
+                                                        <span className="text-slate-600 text-sm">{item.label}</span>
+                                                        <span className={cn("text-slate-800", item.value < 0 && "text-red-600")}>{formatCurrency(item.value, selectedCurrency)}</span>
+                                                    </div>
+                                                ))}
+                                                <div className="flex justify-between py-2 ml-4 font-bold">
+                                                    <span>Net Operating CF</span>
+                                                    <span>{formatCurrency(totalOperatingCF, selectedCurrency)}</span>
                                                 </div>
-                                            ))}
-                                            <div className="flex justify-between py-2 ml-4 font-bold">
-                                                <span>Net Operating CF</span>
-                                                <span>{formatCurrency(totalOperatingCF, selectedCurrency)}</span>
                                             </div>
-                                        </div>
+                                        )}
 
-                                        <div>
-                                            <h4 className="font-semibold text-slate-700 mb-2">Investing Activities</h4>
-                                            {investingCfItems.map((item, index) => (
-                                                <div key={index} className="flex justify-between py-1 ml-4 border-b border-border/60">
-                                                    <span className="text-slate-600 text-sm">{item.label}</span>
-                                                    <span className="text-slate-800">{formatCurrency(item.value, selectedCurrency)}</span>
+                                        {investingCfItems.length > 0 && (
+                                            <div>
+                                                <h4 className="font-semibold text-slate-700 mb-2">Investing Activities</h4>
+                                                {stripPrefix(investingCfItems).map((item, index) => (
+                                                    <div key={index} className="flex justify-between py-1 ml-4 border-b border-border/60">
+                                                        <span className="text-slate-600 text-sm">{item.label}</span>
+                                                        <span className={cn("text-slate-800", item.value < 0 && "text-red-600")}>{formatCurrency(item.value, selectedCurrency)}</span>
+                                                    </div>
+                                                ))}
+                                                <div className="flex justify-between py-2 ml-4 font-bold">
+                                                    <span>Net Investing CF</span>
+                                                    <span>{formatCurrency(totalInvestingCF, selectedCurrency)}</span>
                                                 </div>
-                                            ))}
-                                            <div className="flex justify-between py-2 ml-4 font-bold">
-                                                <span>Net Investing CF</span>
-                                                <span>{formatCurrency(totalInvestingCF, selectedCurrency)}</span>
                                             </div>
-                                        </div>
+                                        )}
+
+                                        {/* Legacy/other items that don't have prefix */}
+                                        {otherCfItems.length > 0 && (
+                                            <div>
+                                                <h4 className="font-semibold text-slate-700 mb-2">Other / Legacy</h4>
+                                                {otherCfItems.map((item, index) => (
+                                                    <div key={index} className="flex justify-between py-1 ml-4 border-b border-border/60">
+                                                        <span className="text-slate-600 text-sm">{item.label}</span>
+                                                        <span className={cn("text-slate-800", item.value < 0 && "text-red-600")}>{formatCurrency(item.value, selectedCurrency)}</span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
 
                                         <div className="flex justify-between pt-4 border-t-2 border-slate-200 mt-4 font-bold text-lg text-slate-900">
                                             <span>Net Cash Flow</span>

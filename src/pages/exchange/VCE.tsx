@@ -11,23 +11,13 @@ import { RefreshCw, PlusCircle, Trash2, Loader2, Clock } from 'lucide-react';
 import AppPageLayout from '@/components/layout/AppPageLayout';
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { EXCHANGES, getEnabledExchanges } from '@/config/providers';
+import { AdapterRegistry } from '@/lib/adapters';
 
 // --- Components ---
 
-const EXCHANGES_CONFIG = [
-  { name: "Binance", slug: "binance", fields: ["apiKey", "apiSecret"] },
-  { name: "Coinbase", slug: "coinbase", fields: ["apiKey", "apiSecret"] },
-  { name: "Kraken", slug: "kraken", fields: ["apiKey", "apiSecret"] },
-  { name: "OKX", slug: "okx", fields: ["apiKey", "apiSecret", "passphrase"] },
-  { name: "Bybit", slug: "bybit", fields: ["apiKey", "apiSecret"] },
-  { name: "Bitget", slug: "bitget", fields: ["apiKey", "apiSecret", "passphrase"] },
-  { name: "Gate.io", slug: "gate", fields: ["apiKey", "apiSecret"] },
-  { name: "KuCoin", slug: "kucoin", fields: ["apiKey", "apiSecret", "passphrase"] },
-  { name: "BingX", slug: "bingx", fields: ["apiKey", "apiSecret"] },
-  { name: "Crypto.com", slug: "crypto_com", fields: ["apiKey", "apiSecret"] },
-  { name: "bitFlyer", slug: "bitflyer", fields: ["apiKey", "apiSecret"] },
-  { name: "Coincheck", slug: "coincheck", fields: ["apiKey", "apiSecret"] },
-];
+// 設定ファイルから取引所リストを取得（enabled: trueのもののみ表示することも可能）
+const EXCHANGES_CONFIG = Object.values(EXCHANGES);
 
 function ExchangeConnectionForm({ exchange, onSave }: { exchange: any, onSave: () => void }) {
   const { toast } = useToast();
@@ -77,6 +67,18 @@ function ExchangeConnectionForm({ exchange, onSave }: { exchange: any, onSave: (
     }
 
     try {
+      // Test credentials using adapter before saving
+      const adapter = AdapterRegistry.getExchangeAdapter(exchange.key);
+      const isValid = await adapter.testConnection({
+        apiKey: formData.api_key,
+        apiSecret: formData.api_secret,
+        passphrase: formData.api_passphrase || undefined
+      });
+
+      if (!isValid) {
+        throw new Error('Invalid API credentials. Please check your keys.');
+      }
+
       const { error } = await supabase.functions.invoke("exchange-save-keys", { body });
       if (error) throw error;
       toast({ title: 'Connection saved successfully!' });
@@ -170,7 +172,9 @@ function ExistingConnections({ onConnectionUpdate }: { onConnectionUpdate: numbe
     try {
       const { data, error } = await supabase.functions.invoke('exchange-sync-all', { body: { connection_id: connectionId } });
       if (error) throw new Error(error.message);
-      toast({ title: `Sync Complete for ${name}`, description: `Saved ${data.count} trades.` });
+      if (data?.error) throw new Error(data.error);
+
+      toast({ title: `Sync Complete for ${name}`, description: `Dispatched ${data.count || 0} tasks.` });
     } catch (e: any) {
       toast({ variant: 'destructive', title: `Sync Failed for ${name}`, description: e.message });
     } finally {
@@ -261,7 +265,7 @@ function AddNewConnectionManager({ onConnectionSave }: { onConnectionSave: () =>
       <CardContent>
         <Accordion type="single" collapsible className="w-full">
           {EXCHANGES_CONFIG.map(exchange => {
-            const isComingSoon = exchange.slug !== 'binance';
+            const isComingSoon = !exchange.enabled;
             return (
               <AccordionItem
                 key={exchange.slug}

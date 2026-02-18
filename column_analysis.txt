@@ -1,0 +1,61 @@
+-- Compare column lists between base_transactions and fee_transactions
+
+-- base_transactions CTE columns (from line 28-50):
+/*
+1. t.id
+2. t.user_id
+3. t.reference_id
+4. t.date
+5. t.source
+6. t.chain
+7. t.description
+8. t.amount
+9. t.asset
+10. t.price
+11. t.raw_value_usd
+12. t.usage
+13. t.note
+14. t.type
+15. t.connection_id
+16. t.quote_asset
+17. t.wallet_address
+18. t.connection_name
+19. t.fee
+20. t.fee_asset
+21. t.id AS parent_id  ← text型
+22. t.type AS parent_type ← text型
+23. 'main'::text AS row_type ← text型
+*/
+
+-- fee_transactions CTE columns (from line 123-163):
+/*
+1. bt.reference_id ← ❌ WRONG ORDER! Should be after id
+2. (bt.id || '_fee') AS id
+3. bt.user_id
+4. bt.date
+5. bt.source
+6. bt.chain
+7. 'Transaction Fee'::text AS description
+8. bt.fee AS amount
+9. bt.fee_asset AS asset
+10. price calculation
+11. raw_value_usd calculation
+12. usage CASE
+13. note
+14. 'fee'::text AS type
+15. bt.connection_id
+16. NULL::text AS quote_asset
+17. bt.wallet_address
+18. bt.connection_name
+19. NULL::numeric AS fee
+20. NULL::text AS fee_asset
+21. bt.parent_id
+22. bt.parent_type
+23. 'fee'::text AS row_type
+*/
+
+-- PROBLEM: Column order doesnt match!
+-- base_transactions starts with: t.id, t.user_id, t.reference_id
+-- fee_transactions starts with: bt.reference_id, (bt.id || '_fee'), bt.user_id
+
+-- SOLUTION: Reorder fee_transactions to match base_transactions exactly

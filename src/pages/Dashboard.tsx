@@ -8,6 +8,7 @@ import {
   CreditCard,
   FileLock,
   PiggyBank,
+  RefreshCw,
   ShieldCheck,
   Wallet2,
   Waypoints,
@@ -16,6 +17,8 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { Button } from "@/components/ui/button";
 import AppPageLayout from "@/components/layout/AppPageLayout";
 import { cn } from "@/lib/utils";
+import { triggerSyncAll } from "@/lib/syncAll";
+import { useToast } from "@/components/ui/use-toast";
 
 interface TileConfig {
   label: string;
@@ -23,6 +26,71 @@ interface TileConfig {
   icon: any;
   href?: string;
   status?: "live" | "coming";
+}
+
+function SyncEverythingButton() {
+  const { toast } = useToast();
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncProgress, setSyncProgress] = useState<string>('');
+
+  const handleSyncAll = async () => {
+    setIsSyncing(true);
+    setSyncProgress('Starting sync...');
+    try {
+      // 1. Wallets Sync (Incremental)
+      const { syncAllWalletsIncremental } = await import('@/lib/incrementalWalletSync');
+      const walletResult = await syncAllWalletsIncremental((progress) => {
+        setSyncProgress(
+          `Syncing Wallets: ${progress.currentWalletIndex}/${progress.totalWallets}` +
+          (progress.currentChain ? ` (${progress.currentChain})` : '')
+        );
+      });
+
+      // 2. Exchanges Sync (Legacy/Full)
+      setSyncProgress('Syncing Exchanges...');
+      const result = await triggerSyncAll('all');
+
+      if (walletResult.success && result.ok) {
+        toast({
+          title: 'Sync Complete',
+          description: `✅ Wallets and Exchanges synced successfully.`,
+        });
+      } else {
+        toast({
+          variant: 'destructive',
+          title: 'Sync completed with notice',
+          description: 'Wallets or Exchanges had some issues during sync.',
+        });
+      }
+    } catch (error) {
+      console.error('Sync error:', error);
+      toast({
+        variant: 'destructive',
+        title: 'Sync Error',
+        description: error instanceof Error ? error.message : 'Unknown error occurred',
+      });
+    } finally {
+      setIsSyncing(false);
+      setSyncProgress('');
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-2 w-full">
+      <Button
+        onClick={handleSyncAll}
+        disabled={isSyncing}
+        size="lg"
+        className="w-full"
+      >
+        <RefreshCw className={`h-5 w-5 mr-2 ${isSyncing ? 'animate-spin' : ''}`} />
+        {isSyncing ? 'Syncing...' : 'Sync Everything'}
+      </Button>
+      {syncProgress && (
+        <p className="text-center text-xs text-muted-foreground font-mono">{syncProgress}</p>
+      )}
+    </div>
+  );
 }
 
 export default function Dashboard() {
@@ -78,9 +146,10 @@ export default function Dashboard() {
     },
     {
       label: "Tax calculator",
-      description: "Keep ahead of filing deadlines and estimates.",
+      description: "Calculate crypto taxes for US, Germany, and France.",
       icon: Calculator,
-      status: "coming",
+      href: "/tax-calculator",
+      status: "live",
     },
     {
       label: "Security",
@@ -166,7 +235,7 @@ export default function Dashboard() {
             </Button>
           </div>
 
-            <Accordion type="single" collapsible className="space-y-3">
+          <Accordion type="single" collapsible className="space-y-3">
             <AccordionItem value="profile" className="border border-border rounded-xl px-4">
               <AccordionTrigger>Profile</AccordionTrigger>
               <AccordionContent className="space-y-3">
@@ -206,7 +275,9 @@ export default function Dashboard() {
         </div>
 
         <div className="surface-card p-6 space-y-4">
-          <p className="text-xs uppercase tracking-[0.2em] text-primary font-semibold">What to do next</p>
+          <p className="text-xs uppercase tracking-[0.2em] text-primary font-semibold">Quick Actions</p>
+          <SyncEverythingButton />
+          <p className="text-xs uppercase tracking-[0.2em] text-primary font-semibold pt-4">What to do next</p>
           <div className="space-y-3 text-sm text-muted-foreground">
             <p>
               • Review <Link className="text-primary font-semibold" to="/transactions">Transaction history</Link> to confirm the

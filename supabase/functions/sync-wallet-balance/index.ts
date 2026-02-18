@@ -1,103 +1,105 @@
+
 import "https://deno.land/x/xhr@0.1.0/mod.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.57.4';
+import { createClient as createSupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { createPublicClient, http, formatEther } from 'https://esm.sh/viem@2.7.1';
+import { mainnet, bsc, polygon } from 'https://esm.sh/viem@2.7.1/chains';
 
+// CORSヘッダー
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+// チェーン設定
+const ALCHEMY_KEY = Deno.env.get('VITE_ALCHEMY_API_KEY');
+const chains = {
+  'ethereum': {
+    viemChain: mainnet,
+    transport: http(ALCHEMY_KEY ? `https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}` : undefined)
+  },
+  'bsc': {
+    viemChain: bsc,
+    transport: http(ALCHEMY_KEY ? `https://bsc-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}` : undefined)
+  },
+  'polygon': {
+    viemChain: polygon,
+    transport: http(ALCHEMY_KEY ? `https://polygon-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}` : undefined)
+  }
+};
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
-    return new Response(null, { headers: corsHeaders });
+    return new Response("ok", { headers: corsHeaders });
   }
 
   try {
-    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-    const supabase = createClient(supabaseUrl, supabaseKey);
-
     const { walletId } = await req.json();
+    if (!walletId) {
+      throw new Error("walletId is required");
+    }
 
-    // Get wallet connection details
+    // Supabaseクライアントの初期化
+    const supabase = createSupabaseClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+    );
+
+    // ウォレット接続情報を取得
     const { data: wallet, error: walletError } = await supabase
       .from('wallet_connections')
-      .select('*')
+      .select('id, wallet_address, network') // 'network'カラムを想定
       .eq('id', walletId)
       .single();
 
-    if (walletError || !wallet) {
-      throw new Error('Wallet not found');
+    if (walletError) throw walletError;
+    if (!wallet) throw new Error('Wallet not found');
+    if (!wallet.wallet_address) throw new Error("Wallet address is missing.");
+    if (!wallet.network) throw new Error("Wallet network is not specified.");
+
+    // 対応チェーンかどうかを確認
+    const chainConfig = chains[wallet.network];
+    if (!chainConfig) {
+      throw new Error(`Unsupported network: ${wallet.network}`);
     }
 
-    // Mock blockchain API call - replace with real API
-    const mockBalance = Math.random() * 10000; // Random balance for demo
-    
-    // In a real implementation, you would call actual blockchain APIs:
-    // - Ethereum: Infura, Alchemy, or direct node
-    // - Bitcoin: BlockCypher, Blockstream API
-    // - Others: CoinGecko, Moralis, etc.
-    
-    console.log(`Syncing balance for wallet ${wallet.wallet_address} (${wallet.wallet_type})`);
-    console.log(`Mock balance: $${mockBalance.toFixed(2)}`);
+    // Viemパブリッククライアントを作成
+    const client = createPublicClient({
+      chain: chainConfig.viemChain,
+      transport: chainConfig.transport,
+    });
 
-    // Update wallet balance
+    // ブロックチェーンからネイティブ残高を取得
+    const balanceWei = await client.getBalance({
+      address: wallet.wallet_address as `0x${string}`,
+    });
+
+    // WeiからEther単位に変換
+    const balanceEther = formatEther(balanceWei);
+
+    console.log(`Synced balance for wallet ${wallet.id}: ${balanceEther} ${chainConfig.viemChain.nativeCurrency.symbol}`);
+
+    // DBの残高を更新 (balance_usdをネイティブ残高で更新, カラム名は要検討)
     const { error: updateError } = await supabase
       .from('wallet_connections')
       .update({
-        balance_usd: mockBalance,
+        balance_native: parseFloat(balanceEther), // 新しいカラム 'balance_native' を想定
         last_sync_at: new Date().toISOString()
       })
-      .eq('id', walletId);
+      .eq('id', wallet.id);
 
-    if (updateError) {
-      throw updateError;
-    }
-
-    // Fetch recent transactions (mock data for now)
-    const mockTransactions = [
-      {
-        user_id: wallet.user_id,
-        wallet_address: wallet.wallet_address,
-        transaction_hash: `0x${Math.random().toString(16).substring(2, 18)}`,
-        transaction_type: 'receive',
-        amount: Math.random() * 1000,
-        currency: 'ETH',
-        usd_value: Math.random() * 3000,
-        from_address: `0x${Math.random().toString(16).substring(2, 42)}`,
-        to_address: wallet.wallet_address,
-        blockchain_network: 'ethereum',
-        transaction_date: new Date().toISOString(),
-        transaction_status: 'confirmed'
-      }
-    ];
-
-    // Store transactions
-    const { error: txError } = await supabase
-      .from('transactions')
-      .upsert(mockTransactions, { onConflict: 'transaction_hash' });
-
-    if (txError) {
-      console.error('Error storing transactions:', txError);
-    }
+    if (updateError) throw updateError;
 
     return new Response(
-      JSON.stringify({ 
-        success: true, 
-        balance: mockBalance,
-        transactions: mockTransactions.length 
-      }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      JSON.stringify({ success: true, balance: balanceEther }),
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
 
   } catch (error) {
     console.error('Error in sync-wallet-balance:', error);
     return new Response(
-      JSON.stringify({ error: (error as Error).message }),
-      { 
-        status: 500, 
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-      }
+      JSON.stringify({ error: error.message }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
 });

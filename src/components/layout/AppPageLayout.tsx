@@ -29,6 +29,7 @@ const mainLinks = [
 const quickButtons = [
   { label: "Profile", href: "/profile", icon: UserRound },
   { label: "Wallets", href: "/wallets", icon: Wallet2 },
+  { label: "Exchanges", href: "/exchanges", icon: ArrowLeftRight },
   { label: "Virtual Custody Exchange", href: "/vce", icon: Workflow },
 ];
 

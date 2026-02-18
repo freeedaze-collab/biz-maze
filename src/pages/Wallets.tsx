@@ -9,8 +9,10 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { useToast } from '@/components/ui/use-toast';
 import AppPageLayout from '@/components/layout/AppPageLayout';
-import { PlusCircle, Trash2 } from 'lucide-react';
+import { PlusCircle, Trash2, RefreshCw } from 'lucide-react';
 import { Input } from '@/components/ui/input';
+import { triggerSyncAll } from '@/lib/syncAll';
+
 
 // --- Data Structures ---
 const WALLET_PROVIDERS = [
@@ -27,7 +29,7 @@ const WALLET_PROVIDERS = [
     slug: 'walletconnect',
     isAddressRequired: true,
     chains: [
-        { name: 'Ethereum (EVM)', slug: 'eth-evm', description: 'Connect using WalletConnect modal.', isDummy: true },
+      { name: 'Ethereum (EVM)', slug: 'eth-evm', description: 'Connect using WalletConnect modal.', isDummy: true },
     ]
   },
   {
@@ -40,6 +42,78 @@ const WALLET_PROVIDERS = [
     ]
   }
 ];
+
+// --- Components ---
+
+function SyncAllWalletsButton() {
+  const { toast } = useToast();
+  const [isSyncing, setIsSyncing] = useState(false);
+
+  const [syncProgress, setSyncProgress] = useState<string>('');
+
+  const handleSyncAll = async () => {
+    setIsSyncing(true);
+    setSyncProgress('Starting sync...');
+
+    try {
+      const { syncAllWalletsIncremental } = await import('@/lib/incrementalWalletSync');
+
+      const result = await syncAllWalletsIncremental((progress) => {
+        if (progress.currentChain) {
+          setSyncProgress(
+            `Wallet ${progress.currentWalletIndex}/${progress.totalWallets} | ` +
+            `Chain ${progress.chainIndex}/${progress.totalChains} (${progress.currentChain}) | ` +
+            `${progress.transactionsSynced} txs synced`
+          );
+        } else {
+          setSyncProgress(
+            `Syncing wallet ${progress.currentWalletIndex}/${progress.totalWallets}: ${progress.walletAddress.slice(0, 10)}... (${progress.transactionsSynced} total txs)`
+          );
+        }
+      });
+
+      if (result.success) {
+        toast({
+          title: 'Wallet Sync Complete',
+          description: `✅ Successfully synced ${result.totalSynced} transactions across all wallets!`,
+        });
+      } else {
+        toast({
+          variant: 'destructive',
+          title: 'Sync Completed with Errors',
+          description: `${result.totalSynced} transactions synced, but ${result.errors.length} wallet(s) failed.`,
+        });
+      }
+    } catch (error) {
+      console.error('Sync all error:', error);
+      toast({
+        variant: 'destructive',
+        title: 'Sync Error',
+        description: error instanceof Error ? error.message : 'Unknown error occurred',
+      });
+    } finally {
+      setIsSyncing(false);
+      setSyncProgress('');
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-2">
+      <Button
+        onClick={handleSyncAll}
+        disabled={isSyncing}
+        size="sm"
+        variant="outline"
+      >
+        <RefreshCw className={`h-4 w-4 mr-2 ${isSyncing ? 'animate-spin' : ''}`} />
+        {isSyncing ? 'Syncing...' : 'Sync All'}
+      </Button>
+      {syncProgress && (
+        <p className="text-xs text-muted-foreground">{syncProgress}</p>
+      )}
+    </div>
+  );
+}
 
 // --- Components ---
 
@@ -79,7 +153,10 @@ function ExistingWallets({ updateTrigger, onConnectionDelete }) {
 
   return (
     <Card>
-      <CardHeader><CardTitle>Your Linked Wallets</CardTitle></CardHeader>
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
+        <CardTitle>Your Linked Wallets</CardTitle>
+        {wallets.length > 0 && <SyncAllWalletsButton />}
+      </CardHeader>
       <CardContent className="space-y-3">
         {wallets.length === 0 ? (
           <p className="text-sm text-muted-foreground">No wallets linked yet.</p>
@@ -112,17 +189,17 @@ function AddNewWalletManager({ onLinkSuccess }) {
 
     // --- The one working feature: MetaMask --- 
     if (provider.slug === 'metamask' && !chain.isDummy) {
-        const address = addressInput.trim();
-        if (!address) {
-            toast({ variant: 'destructive', title: 'Address Required', description: 'Please enter a wallet address to verify with MetaMask.' });
-            return;
-        }
-        const success = await verifyWalletOwnership(address, 'metamask');
-        if (success) {
-            toast({ title: 'Wallet Linked!', description: `Successfully verified and linked ${address}.`});
-            setAddressInput("");
-            onLinkSuccess();
-        }
+      const address = addressInput.trim();
+      if (!address) {
+        toast({ variant: 'destructive', title: 'Address Required', description: 'Please enter a wallet address to verify with MetaMask.' });
+        return;
+      }
+      const success = await verifyWalletOwnership(address, 'metamask');
+      if (success) {
+        toast({ title: 'Wallet Linked!', description: `Successfully verified and linked ${address}.` });
+        setAddressInput("");
+        onLinkSuccess();
+      }
     }
   };
 
@@ -134,14 +211,14 @@ function AddNewWalletManager({ onLinkSuccess }) {
       </CardHeader>
       <CardContent className='space-y-4'>
         <div>
-            <label className='text-sm font-medium'>Wallet Address</label>
-            <Input
-                placeholder="0x..."
-                value={addressInput}
-                onChange={e => setAddressInput(e.target.value)}
-                disabled={isVerifying}
-                className="mt-1"
-            />
+          <label className='text-sm font-medium'>Wallet Address</label>
+          <Input
+            placeholder="0x..."
+            value={addressInput}
+            onChange={e => setAddressInput(e.target.value)}
+            disabled={isVerifying}
+            className="mt-1"
+          />
         </div>
 
         <Accordion type="single" collapsible className="w-full">
@@ -154,16 +231,16 @@ function AddNewWalletManager({ onLinkSuccess }) {
                     <AccordionItem key={chain.slug} value={`${provider.slug}-${chain.slug}`}>
                       <AccordionTrigger>{chain.name}</AccordionTrigger>
                       <AccordionContent className="p-2">
-                         <div className="border-t pt-4 mt-4 space-y-3">
-                            <p className="text-sm text-muted-foreground">{chain.description}</p>
-                            {provider.isAddressRequired && !addressInput && <p className='text-xs text-destructive'>Please enter a wallet address above.</p>}
-                            <Button 
-                                onClick={() => handleConnect(provider, chain)} 
-                                disabled={isVerifying || (provider.isAddressRequired && !addressInput)}
-                                className="w-full"
-                            >
-                                {isVerifying && !chain.isDummy ? 'Verifying...' : `Link (${provider.name})`}
-                            </Button>
+                        <div className="border-t pt-4 mt-4 space-y-3">
+                          <p className="text-sm text-muted-foreground">{chain.description}</p>
+                          {provider.isAddressRequired && !addressInput && <p className='text-xs text-destructive'>Please enter a wallet address above.</p>}
+                          <Button
+                            onClick={() => handleConnect(provider, chain)}
+                            disabled={isVerifying || (provider.isAddressRequired && !addressInput)}
+                            className="w-full"
+                          >
+                            {isVerifying && !chain.isDummy ? 'Verifying...' : `Link (${provider.name})`}
+                          </Button>
                         </div>
                       </AccordionContent>
                     </AccordionItem>

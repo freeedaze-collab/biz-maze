@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import AppPageLayout from "@/components/layout/AppPageLayout";
+import { RefreshCw } from "lucide-react";
 
 const accountingUsageOptions = [
     { value: 'cash_purchase', label: 'Cash Purchase' },
@@ -65,6 +66,9 @@ export default function TransactionHistory() {
     const [isUpdatingPrices, setIsUpdatingPrices] = useState(false);
     const [syncMessage, setSyncMessage] = useState<string | null>(null);
     const [selectedCurrency, setSelectedCurrency] = useState('USD');
+    const [currentPage, setCurrentPage] = useState(1);
+    const [pageSize] = useState(20);
+    const [totalTransactions, setTotalTransactions] = useState(0);
 
     useEffect(() => {
         const loadEntities = async () => {
@@ -86,7 +90,17 @@ export default function TransactionHistory() {
             const transactionsSelect = 'id, user_id, reference_id, date, source, chain, description, amount, asset, price, value_usd, value_jpy, value_eur, type, usage, note, entity_id, entity_name, transaction_type';
 
             let holdingsQuery = supabase.from('v_holdings').select(holdingsSelect).eq('user_id', user.id);
-            let transactionsQuery = supabase.from('v_all_transactions_classified').select(transactionsSelect).eq('user_id', user.id).order('date', { ascending: false }).limit(100);
+
+            // Pagination: calculate range
+            const from = (currentPage - 1) * pageSize;
+            const to = from + pageSize - 1;
+
+            let transactionsQuery = supabase
+                .from('v_all_transactions_classified')
+                .select(transactionsSelect, { count: 'exact' })
+                .eq('user_id', user.id)
+                .order('date', { ascending: false })
+                .range(from, to);
 
             if (selectedEntityId !== 'all') {
                 holdingsQuery = holdingsQuery.eq('entity_id', selectedEntityId);
@@ -112,13 +126,14 @@ export default function TransactionHistory() {
 
             setHoldings(mappedHoldings as Holding[]);
             setTransactions(transactionsRes.data as Transaction[] || []);
+            setTotalTransactions(transactionsRes.count || 0);
         } catch (err: any) {
             console.error("Error fetching data:", err);
             setError(`Failed to load data: ${err.message}`);
         } finally {
             setIsLoading(false);
         }
-    }, [selectedEntityId]);
+    }, [selectedEntityId, currentPage, pageSize]);
 
     useEffect(() => { fetchAllData(); }, [fetchAllData]);
 
@@ -156,37 +171,15 @@ export default function TransactionHistory() {
         }
     };
 
-    const handleSync = async (syncFunction: 'sync-wallet-transactions' | 'exchange-sync-all' | 'sync-historical-exchange-rates', syncType: string) => {
+    const handleSync = async (syncFunction: 'sync-wallet-transactions' | 'exchange-sync-all' | 'sync-historical-exchange-rates' | 'sync-all-user-data', syncType: string) => {
         setIsSyncing(true);
         setSyncMessage(`Initiating ${syncType} sync...`);
         setError(null);
         try {
-            if (syncFunction === 'sync-wallet-transactions') {
-                const { data: { user } } = await supabase.auth.getUser();
-                if (!user) throw new Error("User not authenticated");
+            const { data, error } = await supabase.functions.invoke(syncFunction, { body: {} });
+            if (error) throw error;
 
-                const { data: wallets, error: walletsError } = await supabase.from('wallet_connections').select('wallet_address').eq('user_id', user.id).not('verified_at', 'is', null);
-                if (walletsError) throw walletsError;
-                if (!wallets || wallets.length === 0) { setSyncMessage("No verified wallets found to sync."); return; }
-
-                setSyncMessage(`Syncing all chains for ${wallets.length} wallet(s)...`);
-                let syncErrors: string[] = [];
-
-                for (const wallet of wallets) {
-                    try {
-                        const trimmedAddress = (wallet.wallet_address || '').trim();
-                        const { error: invokeError } = await supabase.functions.invoke('sync-wallet-transactions', { body: { walletAddress: trimmedAddress } });
-                        if (invokeError) syncErrors.push(invokeError.message);
-                    } catch (e: any) { syncErrors.push(e.message); }
-                }
-                if (syncErrors.length > 0) setError(`Sync completed with issues: ${syncErrors.join("; ")}`);
-
-            } else {
-                const { error } = await supabase.functions.invoke(syncFunction, { body: {} });
-                if (error) throw error;
-            }
-
-            setSyncMessage("Sync tasks complete. Refreshing all data...");
+            setSyncMessage(`Sync task complete: ${data?.message || 'Done'}. Refreshing all data...`);
             await fetchAllData();
             setSyncMessage("Data refreshed.");
         } catch (err: any) {
@@ -256,10 +249,59 @@ export default function TransactionHistory() {
                                 </Select>
                             </div>
                             <div className="flex items-center gap-2 border-l pl-4">
-                                <Button variant="outline" size="sm" onClick={handleUpdatePrices} disabled={isUpdatingPrices || isSyncing || isSaving}>{isUpdatingPrices ? 'Updating...' : 'Update Prices'}</Button>
-                                <Button variant="outline" size="sm" onClick={() => handleSync('exchange-sync-all', 'Exchanges')} disabled={isSyncing || isUpdatingPrices || isSaving}>{isSyncing ? 'Syncing...' : 'Sync VCE'}</Button>
-                                <Button variant="outline" size="sm" onClick={() => handleSync('sync-wallet-transactions', 'Wallets')} disabled={isSyncing || isUpdatingPrices || isSaving}>{isSyncing ? 'Syncing...' : 'Sync Wallets'}</Button>
-                                <Button size="sm" onClick={handleSaveChanges} disabled={isSaving || isSyncing || Object.keys(editedTransactions).length === 0}>{isSaving ? 'Saving...' : 'Save Changes'}</Button>
+                                <Button variant="outline" size="sm" onClick={handleUpdatePrices} disabled={isUpdatingPrices || isSyncing || isSaving}>{isUpdatingPrices ? 'Updating...' : 'Refresh Prices'}</Button>
+                                <div className="flex flex-col gap-1">
+                                    <Button
+                                        size="sm"
+                                        onClick={async () => {
+                                            setIsSyncing(true);
+                                            setError(null);
+                                            setSyncMessage('Starting incremental sync...');
+                                            try {
+                                                // 1. Wallets Sync (Incremental)
+                                                const { syncAllWalletsIncremental } = await import('@/lib/incrementalWalletSync');
+                                                const walletResult = await syncAllWalletsIncremental((progress) => {
+                                                    setSyncMessage(
+                                                        `Syncing: Wallet ${progress.currentWalletIndex}/${progress.totalWallets} | ` +
+                                                        (progress.currentChain ? `${progress.currentChain} | ` : '') +
+                                                        `${progress.transactionsSynced} txs`
+                                                    );
+                                                });
+
+                                                // 2. Exchanges Sync (via sync-all-user-data)
+                                                setSyncMessage('Syncing Exchanges...');
+                                                const { triggerSyncAll } = await import('@/lib/syncAll');
+
+                                                // Call sync-all-user-data specifically for exchanges to avoid re-syncing wallets
+                                                const exchangeResult = await triggerSyncAll('exchanges');
+
+                                                if (walletResult.success && exchangeResult.ok) {
+                                                    setSyncMessage(`Sync Complete! Wallets: ${walletResult.totalSynced} txs. Exchanges: ${exchangeResult.exchangesSuccess} synced. Refreshing...`);
+                                                    await fetchAllData();
+                                                } else {
+                                                    const errors = [
+                                                        ...walletResult.errors,
+                                                        ...(exchangeResult.ok ? [] : ['Exchange sync failed'])
+                                                    ];
+                                                    setError(`Sync finished with issues: ${errors.join(', ')}`);
+                                                    // Still refresh data as some might have succeeded
+                                                    await fetchAllData();
+                                                }
+                                            } catch (err: any) {
+                                                console.error('Sync error:', err);
+                                                setError(`Sync failed: ${err.message}`);
+                                            } finally {
+                                                setIsSyncing(false);
+                                                setTimeout(() => setSyncMessage(null), 5000);
+                                            }
+                                        }}
+                                        disabled={isSyncing || isUpdatingPrices || isSaving}
+                                    >
+                                        <RefreshCw className={`h-4 w-4 mr-2 ${isSyncing ? 'animate-spin' : ''}`} />
+                                        {isSyncing ? 'Syncing...' : 'Sync All'}
+                                    </Button>
+                                </div>
+                                <Button variant="ghost" size="sm" onClick={handleSaveChanges} disabled={isSaving || isSyncing || Object.keys(editedTransactions).length === 0}>{isSaving ? 'Saving...' : 'Save Notes'}</Button>
                             </div>
                         </div>
                     </div>
@@ -299,7 +341,59 @@ export default function TransactionHistory() {
                 </section>
 
                 <section className="surface-card p-5"> {/* All Transactions Section */}
-                    <div className="flex items-center justify-between mb-4"><h2 className="text-2xl font-semibold">All Transactions</h2></div>
+                    <div className="flex items-center justify-between mb-4">
+                        <h2 className="text-2xl font-semibold">All Transactions</h2>
+                        <div className="text-sm text-muted-foreground">
+                            Showing {transactions.length > 0 ? ((currentPage - 1) * pageSize + 1) : 0}-{Math.min(currentPage * pageSize, totalTransactions)} of {totalTransactions} transactions
+                        </div>
+                    </div>
+
+                    {/* Pagination Controls */}
+                    <div className="flex items-center justify-between mb-4">
+                        <div className="flex items-center gap-2">
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setCurrentPage(1)}
+                                disabled={currentPage === 1 || isLoading}
+                            >
+                                First
+                            </Button>
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                                disabled={currentPage === 1 || isLoading}
+                            >
+                                Previous
+                            </Button>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                            <span className="text-sm font-medium">
+                                Page {currentPage} of {Math.max(1, Math.ceil(totalTransactions / pageSize))}
+                            </span>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setCurrentPage(p => p + 1)}
+                                disabled={currentPage >= Math.ceil(totalTransactions / pageSize) || isLoading}
+                            >
+                                Next
+                            </Button>
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setCurrentPage(Math.ceil(totalTransactions / pageSize))}
+                                disabled={currentPage >= Math.ceil(totalTransactions / pageSize) || isLoading}
+                            >
+                                Last
+                            </Button>
+                        </div>
+                    </div>
                     {isLoading ? <p>Loading...</p> : (
                         <div className="table-shell">
                             <table className="min-w-full text-sm text-left"><thead className="font-mono text-gray-500"><tr>

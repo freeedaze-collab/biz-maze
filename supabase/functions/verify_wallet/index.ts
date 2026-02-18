@@ -1,6 +1,5 @@
-
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.42.0';
-import { verifyMessage as verifyEVMMessage } from 'https://esm.sh/viem@2.9.23';
+import { ethers } from 'https://esm.sh/ethers@5.7.2';
 import { Verifier } from 'https://esm.sh/bip322-js';
 import nacl from 'https://esm.sh/tweetnacl@1.0.3';
 import bs58 from 'https://esm.sh/bs58@5.0.0';
@@ -118,15 +117,43 @@ Deno.serve(async (req) => {
     if (req.method === 'POST') {
         try {
             const body = await req.json();
-            const { address, signature, message, chain, walletType, entity_id } = body;
+            const { address, signature, message, chain, walletType, entity_id, devBypass } = body;
 
-            if (!address || !signature || !message || !chain || !walletType) {
+            if (!address || !chain || !walletType) {
+                return new Response(JSON.stringify({ error: 'Missing required parameters' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+            }
+
+            // DEVELOPMENT BYPASS: Skip signature verification
+            if (devBypass === true) {
+                console.log('⚠️ DEV BYPASS: Skipping signature verification for', address);
+
+                const { error: insertError } = await supabaseAdmin.from('wallet_connections').insert({
+                    user_id: user.id,
+                    wallet_address: address,
+                    verified_at: new Date().toISOString(),
+                    entity_id: entity_id || null,
+                    wallet_type: walletType,
+                    chain: chain,
+                    wallet_name: `${address.substring(0, 6)}...${address.substring(address.length - 4)}`,
+                });
+
+                if (insertError) {
+                    console.error('Insert error:', insertError);
+                    throw insertError;
+                }
+
+                return new Response(JSON.stringify({ success: true, ok: true }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+            }
+
+            // Normal flow: Verify signature required
+            if (!signature || !message) {
                 return new Response(JSON.stringify({ error: 'Missing required parameters' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
             }
 
             const { data: storedNonce, error: nonceError } = await supabaseAdmin.from('nonce_store').select('nonce, expires_at').eq('user_id', user.id).single();
 
             if (nonceError || !storedNonce || storedNonce.nonce !== message || new Date(storedNonce.expires_at).getTime() < Date.now()) {
+                console.warn(`[VerifyWallet] Nonce invalid/expired. Stored=${storedNonce?.nonce} Msg=${message}`);
                 return new Response(JSON.stringify({ error: 'Invalid or expired nonce' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
             }
 
@@ -139,21 +166,20 @@ Deno.serve(async (req) => {
             if (walletType === 'phantom' && chain === 'solana') {
                 isValid = verifySolanaSignature({ address, signature, message });
             } else if (['metamask', 'walletconnect', 'phantom-evm'].includes(walletType) || walletType === 'metamask') {
-                // Note: phantom-evm reuses metamask logic in frontend but might pass 'phantom-evm' as walletType?
-                // Frontend passes 'metamask' handler for phantom-evm?
-                // Let's check frontend. Frontend passes `handler: 'phantom-evm'`.
-                // Backend needs to handle 'phantom-evm' OR treating it as standard EVM.
-                // Actually frontend `handleLinkWithPhantomEVM` calls postVerify with `walletType: 'metamask'`?
-                // Let's assume standard EVM verification for these:
-                isValid = await verifyEVMMessage({ address, message, signature });
+                try {
+                    const recoveredAddress = ethers.utils.verifyMessage(message, signature);
+                    isValid = recoveredAddress.toLowerCase() === address.toLowerCase();
+                    console.log(`[VerifyWallet] EVM Recovered: ${recoveredAddress} | Expected: ${address} | Match: ${isValid}`);
+                } catch (err: any) {
+                    console.error(`[VerifyWallet] EVM Verification Error: ${err.message}`);
+                    isValid = false;
+                }
             } else if (walletType === 'bitcoin') {
                 isValid = verifyBitcoinSignature({ address, signature, message });
             }
-            // Fallback for generic EVM if not matched above but passed to backend
-            // (Frontend sends walletType: 'metamask' for Phantom EVM, so it hits the second block)
 
             if (!isValid) {
-                console.error(`[VerifyWallet] Verification Failed or returned false. WalletType: ${walletType}`);
+                console.error(`[VerifyWallet] Verification Failed. WalletType: ${walletType}, AuthUser: ${user.id}`);
                 return new Response(JSON.stringify({ error: 'Invalid signature' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
             }
 

@@ -1,21 +1,17 @@
 // supabase/functions/exchange-save-keys/index.ts
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { encode } from "https://deno.land/std@0.177.0/encoding/base64.ts";
+import ccxt from 'https://esm.sh/ccxt@4.3.46';
 
-// --- 正しいCORSラッパー関数 (verify_wallet と同じ) ---
-const ALLOW_ORIGIN = '*';
-function cors(res: Response) {
-  const h = new Headers(res.headers);
-  h.set('Access-Control-Allow-Origin', ALLOW_ORIGIN);
-  h.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  h.set('Access-Control-Allow-Headers', 'authorization, x-client-info, apikey, content-type');
-  return new Response(res.body, { status: res.status, headers: h });
-}
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+};
 
-// --- 暗号化ロジック ---
 async function getKey() {
   const b64 = Deno.env.get("EDGE_KMS_KEY");
-  if (!b64) throw new Error("EDGE_KMS_KEY secret is not set in Supabase Function settings.");
+  if (!b64) throw new Error("EDGE_KMS_KEY not set.");
   const raw = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
   return await crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt"]);
 }
@@ -28,70 +24,108 @@ async function encryptJson(obj: unknown) {
   return `v1:${encode(iv)}:${encode(ct)}`;
 }
 
-type SaveBody = {
-  exchange: "binance" | "bybit" | "okx";
-  connection_name: string;
-  api_key: string;
-  api_secret: string;
-  api_passphrase?: string;
-  entity_id?: string;
-};
-
-// --- メインのサーバー処理 ---
 Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') {
-    return cors(new Response(null, { status: 204 }));
-  }
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
   try {
-    const userClient = createClient(
-      Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_ANON_KEY")!,
-      { global: { headers: { Authorization: req.headers.get("Authorization")! } } }
-    );
-    const { data: { user } } = await userClient.auth.getUser();
-    if (!user) throw new Error("User not found. Please log in.");
-
     const supabaseAdmin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
-    const body = (await req.json()) as SaveBody;
+    const authHeader = req.headers.get('Authorization');
+    if (!authHeader) throw new Error('Authorization header is missing.');
 
-    if (!body.connection_name || !body.api_key || !body.api_secret) {
-      throw new Error("Connection name, API key, and API secret are required.");
+    const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(authHeader.replace('Bearer ', ''));
+    if (userError || !user) throw new Error('User not found.');
+
+    const body = await req.json();
+    const { exchange, connection_name, api_key, api_secret, api_passphrase, entity_id } = body;
+
+    if (!exchange || !api_key || !api_secret) {
+      throw new Error("Exchange, API key, and API secret are required.");
     }
 
+    console.log(`[SAVE-KEYS] Validating ${exchange} for user ${user.id}...`);
+
+    // --- Validation Logic via CCXT ---
+    const exchangeConfig: any = {
+      apiKey: api_key,
+      secret: api_secret,
+      password: api_passphrase,
+      options: { 'defaultType': 'spot' },
+      adjustForTimeDifference: true,
+      enableRateLimit: true,
+    };
+
+    let exchangeInstance = new ccxt[exchange](exchangeConfig);
+
+    // Special verification for Binance: Try Global/Standard and Fallback
+    if (exchange === 'binance') {
+      const endpoints = [
+        { name: 'Standard (api.binance.com)', hostname: 'api.binance.com', url: 'https://api.binance.com' },
+        { name: 'Global Proxy (api.binance.me)', hostname: 'api.binance.me', url: 'https://api.binance.me' }
+      ];
+
+      let success = false;
+      let lastError = "";
+      for (const endpoint of endpoints) {
+        try {
+          console.log(`[SAVE-KEYS] Testing ${endpoint.name}...`);
+          exchangeConfig.hostname = endpoint.hostname;
+          exchangeConfig.urls = {
+            api: {
+              public: `${endpoint.url}/api/v3`,
+              private: `${endpoint.url}/api/v3`,
+              sapi: `${endpoint.url}/sapi/v1`,
+            }
+          };
+          exchangeInstance = new ccxt[exchange](exchangeConfig);
+          await exchangeInstance.fetchBalance();
+          console.log(`[SAVE-KEYS] ${endpoint.name} SUCCESS.`);
+          success = true;
+          break;
+        } catch (e: any) {
+          lastError = e.message;
+          console.warn(`[SAVE-KEYS] ${endpoint.name} failed: ${e.message}`);
+        }
+      }
+      if (!success) {
+        throw new Error(`Authentication failed for Binance. Please check your API Key and Secret. (${lastError})`);
+      }
+    } else {
+      // General validation for other exchanges
+      try {
+        await exchangeInstance.fetchBalance();
+      } catch (e: any) {
+        throw new Error(`Authentication failed for ${exchange}: ${e.message}`);
+      }
+    }
+
+    // --- Encrypt and Save ---
     const enc_blob = await encryptJson({
-      apiKey: body.api_key,
-      apiSecret: body.api_secret,
-      apiPassphrase: body.api_passphrase,
+      apiKey: api_key,
+      apiSecret: api_secret,
+      apiPassphrase: api_passphrase,
     });
 
-    const { error } = await supabaseAdmin.from("exchange_connections").upsert({
+    const { error: dbError } = await supabaseAdmin.from("exchange_connections").upsert({
       user_id: user.id,
-      exchange: body.exchange,
-      connection_name: body.connection_name,
+      exchange: exchange,
+      connection_name: connection_name || `${exchange} API`,
       encrypted_blob: enc_blob,
-      entity_id: body.entity_id || null,
+      entity_id: entity_id || null,
+      status: 'linked',
     }, { onConflict: "user_id,connection_name" });
 
-    if (error) throw error;
+    if (dbError) throw dbError;
 
-    return cors(new Response(JSON.stringify({ ok: true }), {
-      headers: { 'Content-Type': 'application/json' },
+    return new Response(JSON.stringify({ ok: true, message: "Credentials validated and saved." }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       status: 200,
-    }));
+    });
 
-  } catch (e) {
-    // クラッシュ時に詳細なエラーログを出力
-    console.error("!!!!!! Function exchange-save-keys CRASHED !!!!!!");
-    console.error("Error Message:", e.message);
-    console.error("Full Error Object:", e);
-
-    return cors(new Response(JSON.stringify({
-      error: "An internal server error occurred.",
-      details: String(e?.message ?? e)
-    }), {
-      headers: { 'Content-Type': 'application/json' },
-      status: 500,
-    }));
+  } catch (err) {
+    console.error("[SAVE-KEYS-ERROR]", err);
+    return new Response(JSON.stringify({ error: err.message }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      status: 400, // Client error for validation failure
+    });
   }
 });

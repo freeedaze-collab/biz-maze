@@ -6,13 +6,14 @@ import { Button } from "@/components/ui/button";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Building2, User, CheckCircle } from "lucide-react";
+import { Building2, User, CheckCircle, TrendingUp, Shield } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
 
 const AccountTypeSelection = () => {
   const [accountType, setAccountType] = useState<"individual" | "corporate" | "">("");
+  const [companyType, setCompanyType] = useState<"ordinary" | "crypto" | "">("");
   const [country, setCountry] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const { user } = useAuth();
@@ -20,7 +21,7 @@ const AccountTypeSelection = () => {
   const { toast } = useToast();
 
   const countries = [
-    "United States", "Canada", "United Kingdom", "Germany", "France", 
+    "United States", "Canada", "United Kingdom", "Germany", "France",
     "Japan", "Australia", "Singapore", "Switzerland", "Netherlands",
     "Sweden", "Norway", "Denmark", "Finland", "Austria", "Belgium",
     "Ireland", "Luxembourg", "New Zealand", "South Korea"
@@ -31,6 +32,16 @@ const AccountTypeSelection = () => {
       toast({
         title: "Please complete all fields",
         description: "Both account type and country are required.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // Corporate accounts must choose company type
+    if (accountType === 'corporate' && !companyType) {
+      toast({
+        title: "Please select enterprise type",
+        description: "Choose between Ordinary Enterprise and Crypto Enterprise.",
         variant: "destructive",
       });
       return;
@@ -48,7 +59,8 @@ const AccountTypeSelection = () => {
     setIsLoading(true);
 
     try {
-      const { error } = await supabase
+      // 1. Upsert profile
+      const { error: profileError } = await supabase
         .from('profiles')
         .upsert({
           user_id: user.id,
@@ -62,11 +74,30 @@ const AccountTypeSelection = () => {
           onConflict: 'user_id'
         });
 
-      if (error) throw error;
+      if (profileError) throw profileError;
+
+      // 2. For corporate accounts, create default entity with company_type
+      if (accountType === 'corporate') {
+        const { error: entityError } = await supabase
+          .from('entities')
+          .insert({
+            user_id: user.id,
+            name: 'Head Office',
+            is_head_office: true,
+            company_type: companyType || 'ordinary'
+          });
+
+        // Ignore duplicate errors (entity might already exist)
+        if (entityError && !entityError.message.includes('duplicate')) {
+          console.warn('Entity creation warning:', entityError.message);
+        }
+      }
 
       toast({
         title: "Account setup complete!",
-        description: `Your ${accountType} account has been configured for ${country}.`,
+        description: accountType === 'corporate'
+          ? `Your ${companyType === 'crypto' ? 'Crypto' : 'Ordinary'} Enterprise account has been configured for ${country}.`
+          : `Your individual account has been configured for ${country}.`,
       });
 
       navigate('/dashboard');
@@ -98,9 +129,13 @@ const AccountTypeSelection = () => {
             <CardTitle>Account Configuration</CardTitle>
           </CardHeader>
           <CardContent className="space-y-6">
+            {/* Step 1: Account Type */}
             <div className="space-y-4">
               <Label className="text-base font-semibold">Account Type</Label>
-              <RadioGroup value={accountType} onValueChange={(value: "individual" | "corporate") => setAccountType(value)}>
+              <RadioGroup value={accountType} onValueChange={(value: "individual" | "corporate") => {
+                setAccountType(value);
+                if (value === 'individual') setCompanyType('');
+              }}>
                 <div className="flex items-center space-x-3 p-4 border rounded-lg hover:bg-accent/50 cursor-pointer">
                   <RadioGroupItem value="individual" id="individual" />
                   <User className="h-5 w-5 text-primary" />
@@ -113,7 +148,7 @@ const AccountTypeSelection = () => {
                     </Label>
                   </div>
                 </div>
-                
+
                 <div className="flex items-center space-x-3 p-4 border rounded-lg hover:bg-accent/50 cursor-pointer">
                   <RadioGroupItem value="corporate" id="corporate" />
                   <Building2 className="h-5 w-5 text-primary" />
@@ -129,6 +164,50 @@ const AccountTypeSelection = () => {
               </RadioGroup>
             </div>
 
+            {/* Step 2: Enterprise Type (only for Corporate) */}
+            {accountType === 'corporate' && (
+              <div className="space-y-4 animate-in slide-in-from-top-2 duration-300">
+                <Label className="text-base font-semibold">Enterprise Type</Label>
+                <p className="text-sm text-muted-foreground">
+                  This determines how crypto assets are classified and measured in your financial statements.
+                </p>
+                <RadioGroup value={companyType} onValueChange={(value: "ordinary" | "crypto") => setCompanyType(value)}>
+                  <div className={`flex items-center space-x-3 p-4 border rounded-lg hover:bg-accent/50 cursor-pointer transition-colors ${companyType === 'ordinary' ? 'border-primary bg-primary/5' : ''}`}>
+                    <RadioGroupItem value="ordinary" id="ordinary" />
+                    <Shield className="h-5 w-5 text-blue-500" />
+                    <div className="flex-1">
+                      <Label htmlFor="ordinary" className="cursor-pointer">
+                        <div className="font-medium">Ordinary Enterprise</div>
+                        <div className="text-sm text-muted-foreground">
+                          IAS 38 — Intangible Assets model
+                        </div>
+                        <div className="text-xs text-muted-foreground mt-1">
+                          Crypto held for investment or long-term value storage. Cost or revaluation model with impairment testing.
+                        </div>
+                      </Label>
+                    </div>
+                  </div>
+
+                  <div className={`flex items-center space-x-3 p-4 border rounded-lg hover:bg-accent/50 cursor-pointer transition-colors ${companyType === 'crypto' ? 'border-primary bg-primary/5' : ''}`}>
+                    <RadioGroupItem value="crypto" id="crypto" />
+                    <TrendingUp className="h-5 w-5 text-emerald-500" />
+                    <div className="flex-1">
+                      <Label htmlFor="crypto" className="cursor-pointer">
+                        <div className="font-medium">Crypto Enterprise</div>
+                        <div className="text-sm text-muted-foreground">
+                          IAS 2 — Inventory (Broker-Trader) model
+                        </div>
+                        <div className="text-xs text-muted-foreground mt-1">
+                          Crypto traded as primary business activity. Fair value measurement with P/L impact (FVLCTS).
+                        </div>
+                      </Label>
+                    </div>
+                  </div>
+                </RadioGroup>
+              </div>
+            )}
+
+            {/* Step 3: Tax Jurisdiction */}
             <div className="space-y-4">
               <Label className="text-base font-semibold">Tax Jurisdiction</Label>
               <Select value={country} onValueChange={setCountry}>
@@ -148,9 +227,9 @@ const AccountTypeSelection = () => {
               </p>
             </div>
 
-            <Button 
-              onClick={handleSave} 
-              disabled={!accountType || !country || isLoading}
+            <Button
+              onClick={handleSave}
+              disabled={!accountType || !country || (accountType === 'corporate' && !companyType) || isLoading}
               className="w-full"
               size="lg"
             >

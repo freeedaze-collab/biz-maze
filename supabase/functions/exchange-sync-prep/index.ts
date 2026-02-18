@@ -61,14 +61,14 @@ Deno.serve(async (req) => {
       password: credentials.apiPassphrase,
     })
 
-    console.log(`[${exchange} PREP] Fetching markets, deposits, and withdrawals... (Last 90 days)`)
+    console.log(`[${exchange} PREP] Fetching markets, deposits, and withdrawals... (Complete history from 2009)`)
     await ex.loadMarkets()
 
     // ★★★ 最後の修正：JPY市場もれっきとした調査対象に加える ★★★
     const marketsToFetch = ex.symbols.filter(s => s.endsWith('/USDT') || s.endsWith('/USD') || s.endsWith('/JPY'));
 
-    // ★★★ 原点回帰：取得期間を「過去90日間」に固定 ★★★
-    const since = Date.now() - 89 * 24 * 60 * 60 * 1000; // 安全マージンをとって89日
+    // Fetch all history from Bitcoin genesis (2009-01-01) - no date limit
+    const since = new Date('2009-01-01').getTime();
 
     const [deposits, withdrawals] = await Promise.all([
       ex.fetchDeposits(undefined, since, undefined),

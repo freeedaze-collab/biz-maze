@@ -1,6 +1,5 @@
 {
     "hosting": {
-        "site": "biz-mazegit-42313395-c1eab",
         "public": "dist",
         "ignore": [
             "firebase.json",

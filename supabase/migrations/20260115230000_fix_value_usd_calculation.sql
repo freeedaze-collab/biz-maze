@@ -2,6 +2,15 @@
 -- For JPY pairs, always recalculate instead of using potentially wrong stored value_usd
 -- SELL uses amount (JPY received), BUY uses fee_currency (JPY spent)
 
+-- 1. DROP VIEWS in reverse dependency order
+DROP VIEW IF EXISTS public.v_cash_flow_statement CASCADE;
+DROP VIEW IF EXISTS public.v_balance_sheet CASCADE;
+DROP VIEW IF EXISTS public.v_profit_loss_statement CASCADE;
+DROP VIEW IF EXISTS public.v_holdings CASCADE;
+DROP VIEW IF EXISTS public.v_all_transactions_classified CASCADE;
+DROP VIEW IF EXISTS public.internal_transfer_pairs CASCADE;
+DROP VIEW IF EXISTS public.all_transactions CASCADE;
+
 CREATE OR REPLACE VIEW public.all_transactions AS
 WITH 
 latest_fiat_rates AS (
