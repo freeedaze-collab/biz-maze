@@ -1,81 +1,153 @@
-// // import 'jsr:@supabase/functions-js/edge-runtime.d.ts';
+// supabase/functions/verify-2/index.ts
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { decode } from 'https://deno.land/x/djwt@v3.0.2/mod.ts';
-import {
-  isAddress,
-  recoverMessageAddress,
-} from 'https://esm.sh/viem@2.18.8';
+import { isAddress, recoverMessageAddress } from 'https://esm.sh/viem@2.18.8';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'authorization, content-type',
+  'Access-Control-Allow-Headers': 'authorization, content-type, apikey, x-client-info',
 };
 
+// ============================================================
+// Helper: JWTからユーザーIDを取得（decode only, 検証はSupabaseに任せる）
+// ============================================================
+function extractUserIdFromJwt(authHeader: string | null): string | null {
+  if (!authHeader?.startsWith('Bearer ')) return null;
+  try {
+    const jwt = authHeader.slice('Bearer '.length);
+    const payloadBase64 = jwt.split('.')[1];
+    if (!payloadBase64) return null;
+    // Base64URL decode
+    const padded = payloadBase64.replace(/-/g, '+').replace(/_/g, '/');
+    const payload = JSON.parse(atob(padded));
+    return payload?.sub ?? null;
+  } catch {
+    return null;
+  }
+}
+
 Deno.serve(async (req) => {
+  // CORS preflight
   if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders });
+    return new Response('ok', { status: 200, headers: corsHeaders });
   }
 
-  try {
-    // --- STEP 1: Get User ID directly from JWT ---
-    const authHeader = req.headers.get('Authorization');
-    if (!authHeader) throw new Error('Missing Authorization header');
-    const jwt = authHeader.replace('Bearer ', '');
-    const [, payload] = decode(jwt);
-    const userId = payload?.sub;
-    if (!userId) throw new Error('Could not extract user ID from token.');
+  const json = (data: unknown, status = 200) =>
+    new Response(JSON.stringify(data), {
+      status,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
 
-    // --- STEP 2: Handle GET (Nonce) vs POST (Verify) ---
+  try {
+    const authHeader = req.headers.get('Authorization') ?? req.headers.get('authorization');
+
+    // ============================================================
+    // GET: nonce を発行する
+    //   - 認証不要（アドレスさえあれば誰でも取得できる）
+    //   - nonce はランダムUUID（DB保存なし、フロントで保持）
+    // ============================================================
     if (req.method === 'GET') {
       const nonce = crypto.randomUUID().replace(/-/g, '');
-      return new Response(JSON.stringify({ nonce }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      return json({ nonce });
     }
 
+    // ============================================================
+    // POST: 署名を検証してウォレットを登録する
+    // ============================================================
     if (req.method !== 'POST') {
-      return new Response('Method Not Allowed', { status: 405, headers: corsHeaders });
+      return json({ error: 'Method Not Allowed' }, 405);
     }
 
-    // --- STEP 3: Verify Signature ---
-    const body = await req.json();
-    const address = body.address;
-    const signature = body.signature;
-    const messageToVerify = body.message || body.nonce;
-
-    if (!isAddress(address) || !signature || !messageToVerify) {
-      throw new Error(`Invalid POST body. address, signature, and message/nonce are required.`);
+    // 1) JWTからユーザーIDを取得
+    const userId = extractUserIdFromJwt(authHeader);
+    if (!userId) {
+      return json({ ok: false, error: 'Missing or invalid Authorization token.' }, 401);
     }
 
-    const recovered = await recoverMessageAddress({ message: messageToVerify, signature });
+    // 2) リクエストボディのパース
+    let body: Record<string, string>;
+    try {
+      body = await req.json();
+    } catch {
+      return json({ ok: false, error: 'Invalid JSON body.' }, 400);
+    }
+
+    const { address, signature, nonce } = body;
+
+    if (!address || !signature || !nonce) {
+      return json(
+        { ok: false, error: 'address, signature, nonce are all required.' },
+        400
+      );
+    }
+
+    if (!isAddress(address)) {
+      return json({ ok: false, error: 'Invalid Ethereum address format.' }, 400);
+    }
+
+    // 3) フロントと同じメッセージを再構築して署名を検証
+    //    フロント: personal_sign(message, address) でメッセージに署名
+    //    ここでは同じ message から署名者アドレスを復元する
+    const message = buildSignMessage(address, nonce);
+
+    let recovered: string;
+    try {
+      recovered = await recoverMessageAddress({ message, signature: signature as `0x${string}` });
+    } catch (e) {
+      return json({ ok: false, error: `Signature recovery failed: ${e.message}` }, 400);
+    }
 
     if (recovered.toLowerCase() !== address.toLowerCase()) {
-      return new Response(JSON.stringify({ ok: false, error: 'Signature mismatch' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      return json({ ok: false, error: 'Signature mismatch: recovered address does not match.' }, 400);
     }
 
-    // --- STEP 4: Upsert into 'wallet_connections' table ---
-    const adminClient = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
-    const { error: dbError } = await adminClient.from('wallet_connections').upsert(
-      {
-        user_id: userId,
-        wallet_address: address.toLowerCase(),
-        verified_at: new Date().toISOString(),
-        verification_status: 'verified',
-        wallet_type: 'ethereum',
-        chain: 'ethereum',
-        wallet_name: `${address.substring(0, 6)}...${address.substring(address.length - 4)}`,
-      },
-      { onConflict: 'user_id,wallet_address' }
+    // 4) ユーザーの存在確認 + wallet_connections へ upsert
+    const adminClient = createClient(
+      Deno.env.get('SUPABASE_URL')!,
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
+      { auth: { persistSession: false } }
     );
-    if (dbError) throw dbError;
 
-    return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    // Supabase auth.users にユーザーが存在するか確認
+    const { data: userData, error: userError } = await adminClient.auth.admin.getUserById(userId);
+    if (userError || !userData?.user) {
+      return json({ ok: false, error: 'User not found in auth system.' }, 401);
+    }
+
+    const walletAddress = address.toLowerCase();
+    const shortName = `${address.substring(0, 6)}...${address.substring(address.length - 4)}`;
+
+    const { error: dbError } = await adminClient
+      .from('wallet_connections')
+      .upsert(
+        {
+          user_id: userId,
+          wallet_address: walletAddress,
+          verified_at: new Date().toISOString(),
+          verification_status: 'verified',
+          wallet_type: 'ethereum',
+          chain: 'ethereum',
+          wallet_name: shortName,
+        },
+        { onConflict: 'user_id,wallet_address' }
+      );
+
+    if (dbError) {
+      console.error('[verify-2] DB upsert error:', dbError);
+      return json({ ok: false, error: `Database error: ${dbError.message}` }, 500);
+    }
+
+    return json({ ok: true, address: walletAddress });
 
   } catch (e) {
-    // Check for specific foreign key error string
-    if (e.message && e.message.includes('violates foreign key constraint')) {
-      return new Response(JSON.stringify({ error: `Authentication error: The provided user ID does not exist. Details: ${e.message}` }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-    }
-    return new Response(JSON.stringify({ error: `Function error: ${e.message}` }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    console.error('[verify-2] Unexpected error:', e);
+    return json({ ok: false, error: `Server error: ${e?.message ?? String(e)}` }, 500);
   }
 });
 
+// ============================================================
+// フロントと共有するメッセージフォーマット
+// ============================================================
+function buildSignMessage(address: string, nonce: string): string {
+  return `Welcome to CryptoFinance!\n\nPlease sign this message to verify you own this wallet.\n\nWallet: ${address}\nNonce: ${nonce}\n\nThis request will not trigger a blockchain transaction or cost any gas.`;
+}
